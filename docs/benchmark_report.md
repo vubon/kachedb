@@ -12,9 +12,9 @@ KacheDB is an in-memory storage engine designed from scratch in Rust to address 
 
 1. **Sub-4 ns Memory Allocation:** Replaces runtime `malloc`/`free` with 64-byte aligned 2 MB Megaslab arenas, achieving **3.93 ns** allocation latency regardless of slot size (128 B to 256 KB).
 2. **L1 Cache-Speed Point Queries:** SIMD-probed Swiss Table hash index delivers **3.15 ns** lookup hit latency with lock-free S3-FIFO eviction flags.
-3. **~10,000× TTFT Speedup for LLM KV-Cache:** Hierarchical `&[u32]` Radix Prefix Tree matches a 1,024-token sequence in **2.51 µs**, skipping costly GPU attention prefill.
-4. **15.28 Million msgs/sec Zero-Copy IPC:** POSIX Shared Memory (`/dev/shm`) lock-free SPSC ring buffers stream tensor descriptors across processes in **65.4 ns per message** with zero serialization and zero memory copies.
-5. **10.2 Million QPS per Core:** Ingests, parses, executes, and encodes standard Redis RESP commands over TCP in **97.6 ns** end-to-end.
+3. **~10,000× TTFT Speedup for LLM KV-Cache:** Hierarchical `&[u32]` Radix Prefix Tree matches a 1,024-token sequence in **2.61 µs**, skipping costly GPU attention prefill.
+4. **15.04 Million msgs/sec Zero-Copy IPC:** POSIX Shared Memory (`/dev/shm`) lock-free SPSC ring buffers stream tensor descriptors across processes in **66.47 ns per message** with zero serialization and zero memory copies.
+5. **10.2 Million QPS per Core:** Ingests, parses, executes, and encodes standard Redis RESP commands over TCP in **97.63 ns** end-to-end.
 
 ---
 
@@ -50,21 +50,21 @@ KacheDB is an in-memory storage engine designed from scratch in Rust to address 
 ### Phase 1: LLM Token Radix Tree & POSIX Shared Memory
 | Crate | Benchmark Target | Measured Latency | Throughput / Speedup |
 | :--- | :--- | ---: | :--- |
-| `kachedb-radix` | Prefix Lookup Hit (128 tokens / 8 blocks) | **248.15 ns** | ~31.0 ns per block hop |
-| `kachedb-radix` | Prefix Lookup Hit (1,024 tokens / 64 blocks) | **2.51 µs** | **~10,000× faster** than GPU prefill |
-| `kachedb-radix` | Prefix Lookup Hit (4,096 tokens / 256 blocks) | **18.85 µs** | Deep context chain lookup |
-| `kachedb-radix` | Insert 1,024-token sequence (64 new nodes) | **2.39 µs** | ~37.3 ns per node |
-| `kachedb-radix` | Hierarchical Bottom-up LRU Eviction | **519.36 ns** | Sub-microsecond memory reclaim |
-| `kachedb-shm` | Single-Thread 128B Slot Roundtrip | **86.99 ns** | Lock-free push + pop |
-| `kachedb-shm` | Cross-Thread SPSC Ring Streaming | **65.41 ns / msg** | **15.28 Million msgs/sec** |
+| `kachedb-radix` | Prefix Lookup Hit (128 tokens / 8 blocks) | **253.85 ns** | ~31.7 ns per block hop |
+| `kachedb-radix` | Prefix Lookup Hit (1,024 tokens / 64 blocks) | **2.61 µs** | **~10,000× faster** than GPU prefill |
+| `kachedb-radix` | Prefix Lookup Hit (4,096 tokens / 256 blocks) | **19.98 µs** | Deep context chain lookup |
+| `kachedb-radix` | Insert 1,024-token sequence (64 new nodes) | **2.41 µs** | ~37.6 ns per node |
+| `kachedb-radix` | Hierarchical Bottom-up LRU Eviction | **568.13 ns** | Sub-microsecond memory reclaim |
+| `kachedb-shm` | Single-Thread 128B Slot Roundtrip | **89.39 ns** | Lock-free push + pop |
+| `kachedb-shm` | Cross-Thread SPSC Ring Streaming | **66.47 ns / msg** | **15.04 Million msgs/sec** |
 
 ### Phase 2: Wire Protocol & Asynchronous TCP Pipeline
 | Crate | Benchmark Target | Measured Latency | Single-Core Capacity |
 | :--- | :--- | ---: | :--- |
-| `kachedb-proto-resp` | Zero-Alloc `GET` Frame Parse & Decode | **69.54 ns** | **14.38 Million cmds/sec** |
-| `kachedb-proto-resp` | Zero-Alloc `SET` Frame Parse & Decode | **96.16 ns** | **10.40 Million cmds/sec** |
+| `kachedb-proto-resp` | Zero-Alloc `GET` Frame Parse & Decode | **68.80 ns** | **14.53 Million cmds/sec** |
+| `kachedb-proto-resp` | Zero-Alloc `SET` Frame Parse & Decode | **96.15 ns** | **10.40 Million cmds/sec** |
 | `kachedb-proto-resp` | Zero-Alloc `MGET` Frame Parse & Decode (4 keys) | **153.06 ns** | **6.53 Million cmds/sec** |
-| `kachedb-proto-resp` | Frame Bulk String Serialization | **8.25 ns** | **121 Million frames/sec** |
+| `kachedb-proto-resp` | Frame Bulk String Serialization | **8.25 ns** | **121.2 Million frames/sec** |
 | `kachedb-net` | Full `GET` Hit Pipeline Execution | **97.63 ns** | **10.24 Million requests/sec / core** |
 | `kachedb-net` | Full `SET` + `DEL` Cycle Execution | **267.58 ns** | **3.74 Million write cycles/sec** |
 
