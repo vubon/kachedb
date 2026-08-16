@@ -31,6 +31,7 @@ pub mod slab;
 
 // ─── Convenience re-exports ───────────────────────────────────────────────────
 
+pub use affinity::pin_current_thread_to_core;
 pub use arena::{MegaslabArena, SlabBlockId};
 pub use error::CoreError;
 pub use pool::SlabPool;

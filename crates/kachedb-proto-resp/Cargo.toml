@@ -1,6 +1,18 @@
 [package]
-name = "kachedb-proto-resp"
-version = "0.1.0"
-edition = "2024"
+name        = "kachedb-proto-resp"
+version     = "0.1.0"
+edition     = "2024"
+description = "KacheDB zero-allocation streaming parser & serializer for RESP2 and RESP3 wire protocol"
+license     = "Apache-2.0 OR MIT"
 
 [dependencies]
+smallvec  = { workspace = true }
+thiserror = { workspace = true }
+log       = { workspace = true }
+
+[[bench]]
+name    = "resp_parser"
+harness = false
+
+[dev-dependencies]
+criterion = { workspace = true }

@@ -94,6 +94,25 @@ impl SlabClassType {
     pub const fn is_tensor(self) -> bool {
         matches!(self, Self::Tensor64KB | Self::Tensor256KB | Self::Tensor2MB)
     }
+
+    /// Selects the smallest fitting slab class for a given payload size.
+    pub const fn for_size(bytes: usize) -> Option<Self> {
+        if bytes <= APP_SMALL_BYTES {
+            Some(Self::AppSmall)
+        } else if bytes <= APP_MEDIUM_BYTES {
+            Some(Self::AppMedium)
+        } else if bytes <= APP_LARGE_BYTES {
+            Some(Self::AppLarge)
+        } else if bytes <= TENSOR_SMALL_BYTES {
+            Some(Self::Tensor64KB)
+        } else if bytes <= TENSOR_MEDIUM_BYTES {
+            Some(Self::Tensor256KB)
+        } else if bytes <= TENSOR_LARGE_BYTES {
+            Some(Self::Tensor2MB)
+        } else {
+            None
+        }
+    }
 }
 
 /// Metadata describing a single size class within a Megaslab.

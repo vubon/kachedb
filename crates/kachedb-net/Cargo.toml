@@ -1,6 +1,26 @@
 [package]
-name = "kachedb-net"
-version = "0.1.0"
-edition = "2024"
+name        = "kachedb-net"
+version     = "0.1.0"
+edition     = "2024"
+description = "KacheDB high-performance asynchronous TCP engine with thread-per-core event loop"
+license     = "Apache-2.0 OR MIT"
 
 [dependencies]
+kachedb-core       = { path = "../kachedb-core" }
+kachedb-hash       = { path = "../kachedb-hash" }
+kachedb-proto-resp = { path = "../kachedb-proto-resp" }
+mio                = { workspace = true }
+cfg-if             = { workspace = true }
+log                = { workspace = true }
+thiserror          = { workspace = true }
+smallvec           = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = { workspace = true }
+
+[[bench]]
+name    = "tcp_throughput"
+harness = false
+
+[dev-dependencies]
+criterion = { workspace = true }

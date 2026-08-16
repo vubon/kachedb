@@ -1,14 +1,20 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! `kachedb-proto-resp` — Zero-allocation streaming parser & serializer for RESP2 and RESP3 wire protocol.
+//!
+//! Provides high-throughput framing and command translation for Redis and Valkey compatible wire protocol.
+//!
+//! # Highlights
+//!
+//! - **Zero heap allocation**: `Frame<'a>` and `Command<'a>` borrow sub-slices directly from the incoming I/O buffer.
+//! - **Streaming parser**: `parse_frame` cleanly handles fragmented TCP stream buffers.
+//! - **RESP2 & RESP3 support**: Supports standard arrays, bulk strings, nulls, simple strings, and errors.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod command;
+pub mod error;
+pub mod frame;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use command::Command;
+pub use error::RespError;
+pub use frame::{
+    encode_array_header, encode_bulk_string, encode_error, encode_integer, encode_null,
+    encode_simple_string, parse_frame, Frame,
+};
