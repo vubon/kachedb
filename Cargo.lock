@@ -306,6 +306,9 @@ dependencies = [
 [[package]]
 name = "kachedb-cli"
 version = "0.1.0"
+dependencies = [
+ "kachedb-proto-resp",
+]
 
 [[package]]
 name = "kachedb-core"
@@ -380,6 +383,18 @@ dependencies = [
 [[package]]
 name = "kachedb-server"
 version = "0.1.0"
+dependencies = [
+ "cfg-if",
+ "kachedb-core",
+ "kachedb-hash",
+ "kachedb-net",
+ "kachedb-proto-resp",
+ "kachedb-proto-tensor",
+ "kachedb-radix",
+ "kachedb-shm",
+ "log",
+ "thiserror",
+]
 
 [[package]]
 name = "kachedb-shm"

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kachedb"
+version = "0.1.0"
+description = "Python zero-copy client & PyTorch/vLLM bindings for KacheDB"
+authors = [{ name = "KacheDB Core Team" }]
+license = { text = "Apache-2.0 OR MIT" }
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.20",
+]
+
+[project.optional-dependencies]
+torch = ["torch>=2.0"]
+test = ["pytest>=7.0"]

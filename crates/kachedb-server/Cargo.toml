@@ -1,6 +1,22 @@
 [package]
+name        = "kachedb-server"
+version     = "0.1.0"
+edition     = "2024"
+description = "KacheDB unified high-performance multi-core daemon runtime"
+license     = "Apache-2.0 OR MIT"
+
+[[bin]]
 name = "kachedb-server"
-version = "0.1.0"
-edition = "2024"
+path = "src/main.rs"
 
 [dependencies]
+kachedb-core         = { path = "../kachedb-core" }
+kachedb-hash         = { path = "../kachedb-hash" }
+kachedb-radix        = { path = "../kachedb-radix" }
+kachedb-shm          = { path = "../kachedb-shm" }
+kachedb-net          = { path = "../kachedb-net" }
+kachedb-proto-resp   = { path = "../kachedb-proto-resp" }
+kachedb-proto-tensor = { path = "../kachedb-proto-tensor" }
+log                  = { workspace = true }
+thiserror            = { workspace = true }
+cfg-if               = { workspace = true }

@@ -1,6 +1,13 @@
 [package]
+name        = "kachedb-cli"
+version     = "0.1.0"
+edition     = "2024"
+description = "KacheDB interactive CLI admin and benchmarking utility"
+license     = "Apache-2.0 OR MIT"
+
+[[bin]]
 name = "kachedb-cli"
-version = "0.1.0"
-edition = "2024"
+path = "src/main.rs"
 
 [dependencies]
+kachedb-proto-resp = { path = "../kachedb-proto-resp" }

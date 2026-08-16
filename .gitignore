@@ -12,6 +12,16 @@ Thumbs.db
 *.swp
 *.swo
 
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
 # Environment & secrets (Rule compliance)
 .env
 *.env
