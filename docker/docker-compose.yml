@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  kachedb:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "6379:6379"
+    ipc: "host" # Enables shared /dev/shm with host for zero-copy tensor extraction
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    restart: unless-stopped
