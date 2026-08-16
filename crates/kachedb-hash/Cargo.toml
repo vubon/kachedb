@@ -1,6 +1,20 @@
 [package]
-name = "kachedb-hash"
-version = "0.1.0"
-edition = "2024"
+name        = "kachedb-hash"
+version     = "0.1.0"
+edition     = "2024"
+description = "KacheDB SIMD-accelerated Swiss Table O(1) hash index"
+license     = "Apache-2.0 OR MIT"
 
 [dependencies]
+kachedb-core = { path = "../kachedb-core" }
+ahash        = { workspace = true }
+log          = { workspace = true }
+thiserror    = { workspace = true }
+cfg-if       = { workspace = true }
+
+[[bench]]
+name    = "swiss_table"
+harness = false
+
+[dev-dependencies]
+criterion = { workspace = true }

@@ -1,6 +1,23 @@
 [package]
-name = "kachedb-core"
-version = "0.1.0"
-edition = "2024"
+name        = "kachedb-core"
+version     = "0.1.0"
+edition     = "2024"
+description = "KacheDB core slab memory arena allocator and per-core pool manager"
+license     = "Apache-2.0 OR MIT"
 
 [dependencies]
+cfg-if      = { workspace = true }
+log         = { workspace = true }
+thiserror   = { workspace = true }
+libc        = { workspace = true }
+
+# Thread pinning: Linux production only
+[target.'cfg(target_os = "linux")'.dependencies]
+core_affinity = { workspace = true }
+
+[[bench]]
+name    = "slab_alloc"
+harness = false
+
+[dev-dependencies]
+criterion = { workspace = true }

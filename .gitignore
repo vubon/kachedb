@@ -1,0 +1,18 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# IDE configuration
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment & secrets (Rule compliance)
+.env
+*.env
+.env.*
