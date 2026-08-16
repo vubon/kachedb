@@ -1,6 +1,11 @@
 [package]
-name = "kachedb-proto-tensor"
-version = "0.1.0"
-edition = "2024"
+name        = "kachedb-proto-tensor"
+version     = "0.1.0"
+edition     = "2024"
+description = "KacheDB tensor block descriptors and PagedAttention-aligned memory layout"
+license     = "Apache-2.0 OR MIT"
 
 [dependencies]
+kachedb-core = { path = "../kachedb-core" }
+log          = { workspace = true }
+thiserror    = { workspace = true }

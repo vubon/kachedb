@@ -1,6 +1,19 @@
 [package]
-name = "kachedb-radix"
-version = "0.1.0"
-edition = "2024"
+name        = "kachedb-radix"
+version     = "0.1.0"
+edition     = "2024"
+description = "KacheDB &[u32] token prefix tree with bottom-up LRU eviction for LLM KV-cache"
+license     = "Apache-2.0 OR MIT"
 
 [dependencies]
+kachedb-core = { path = "../kachedb-core" }
+smallvec     = { workspace = true }
+log          = { workspace = true }
+thiserror    = { workspace = true }
+
+[[bench]]
+name    = "radix_tree"
+harness = false
+
+[dev-dependencies]
+criterion = { workspace = true }

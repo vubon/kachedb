@@ -1,6 +1,21 @@
 [package]
-name = "kachedb-shm"
-version = "0.1.0"
-edition = "2024"
+name        = "kachedb-shm"
+version     = "0.1.0"
+edition     = "2024"
+description = "KacheDB zero-copy POSIX shared memory SPSC ring buffer with adaptive spin-then-park"
+license     = "Apache-2.0 OR MIT"
 
 [dependencies]
+kachedb-core         = { path = "../kachedb-core" }
+kachedb-proto-tensor = { path = "../kachedb-proto-tensor" }
+libc                 = { workspace = true }
+cfg-if               = { workspace = true }
+log                  = { workspace = true }
+thiserror            = { workspace = true }
+
+[[bench]]
+name    = "shm_ipc"
+harness = false
+
+[dev-dependencies]
+criterion = { workspace = true }
