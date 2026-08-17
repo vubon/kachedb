@@ -36,10 +36,12 @@
 //! tree.unpin(&result.slab_block_ids);
 //! ```
 
+pub mod epoch;
 pub mod error;
 pub mod node;
 pub mod tree;
 
+pub use epoch::EpochTree;
 pub use error::RadixError;
 pub use node::{RadixNode, TokenBlock, TOKENS_PER_BLOCK};
 pub use tree::{LookupResult, RadixTree};

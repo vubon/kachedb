@@ -76,8 +76,10 @@ impl LookupResult {
 /// # Thread Safety
 ///
 /// `RadixTree` is **single-threaded per core** (consistent with the
-/// shared-nothing design). Cross-core prefix matches use the replicated
-/// radix index model described in RFC 1.
+/// shared-nothing design). For shared multi-worker access, wrap in an
+/// [`crate::epoch::EpochTree`] which provides zero-cost lock-free reads
+/// via epoch-based RCU (Improvement 5).
+#[derive(Clone)]
 pub struct RadixTree {
     /// Virtual root node (empty token block, no slab pointer).
     root: Box<RadixNode>,

@@ -87,6 +87,22 @@ pub struct RadixNode {
     pub children: Vec<Box<RadixNode>>,
 }
 
+impl Clone for RadixNode {
+    /// Deep-clones a `RadixNode` for copy-on-write RCU snapshot creation.
+    /// Atomic counters are reset on clone — the snapshot is an independent
+    /// structural copy, not a live reference mirror.
+    fn clone(&self) -> Self {
+        Self {
+            tokens: self.tokens.clone(),
+            slab_block_id: self.slab_block_id,
+            ref_count: AtomicU32::new(self.ref_count.load(Ordering::Acquire)),
+            last_accessed_ns: AtomicU64::new(self.last_accessed_ns.load(Ordering::Relaxed)),
+            child_count: AtomicU32::new(self.child_count.load(Ordering::Acquire)),
+            children: self.children.clone(),
+        }
+    }
+}
+
 impl RadixNode {
     /// Constructs a new internal node with the given token block and slab pointer.
     pub fn new(tokens: TokenBlock, slab_block_id: Option<SlabBlockId>) -> Box<Self> {
