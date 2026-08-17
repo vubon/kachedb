@@ -304,6 +304,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kachedb-bench"
+version = "0.1.0"
+dependencies = [
+ "kachedb-proto-resp",
+]
+
+[[package]]
 name = "kachedb-cli"
 version = "0.1.0"
 dependencies = [

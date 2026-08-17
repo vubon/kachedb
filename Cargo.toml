@@ -9,6 +9,7 @@ members = [
     "crates/kachedb-proto-tensor",
     "crates/kachedb-server",
     "crates/kachedb-cli",
+    "crates/kachedb-bench",
 ]
 resolver = "2"
 

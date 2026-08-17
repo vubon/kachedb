@@ -1,0 +1,13 @@
+[package]
+name        = "kachedb-bench"
+version     = "0.1.0"
+edition     = "2024"
+description = "KacheDB standalone multi-connection pipelined load generator and benchmark tool"
+license     = "Apache-2.0 OR MIT"
+
+[[bin]]
+name = "kachedb-bench"
+path = "src/main.rs"
+
+[dependencies]
+kachedb-proto-resp = { path = "../kachedb-proto-resp" }
