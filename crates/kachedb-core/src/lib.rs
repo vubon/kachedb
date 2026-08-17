@@ -27,6 +27,7 @@ pub mod affinity;
 pub mod arena;
 pub mod error;
 pub mod pool;
+pub mod quota;
 pub mod slab;
 
 // ─── Convenience re-exports ───────────────────────────────────────────────────

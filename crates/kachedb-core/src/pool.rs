@@ -24,6 +24,7 @@
 use crate::{
     arena::{MegaslabArena, SlabBlockId},
     error::CoreError,
+    quota::{QuotaSnapshot, WorkloadQuota},
     slab::SlabClassType,
 };
 
@@ -52,6 +53,12 @@ pub struct SlabPool {
     next_slab_id: u16,
     /// Maximum total megaslabs allowed across all workloads.
     max_megaslabs: usize,
+    /// Dynamic quota budget for App Cache workload (Improvement 4).
+    app_quota: WorkloadQuota,
+    /// Dynamic quota budget for Tensor Cache workload (Improvement 4).
+    tensor_quota: WorkloadQuota,
+    /// Monotonic second timestamp of last activity per arena (for S3-FIFO cold detection).
+    arena_last_active_sec: Vec<u32>,
 }
 
 impl SlabPool {
@@ -61,11 +68,16 @@ impl SlabPool {
     /// per class so the first request in each class incurs zero allocation latency.
     pub fn new(core_id: u16, max_total_bytes: usize) -> Result<Self, CoreError> {
         let max_megaslabs = max_total_bytes / crate::slab::MEGASLAB_BYTES;
+        let app_quota = WorkloadQuota::new(max_megaslabs, APP_CACHE_DEFAULT_RATIO, APP_CACHE_MAX_RATIO);
+        let tensor_quota = WorkloadQuota::new(max_megaslabs, TENSOR_CACHE_DEFAULT_RATIO, TENSOR_CACHE_MAX_RATIO);
         let mut pool = Self {
             core_id,
             arenas: Vec::new(),
             next_slab_id: 0,
             max_megaslabs,
+            app_quota,
+            tensor_quota,
+            arena_last_active_sec: Vec::new(),
         };
 
         // Pre-warm one arena for each app-cache class.
@@ -93,16 +105,15 @@ impl SlabPool {
     /// - [`CoreError::OsAllocFailed`] if the OS cannot satisfy a new 2 MB allocation.
     pub fn allocate(&mut self, class: SlabClassType) -> Result<SlabBlockId, CoreError> {
         // Find first non-full arena serving this class.
-        for arena in self.arenas.iter_mut().filter(|a| a.class() == class) {
-            if !arena.is_full() {
-                return arena.allocate();
+        for i in 0..self.arenas.len() {
+            if self.arenas[i].class() == class && !self.arenas[i].is_full() {
+                return self.arenas[i].allocate();
             }
         }
         // No capacity — try to grow.
         self.grow(class)?;
         // Retry once: the freshly grown arena is guaranteed non-full.
-        self.arenas
-            .last_mut()
+        self.arenas.last_mut()
             .expect("grow always pushes an arena")
             .allocate()
     }
@@ -114,13 +125,25 @@ impl SlabPool {
     /// Returns [`CoreError::InvalidBlockId`] if no arena owns `id`.
     pub fn deallocate(&mut self, id: SlabBlockId) -> Result<(), CoreError> {
         let slab_id = id.slab_id();
-        for arena in &mut self.arenas {
-            // The slab_id is encoded in the upper 16 bits of the block id.
+        for arena in self.arenas.iter_mut() {
             if arena.header_slab_id() == slab_id as u32 {
                 return arena.deallocate(id);
             }
         }
         Err(CoreError::InvalidBlockId { id: id.0 })
+    }
+
+    /// Called from the server's idle event-loop tick (once per second).
+    ///
+    /// Updates activity timestamps for all arenas that have live allocations,
+    /// enabling the S3-FIFO cold-detection logic in `reclaim_cold_arena()`
+    /// without paying a `SystemTime::now()` cost on every alloc/dealloc.
+    pub fn tick_second(&mut self, now_sec: u32) {
+        for (i, arena) in self.arenas.iter().enumerate() {
+            if arena.allocated() > 0 {
+                self.arena_last_active_sec[i] = now_sec;
+            }
+        }
     }
 
     /// Returns a raw mutable pointer to the payload bytes of `id`.
@@ -152,21 +175,110 @@ impl SlabPool {
 
     // ── Private ──────────────────────────────────────────────────────────────
 
-    /// Allocates a new `MegaslabArena` for `class` and pushes it onto `self.arenas`.
+    /// Allocates a new `MegaslabArena` for `class`, enforcing quota limits.
+    /// Attempts S3-FIFO cold-arena reclamation before returning `PoolExhausted`.
     fn grow(&mut self, class: SlabClassType) -> Result<(), CoreError> {
+        // Check workload-specific quota ceiling.
+        let quota_ok = if class.is_tensor() {
+            self.tensor_quota.can_borrow()
+        } else {
+            self.app_quota.can_borrow()
+        };
+
+        if !quota_ok {
+            // Attempt to reclaim a cold arena from the opposite workload.
+            if !self.reclaim_cold_arena(class) {
+                return Err(CoreError::PoolExhausted { class });
+            }
+        }
+
         if self.arenas.len() >= self.max_megaslabs {
             return Err(CoreError::PoolExhausted { class });
         }
+
         let slab_id = self.next_slab_id;
         self.next_slab_id = self.next_slab_id.wrapping_add(1);
         let arena = MegaslabArena::new(class, slab_id, self.core_id)?;
         self.arenas.push(arena);
+        self.arena_last_active_sec.push(now_secs());
+
+        // Update quota accounting.
+        if class.is_tensor() {
+            self.tensor_quota.claim_one();
+        } else {
+            self.app_quota.claim_one();
+        }
+
         log::debug!(
-            "SlabPool(core={}): grew arena slab_id={slab_id} for {class:?}",
-            self.core_id
+            "SlabPool(core={}): grew arena slab_id={slab_id} for {class:?} \
+             [app={}/{}, tensor={}/{}]",
+            self.core_id,
+            self.app_quota.claimed, self.app_quota.ceiling,
+            self.tensor_quota.claimed, self.tensor_quota.ceiling,
         );
         Ok(())
     }
+
+    /// S3-FIFO cold-arena reclamation: releases the oldest fully-empty arena
+    /// on the opposite workload back to the unassigned pool.
+    ///
+    /// Returns `true` if an arena was successfully reclaimed.
+    fn reclaim_cold_arena(&mut self, requesting_class: SlabClassType) -> bool {
+        let now = now_secs();
+        let cold_threshold_secs: u32 = 30;
+
+        // Find the oldest cold, fully-empty arena on the opposite workload.
+        let candidate = self.arenas.iter().enumerate().find(|(i, arena)| {
+            let is_opposite = arena.class().is_tensor() != requesting_class.is_tensor();
+            let is_empty = arena.allocated() == 0;
+            let is_cold = now.saturating_sub(self.arena_last_active_sec[*i]) >= cold_threshold_secs;
+            is_opposite && is_empty && is_cold
+        }).map(|(i, _)| i);
+
+        if let Some(idx) = candidate {
+            let released_class = self.arenas[idx].class();
+            self.arenas.remove(idx);
+            self.arena_last_active_sec.remove(idx);
+
+            if released_class.is_tensor() {
+                self.tensor_quota.release_one();
+            } else {
+                self.app_quota.release_one();
+            }
+
+            log::info!(
+                "SlabPool(core={}): reclaimed cold {:?} arena for {:?} (idle ≥{}s)",
+                self.core_id, released_class, requesting_class, cold_threshold_secs
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns a snapshot of current quota utilisation for monitoring.
+    pub fn quota_snapshot(&self) -> QuotaSnapshot {
+        QuotaSnapshot {
+            app_claimed: self.app_quota.claimed,
+            app_target: self.app_quota.target,
+            app_ceiling: self.app_quota.ceiling,
+            tensor_claimed: self.tensor_quota.claimed,
+            tensor_target: self.tensor_quota.target,
+            tensor_ceiling: self.tensor_quota.ceiling,
+            total_megaslabs: self.max_megaslabs,
+            unassigned: self.max_megaslabs
+                .saturating_sub(self.app_quota.claimed + self.tensor_quota.claimed),
+        }
+    }
+}
+
+/// Returns the current time as epoch seconds (u32 — sufficient until year 2106).
+#[inline]
+fn now_secs() -> u32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
