@@ -237,6 +237,64 @@ impl Connection {
     pub fn has_pending_writes(&self) -> bool {
         self.write_pos < self.write_buf.len()
     }
+
+    // ── io_uring-compatible API (Improvement 2) ───────────────────────────────
+
+    /// Feeds raw bytes directly into the read buffer.
+    ///
+    /// Used by the io_uring engine (`engine_uring.rs`) where the kernel
+    /// copies data directly into a pre-registered buffer; the engine then
+    /// calls this to hand the received slice to the connection state machine.
+    #[cfg(target_os = "linux")]
+    pub fn feed_bytes(&mut self, data: &[u8]) {
+        // Compact buffer if cursor has advanced
+        if self.read_pos > 0 {
+            if self.read_pos < self.read_len {
+                self.read_buf.copy_within(self.read_pos..self.read_len, 0);
+                self.read_len -= self.read_pos;
+            } else {
+                self.read_len = 0;
+            }
+            self.read_pos = 0;
+        }
+
+        // Grow buffer if needed
+        let needed = self.read_len + data.len();
+        if needed > self.read_buf.len() {
+            self.read_buf.resize(needed.next_power_of_two(), 0);
+        }
+
+        self.read_buf[self.read_len..self.read_len + data.len()].copy_from_slice(data);
+        self.read_len += data.len();
+    }
+
+    /// Processes all complete RESP frames currently buffered.
+    ///
+    /// Identical semantics to [`process_incoming`] but takes no `stream`
+    /// parameter — designed for the io_uring path where I/O and processing
+    /// are decoupled through the completion queue.
+    ///
+    /// Returns `Ok(true)` = keep connection open, `Ok(false)` = QUIT received.
+    #[cfg(target_os = "linux")]
+    pub fn process_pending(
+        &mut self,
+        table: &mut SwissTable,
+        pool: &mut SlabPool,
+    ) -> Result<bool, NetError> {
+        self.process_incoming(table, pool)
+    }
+
+    /// Drains the write buffer and returns its contents as a `Vec<u8>`.
+    ///
+    /// Called by the io_uring engine after `process_pending()` to collect
+    /// response bytes and submit a `Send` SQE to the ring.
+    #[cfg(target_os = "linux")]
+    pub fn take_write_buf(&mut self) -> Vec<u8> {
+        let buf = self.write_buf[self.write_pos..].to_vec();
+        self.write_buf.clear();
+        self.write_pos = 0;
+        buf
+    }
 }
 
 impl Default for Connection {

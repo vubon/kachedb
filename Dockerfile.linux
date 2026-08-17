@@ -1,0 +1,30 @@
+# ─── Stage 1: Build ──────────────────────────────────────────────────────────
+FROM rust:1.87-slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+
+# Build release binaries targeting Linux (io_uring engine auto-enabled)
+RUN cargo build --release -p kachedb-server -p kachedb-bench 2>&1
+
+# ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/kachedb-server /usr/local/bin/kachedb-server
+COPY --from=builder /build/target/release/kachedb-bench  /usr/local/bin/kachedb-bench
+
+# KacheDB default port
+EXPOSE 6379
+
+# Run with 4 worker threads by default.
+# Use --privileged when running to enable SQPOLL (CAP_SYS_NICE required).
+CMD ["kachedb-server", "-w", "4", "-p", "6379"]

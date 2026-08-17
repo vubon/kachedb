@@ -8,6 +8,8 @@ use std::thread;
 
 use config::ServerConfig;
 use kachedb_net::WorkerThread;
+#[cfg(target_os = "linux")]
+use kachedb_net::UringWorkerThread;
 use kachedb_shm::ShmChannel;
 
 fn main() {
@@ -39,6 +41,10 @@ fn main() {
         "   └─ POSIX SHM IPC:      {}",
         if config.shm_enabled { "Enabled (/dev/shm)" } else { "Disabled" }
     );
+    #[cfg(target_os = "linux")]
+    println!("   └─ I/O Engine:         io_uring + SQPOLL (Linux)");
+    #[cfg(not(target_os = "linux"))]
+    println!("   └─ I/O Engine:         mio/kqueue (macOS/BSD)");
     println!();
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -74,16 +80,32 @@ fn main() {
                     None
                 };
 
-                let mut worker = match WorkerThread::new(core_id as u16, bind_addr) {
-                    Ok(w) => w,
-                    Err(e) => {
-                        log::error!("Worker [{core_id}]: failed to initialize: {e}");
-                        return;
+                #[cfg(target_os = "linux")]
+                {
+                    let mut worker = match UringWorkerThread::new(core_id as u16, bind_addr) {
+                        Ok(w) => w,
+                        Err(e) => {
+                            log::error!("Worker [{core_id}]: failed to initialize io_uring worker: {e}");
+                            return;
+                        }
+                    };
+                    if let Err(e) = worker.run(shutdown_worker) {
+                        log::error!("Worker [{core_id}]: io_uring event loop error: {e}");
                     }
-                };
+                }
 
-                if let Err(e) = worker.run(shutdown_worker) {
-                    log::error!("Worker [{core_id}]: event loop terminated with error: {e}");
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let mut worker = match WorkerThread::new(core_id as u16, bind_addr) {
+                        Ok(w) => w,
+                        Err(e) => {
+                            log::error!("Worker [{core_id}]: failed to initialize: {e}");
+                            return;
+                        }
+                    };
+                    if let Err(e) = worker.run(shutdown_worker) {
+                        log::error!("Worker [{core_id}]: event loop terminated with error: {e}");
+                    }
                 }
             })
             .expect("failed to spawn worker thread");

@@ -17,6 +17,7 @@ smallvec           = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = { workspace = true }
+libc     = { workspace = true }
 
 [[bench]]
 name    = "tcp_throughput"

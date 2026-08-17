@@ -13,6 +13,12 @@ pub mod connection;
 pub mod engine;
 pub mod error;
 
+#[cfg(target_os = "linux")]
+pub mod engine_uring;
+
 pub use connection::Connection;
 pub use engine::WorkerThread;
 pub use error::NetError;
+
+#[cfg(target_os = "linux")]
+pub use engine_uring::UringWorkerThread;

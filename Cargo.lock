@@ -360,6 +360,7 @@ dependencies = [
  "kachedb-core",
  "kachedb-hash",
  "kachedb-proto-resp",
+ "libc",
  "log",
  "mio",
  "smallvec",
