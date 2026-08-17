@@ -123,8 +123,26 @@ fn main() {
     println!("🛑 KacheDB server stopped.");
 }
 
+struct SimpleLogger;
+
+impl log::Log for SimpleLogger {
+    fn enabled(&self, _metadata: &log::Metadata) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("[{}] {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static LOGGER: SimpleLogger = SimpleLogger;
+
 fn simple_logger() -> Result<(), ()> {
-    // Minimal standard output logger
+    let _ = log::set_logger(&LOGGER);
     log::set_max_level(log::LevelFilter::Info);
     Ok(())
 }

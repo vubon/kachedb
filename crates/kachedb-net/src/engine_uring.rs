@@ -116,6 +116,56 @@ fn make_close(token: u32, fd: RawFd) -> squeue::Entry {
         .user_data(ud(token, OP_CLOSE))
 }
 
+fn create_reuseport_listener(addr: SocketAddr) -> Result<std::net::TcpListener, std::io::Error> {
+    use std::os::unix::io::FromRawFd;
+    unsafe {
+        let domain = match addr {
+            SocketAddr::V4(_) => libc::AF_INET,
+            SocketAddr::V6(_) => libc::AF_INET6,
+        };
+        let fd = libc::socket(domain, libc::SOCK_STREAM, 0);
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let opt: libc::c_int = 1;
+        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &opt as *const _ as *const _, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, &opt as *const _ as *const _, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+
+        let mut storage: libc::sockaddr_storage = std::mem::zeroed();
+        let socklen: libc::socklen_t = match addr {
+            SocketAddr::V4(v4) => {
+                let sin = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in);
+                sin.sin_family = libc::AF_INET as libc::sa_family_t;
+                sin.sin_port = v4.port().to_be();
+                sin.sin_addr = libc::in_addr { s_addr: u32::from_ne_bytes(v4.ip().octets()) };
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t
+            }
+            SocketAddr::V6(v6) => {
+                let sin6 = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6);
+                sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+                sin6.sin6_port = v6.port().to_be();
+                sin6.sin6_addr = libc::in6_addr { s6_addr: v6.ip().octets() };
+                std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t
+            }
+        };
+
+        if libc::bind(fd, &storage as *const _ as *const libc::sockaddr, socklen) < 0 {
+            let err = std::io::Error::last_os_error();
+            libc::close(fd);
+            return Err(err);
+        }
+
+        if libc::listen(fd, 1024) < 0 {
+            let err = std::io::Error::last_os_error();
+            libc::close(fd);
+            return Err(err);
+        }
+
+        Ok(std::net::TcpListener::from_raw_fd(fd))
+    }
+}
+
 // ── UringWorkerThread ─────────────────────────────────────────────────────────
 
 /// Per-core io_uring worker.
@@ -151,9 +201,8 @@ impl UringWorkerThread {
             }
         };
 
-        // ── Bind + listen ────────────────────────────────────────────────────
-        let listener = std::net::TcpListener::bind(self.bind_addr)?;
-        listener.set_nonblocking(true)?;
+        // ── Bind + listen with SO_REUSEPORT for multi-worker support ─────────
+        let listener = create_reuseport_listener(self.bind_addr)?;
         let listen_fd = listener.as_raw_fd();
 
         // ── Accept address storage ───────────────────────────────────────────

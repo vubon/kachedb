@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   kachedb:
     build:
@@ -8,8 +6,10 @@ services:
     ports:
       - "6379:6379"
     ipc: "host" # Enables shared /dev/shm with host for zero-copy tensor extraction
+    privileged: true # Enables io_uring SQPOLL kernel poll threads
     ulimits:
       memlock:
         soft: -1
         hard: -1
+    command: ["--port", "6379", "--bind", "0.0.0.0:6379", "-w", "4"]
     restart: unless-stopped
