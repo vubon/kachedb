@@ -21,13 +21,14 @@ pub const ACCESS_BIT_ACCESSED: u8 = 1;
 ///
 /// # Layout (64 bytes, cache-line aligned)
 ///
-/// | Offset | Field           | Size | Description                         |
-/// |--------|-----------------|------|-------------------------------------|
-/// | 0      | `key_hash`      | 8 B  | Full 64-bit key hash (AHash)        |
-/// | 8      | `slab_block_id` | 4 B  | Opaque handle into the slab pool    |
-/// | 12     | `value_len`     | 4 B  | Byte length of the stored value     |
-/// | 16     | `access_flags`  | 1 B  | S3-FIFO atomic access frequency bit |
-/// | 17–63  | `_pad`          | 47 B | Cache-line padding                  |
+/// | Offset | Field            | Size | Description                         |
+/// |--------|------------------|------|-------------------------------------|
+/// | 0      | `key_hash`       | 8 B  | Full 64-bit key hash (AHash)        |
+/// | 8      | `slab_block_id`  | 4 B  | Opaque handle into the slab pool    |
+/// | 12     | `value_len`      | 4 B  | Byte length of the stored value     |
+/// | 16     | `expire_at_secs` | 4 B  | Absolute expiration epoch seconds   |
+/// | 20     | `access_flags`   | 1 B  | S3-FIFO atomic access frequency bit |
+/// | 21–63  | `_pad`           | 43 B | Cache-line padding                  |
 #[repr(C, align(64))]
 pub struct HashEntry {
     /// Full 64-bit hash of the key used for fingerprint verification.
@@ -36,11 +37,13 @@ pub struct HashEntry {
     pub slab_block_id: SlabBlockId,
     /// Byte length of the value stored in the slab slot.
     pub value_len: u32,
+    /// Absolute expiration timestamp in epoch seconds (0 = persistent / no TTL).
+    pub expire_at_secs: u32,
     /// S3-FIFO single-bit frequency counter.
     /// Updated with a lock-free `fetch_or(1, Relaxed)` on every GET.
     pub access_flags: AtomicU8,
     /// Padding to fill the 64-byte cache line.
-    _pad: [u8; 47],
+    _pad: [u8; 43],
 }
 
 const _: () = assert!(
@@ -49,16 +52,34 @@ const _: () = assert!(
 );
 
 impl HashEntry {
-    /// Constructs a new `HashEntry` from a key hash and slab descriptor.
+    /// Constructs a new persistent `HashEntry` (no TTL) from a key hash and slab descriptor.
     #[inline]
     pub fn new(key_hash: u64, slab_block_id: SlabBlockId, value_len: u32) -> Self {
+        Self::with_ttl(key_hash, slab_block_id, value_len, 0)
+    }
+
+    /// Constructs a new `HashEntry` with an explicit expiration timestamp in epoch seconds.
+    #[inline]
+    pub fn with_ttl(
+        key_hash: u64,
+        slab_block_id: SlabBlockId,
+        value_len: u32,
+        expire_at_secs: u32,
+    ) -> Self {
         Self {
             key_hash,
             slab_block_id,
             value_len,
+            expire_at_secs,
             access_flags: AtomicU8::new(0),
-            _pad: [0u8; 47],
+            _pad: [0u8; 43],
         }
+    }
+
+    /// Returns `true` if this entry has expired relative to `now_secs`.
+    #[inline(always)]
+    pub fn is_expired(&self, now_secs: u32) -> bool {
+        self.expire_at_secs != 0 && self.expire_at_secs <= now_secs
     }
 
     /// Marks this entry as accessed (S3-FIFO promotion flag).

@@ -167,12 +167,27 @@ impl SwissTable {
     /// # Errors
     ///
     /// Returns `Err(())` if the table is completely full (only possible if the
-    /// resize budget is exhausted — should never occur in normal operation).
+    /// Inserts a key-hash and slab descriptor, returning `true` on new insert
+    /// or `false` on update.
+    #[inline]
     pub fn insert(
         &mut self,
         key_hash: u64,
         slab_block_id: SlabBlockId,
         value_len: u32,
+    ) -> Result<bool, ()> {
+        self.insert_with_ttl(key_hash, slab_block_id, value_len, 0)
+    }
+
+    /// Inserts a key-hash and slab descriptor with an explicit expiration timestamp (in epoch seconds).
+    ///
+    /// Returns `Ok(true)` if inserted as a new entry, or `Ok(false)` if updated in place.
+    pub fn insert_with_ttl(
+        &mut self,
+        key_hash: u64,
+        slab_block_id: SlabBlockId,
+        value_len: u32,
+        expire_at_secs: u32,
     ) -> Result<bool, ()> {
         // Grow before exceeding the 87.5% load threshold.
         if self.count * LOAD_FACTOR_DEN >= self.capacity * LOAD_FACTOR_NUM {
@@ -190,10 +205,11 @@ impl SwissTable {
                 if let Some(entry) = &self.entries[idx] {
                     if entry.matches(key_hash) {
                         // Update in place.
-                        self.entries[idx] = Some(Box::new(HashEntry::new(
+                        self.entries[idx] = Some(Box::new(HashEntry::with_ttl(
                             key_hash,
                             slab_block_id,
                             value_len,
+                            expire_at_secs,
                         )));
                         return Ok(false); // updated
                     }
@@ -204,7 +220,12 @@ impl SwissTable {
             if group.has_empty() {
                 let slot = group.first_available().ok_or(())?;
                 self.ctrl[slot] = fingerprint;
-                self.entries[slot] = Some(Box::new(HashEntry::new(key_hash, slab_block_id, value_len)));
+                self.entries[slot] = Some(Box::new(HashEntry::with_ttl(
+                    key_hash,
+                    slab_block_id,
+                    value_len,
+                    expire_at_secs,
+                )));
                 self.count += 1;
                 return Ok(true); // inserted
             }
@@ -217,7 +238,16 @@ impl SwissTable {
     /// Returns a reference to the `HashEntry` for `key_hash`, if present.
     ///
     /// Marks the entry as accessed (S3-FIFO bit) on every successful lookup.
+    #[inline(always)]
     pub fn lookup(&self, key_hash: u64) -> Option<&HashEntry> {
+        self.lookup_checked(key_hash, 0)
+    }
+
+    /// Returns a reference to the `HashEntry` for `key_hash`, checking against `now_secs`.
+    ///
+    /// If the entry exists but has expired (`is_expired(now_secs)`), returns `None`.
+    /// Marks the entry as accessed (S3-FIFO bit) on every successful lookup.
+    pub fn lookup_checked(&self, key_hash: u64, now_secs: u32) -> Option<&HashEntry> {
         let fingerprint = h2(key_hash);
         let mut pos = h1(key_hash, self.capacity);
 
@@ -227,6 +257,9 @@ impl SwissTable {
             for idx in group.match_byte(fingerprint) {
                 if let Some(entry) = &self.entries[idx] {
                     if entry.matches(key_hash) {
+                        if now_secs != 0 && entry.is_expired(now_secs) {
+                            return None; // expired
+                        }
                         entry.mark_accessed(); // S3-FIFO hot-path
                         return Some(entry);
                     }
@@ -560,5 +593,24 @@ mod tests {
         for &h in &hashes[..40] {
             assert!(t.lookup(h).is_none(), "deleted entry reappeared after compaction");
         }
+    }
+
+    #[test]
+    fn ttl_lookup_before_and_after_expiry() {
+        let mut t = SwissTable::with_capacity(32);
+        let h = hash_key(b"temporary_key");
+        // Insert with expiration at epoch second 100
+        t.insert_with_ttl(h, make_id(7), 32, 100).unwrap();
+
+        // At epoch 90: active
+        assert!(t.lookup_checked(h, 90).is_some());
+        // At epoch 99: active
+        assert!(t.lookup_checked(h, 99).is_some());
+        // At epoch 100: expired
+        assert!(t.lookup_checked(h, 100).is_none());
+        // At epoch 105: expired
+        assert!(t.lookup_checked(h, 105).is_none());
+        // Standard unchecked lookup still returns entry descriptor
+        assert!(t.lookup(h).is_some());
     }
 }

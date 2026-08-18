@@ -29,6 +29,7 @@ pub mod error;
 pub mod pool;
 pub mod quota;
 pub mod slab;
+pub mod timing_wheel;
 
 // ─── Convenience re-exports ───────────────────────────────────────────────────
 
@@ -40,3 +41,4 @@ pub use slab::{
     CACHE_LINE_BYTES, MEGASLAB_BYTES, MEGASLAB_HEADER_BYTES, MEGASLAB_PAYLOAD_BYTES,
     SlabClass, SlabClassType,
 };
+pub use timing_wheel::HashedTimingWheel;

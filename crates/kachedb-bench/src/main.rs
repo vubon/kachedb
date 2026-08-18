@@ -243,7 +243,11 @@ fn run_worker(
                         if let Some(end) = find_crlf(&carry, pos) {
                             let len_str = std::str::from_utf8(&carry[pos + 1..end]).unwrap_or("0");
                             let len: isize = len_str.parse().unwrap_or(-1);
-                            let next = end + 2 + len.max(0) as usize + 2;
+                            let next = if len < 0 {
+                                end + 2
+                            } else {
+                                end + 2 + len as usize + 2
+                            };
                             if next <= carry.len() {
                                 pos = next;
                                 responses_received += 1;

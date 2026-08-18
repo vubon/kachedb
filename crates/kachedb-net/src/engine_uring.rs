@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use io_uring::{opcode, squeue, types, IoUring};
 
-use kachedb_core::{pin_current_thread_to_core, SlabPool};
+use kachedb_core::{pin_current_thread_to_core, HashedTimingWheel, SlabPool};
 use kachedb_hash::SwissTable;
 
 use crate::connection::Connection;
@@ -173,6 +173,7 @@ pub struct UringWorkerThread {
     pub core_id: u16,
     pub pool: SlabPool,
     pub table: SwissTable,
+    pub timing_wheel: HashedTimingWheel,
     pub bind_addr: SocketAddr,
 }
 
@@ -180,7 +181,13 @@ impl UringWorkerThread {
     pub fn new(core_id: u16, bind_addr: SocketAddr) -> Result<Self, NetError> {
         let pool = SlabPool::new(core_id, DEFAULT_POOL_CAPACITY)?;
         let table = SwissTable::with_capacity(65536);
-        Ok(Self { core_id, pool, table, bind_addr })
+        let start_sec = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        let timing_wheel = HashedTimingWheel::new(start_sec);
+
+        Ok(Self { core_id, pool, table, timing_wheel, bind_addr })
     }
 
     pub fn run(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), NetError> {
@@ -366,7 +373,7 @@ impl UringWorkerThread {
                 }
             }
 
-            // Idle tick: propagate arena activity timestamps (once per ~10k iterations)
+            // Idle tick: propagate arena activity timestamps and advance timing wheel (once per ~10k iterations)
             second_ticker += 1;
             if second_ticker % 10_000 == 0 {
                 let now_sec = std::time::SystemTime::now()
@@ -374,6 +381,10 @@ impl UringWorkerThread {
                     .unwrap_or_default()
                     .as_secs() as u32;
                 self.pool.tick_second(now_sec);
+                self.timing_wheel.advance_to(now_sec, &mut self.pool);
+                for state in connections.values_mut() {
+                    state.conn.set_current_sec(now_sec);
+                }
             }
         }
 

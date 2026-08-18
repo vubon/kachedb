@@ -30,18 +30,32 @@ pub struct Connection {
     write_buf: Vec<u8>,
     /// Write cursor offset in `write_buf`.
     write_pos: usize,
+    /// Coarse-grained cached epoch timestamp in seconds.
+    pub current_sec: u32,
 }
 
 impl Connection {
     /// Creates a new connection handler.
     pub fn new() -> Self {
+        let now_sec = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+
         Self {
             read_buf: vec![0u8; READ_BUF_SIZE],
             read_pos: 0,
             read_len: 0,
             write_buf: Vec::with_capacity(WRITE_BUF_SIZE),
             write_pos: 0,
+            current_sec: now_sec,
         }
+    }
+
+    /// Updates the coarse-grained current second timestamp without a syscall.
+    #[inline(always)]
+    pub fn set_current_sec(&mut self, now_sec: u32) {
+        self.current_sec = now_sec;
     }
 
     /// Reads available bytes from `stream` into the internal `read_buf`.
@@ -91,7 +105,13 @@ impl Connection {
                 Some((frame, consumed)) => {
                     self.read_pos += consumed;
                     let cmd = Command::from_frame(frame)?;
-                    let keep_alive = Self::execute_command(cmd, &mut self.write_buf, table, pool)?;
+                    let keep_alive = Self::execute_command_with_time(
+                        cmd,
+                        &mut self.write_buf,
+                        table,
+                        pool,
+                        self.current_sec,
+                    )?;
                     if !keep_alive {
                         return Ok(false);
                     }
@@ -103,12 +123,24 @@ impl Connection {
         Ok(true)
     }
 
-    /// Executes a single strongly-typed command against local memory structures.
+    /// Executes a single strongly-typed command against local memory structures (unconstrained time).
+    #[inline]
     pub fn execute_command(
         cmd: Command<'_>,
         write_buf: &mut Vec<u8>,
         table: &mut SwissTable,
         pool: &mut SlabPool,
+    ) -> Result<bool, NetError> {
+        Self::execute_command_with_time(cmd, write_buf, table, pool, 0)
+    }
+
+    /// Executes a command with explicit `now_sec` for deterministic TTL evaluation.
+    pub fn execute_command_with_time(
+        cmd: Command<'_>,
+        write_buf: &mut Vec<u8>,
+        table: &mut SwissTable,
+        pool: &mut SlabPool,
+        now_sec: u32,
     ) -> Result<bool, NetError> {
         match cmd {
             Command::Ping { message } => match message {
@@ -117,7 +149,7 @@ impl Connection {
             },
             Command::Get { key } => {
                 let h = hash_key(key);
-                if let Some(entry) = table.lookup(h) {
+                if let Some(entry) = table.lookup_checked(h, now_sec) {
                     if let Ok(ptr) = unsafe { pool.slot_ptr(entry.slab_block_id) } {
                         let val_slice = unsafe {
                             std::slice::from_raw_parts(ptr, entry.value_len as usize)
@@ -130,7 +162,7 @@ impl Connection {
                     encode_null(write_buf);
                 }
             }
-            Command::Set { key, value, .. } => {
+            Command::Set { key, value, ttl_ms } => {
                 let val_len = value.len();
                 match SlabClassType::for_size(val_len) {
                     Some(class) => {
@@ -146,8 +178,15 @@ impl Connection {
                             );
                         }
 
+                        let expire_at_secs = ttl_ms
+                            .map(|ms| {
+                                let secs = (ms / 1000).max(1) as u32;
+                                if now_sec > 0 { now_sec + secs } else { secs }
+                            })
+                            .unwrap_or(0);
+
                         let h = hash_key(key);
-                        let _ = table.insert(h, block_id, val_len as u32);
+                        let _ = table.insert_with_ttl(h, block_id, val_len as u32, expire_at_secs);
                         encode_simple_string(write_buf, "OK");
                     }
                     None => {
@@ -162,7 +201,7 @@ impl Connection {
                 encode_array_header(write_buf, keys.len());
                 for key in keys {
                     let h = hash_key(key);
-                    if let Some(entry) = table.lookup(h) {
+                    if let Some(entry) = table.lookup_checked(h, now_sec) {
                         if let Ok(ptr) = unsafe { pool.slot_ptr(entry.slab_block_id) } {
                             let val_slice = unsafe {
                                 std::slice::from_raw_parts(ptr, entry.value_len as usize)
@@ -189,7 +228,7 @@ impl Connection {
                 let mut count = 0i64;
                 for key in keys {
                     let h = hash_key(key);
-                    if table.lookup(h).is_some() {
+                    if table.lookup_checked(h, now_sec).is_some() {
                         count += 1;
                     }
                 }
@@ -354,5 +393,74 @@ mod tests {
         // 6. GET key1 (now deleted -> null)
         Connection::execute_command(Command::Get { key: b"key1" }, &mut conn.write_buf, &mut table, &mut pool).unwrap();
         assert_eq!(conn.write_buf, b"$-1\r\n");
+    }
+
+    #[test]
+    fn execute_set_with_ttl_and_expiry_flow() {
+        let mut conn = Connection::new();
+        let mut table = SwissTable::with_capacity(128);
+        let mut pool = SlabPool::new(0, 16 * 1024 * 1024).unwrap();
+
+        // 1. SET key_ttl "temp" EX 10 (at epoch 1000s -> expires at 1010s)
+        Connection::execute_command_with_time(
+            Command::Set {
+                key: b"key_ttl",
+                value: b"temp",
+                ttl_ms: Some(10_000), // 10 seconds
+            },
+            &mut conn.write_buf,
+            &mut table,
+            &mut pool,
+            1000,
+        ).unwrap();
+        assert_eq!(conn.write_buf, b"+OK\r\n");
+        conn.write_buf.clear();
+
+        // 2. GET at epoch 1005s -> active
+        Connection::execute_command_with_time(
+            Command::Get { key: b"key_ttl" },
+            &mut conn.write_buf,
+            &mut table,
+            &mut pool,
+            1005,
+        ).unwrap();
+        assert_eq!(conn.write_buf, b"$4\r\ntemp\r\n");
+        conn.write_buf.clear();
+
+        // 3. EXISTS at epoch 1005s -> 1
+        let mut keys = smallvec::SmallVec::new();
+        keys.push(&b"key_ttl"[..]);
+        Connection::execute_command_with_time(
+            Command::Exists { keys },
+            &mut conn.write_buf,
+            &mut table,
+            &mut pool,
+            1005,
+        ).unwrap();
+        assert_eq!(conn.write_buf, b":1\r\n");
+        conn.write_buf.clear();
+
+        // 4. GET at epoch 1011s -> expired -> $-1\r\n
+        Connection::execute_command_with_time(
+            Command::Get { key: b"key_ttl" },
+            &mut conn.write_buf,
+            &mut table,
+            &mut pool,
+            1011,
+        ).unwrap();
+        assert_eq!(conn.write_buf, b"$-1\r\n");
+        conn.write_buf.clear();
+
+        // 5. EXISTS at epoch 1011s -> 0
+        let mut keys2 = smallvec::SmallVec::new();
+        keys2.push(&b"key_ttl"[..]);
+        Connection::execute_command_with_time(
+            Command::Exists { keys: keys2 },
+            &mut conn.write_buf,
+            &mut table,
+            &mut pool,
+            1011,
+        ).unwrap();
+        assert_eq!(conn.write_buf, b":0\r\n");
     }
 }

@@ -335,6 +335,7 @@ dependencies = [
  "criterion",
  "libc",
  "log",
+ "smallvec",
  "thiserror",
 ]
 

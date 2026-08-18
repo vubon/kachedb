@@ -10,6 +10,7 @@ cfg-if      = { workspace = true }
 log         = { workspace = true }
 thiserror   = { workspace = true }
 libc        = { workspace = true }
+smallvec    = { workspace = true }
 
 # Thread pinning: Linux production only
 [target.'cfg(target_os = "linux")'.dependencies]

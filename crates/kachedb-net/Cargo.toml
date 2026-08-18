@@ -14,10 +14,10 @@ cfg-if             = { workspace = true }
 log                = { workspace = true }
 thiserror          = { workspace = true }
 smallvec           = { workspace = true }
+libc               = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = { workspace = true }
-libc     = { workspace = true }
 
 [[bench]]
 name    = "tcp_throughput"
