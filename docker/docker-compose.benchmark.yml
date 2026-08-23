@@ -18,7 +18,7 @@ services:
     privileged: true
     ports:
       - "6379:6379"
-    command: ["kachedb-server", "--port", "6379", "--bind", "0.0.0.0:6379", "-w", "4", "--pool-mb", "768"]
+    command: ["kachedb-server", "--port", "6379", "--bind", "0.0.0.0:6379", "-w", "4", "--pool-mb", "256"]
     restart: "no"
 
   redis:
