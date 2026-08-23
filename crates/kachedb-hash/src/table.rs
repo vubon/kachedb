@@ -217,12 +217,8 @@ impl SwissTable {
                     if self.entries[idx].matches(key_hash) {
                         let old_block_id = self.entries[idx].slab_block_id;
                         // Update in place without heap allocation.
-                        self.entries[idx] = HashEntry::with_ttl(
-                            key_hash,
-                            slab_block_id,
-                            value_len,
-                            expire_at_secs,
-                        );
+                        self.entries[idx] =
+                            HashEntry::with_ttl(key_hash, slab_block_id, value_len, expire_at_secs);
                         return Ok(Some(old_block_id)); // updated
                     }
                 }
@@ -232,12 +228,8 @@ impl SwissTable {
             if group.has_empty() {
                 let slot = group.first_available().ok_or(())?;
                 self.ctrl[slot] = fingerprint;
-                self.entries[slot] = HashEntry::with_ttl(
-                    key_hash,
-                    slab_block_id,
-                    value_len,
-                    expire_at_secs,
-                );
+                self.entries[slot] =
+                    HashEntry::with_ttl(key_hash, slab_block_id, value_len, expire_at_secs);
                 self.count += 1;
                 return Ok(None); // inserted new
             }

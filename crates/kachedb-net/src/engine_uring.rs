@@ -358,7 +358,9 @@ impl UringWorkerThread {
                                         state.closing = !keep_alive;
 
                                         if state.conn.has_pending_writes() {
-                                            state.conn.drain_write_buf_into(&mut state.pending_send);
+                                            state
+                                                .conn
+                                                .drain_write_buf_into(&mut state.pending_send);
                                             let send_ptr = state.pending_send.as_ptr();
                                             let send_len = state.pending_send.len();
                                             pending_sq

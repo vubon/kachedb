@@ -122,7 +122,8 @@ impl SlabPool {
     /// True **O(1) in ~1–2 nanoseconds** on the fast path.
     pub fn allocate(&mut self, class: SlabClassType) -> Result<SlabBlockId, CoreError> {
         let c_idx = class_index(class);
-        if let Some(arena_idx) = self.active_arena[c_idx].filter(|&idx| !self.arenas[idx].is_full()) {
+        if let Some(arena_idx) = self.active_arena[c_idx].filter(|&idx| !self.arenas[idx].is_full())
+        {
             return self.arenas[arena_idx].allocate();
         }
 
@@ -148,10 +149,16 @@ impl SlabPool {
     /// Returns [`CoreError::InvalidBlockId`] if no arena owns `id`.
     pub fn deallocate(&mut self, id: SlabBlockId) -> Result<(), CoreError> {
         let slab_id = id.slab_id();
-        if let Some(&arena_idx) = self.slab_id_to_arena.get(&slab_id).filter(|&&idx| idx < self.arenas.len()) {
+        if let Some(&arena_idx) = self
+            .slab_id_to_arena
+            .get(&slab_id)
+            .filter(|&&idx| idx < self.arenas.len())
+        {
             let res = self.arenas[arena_idx].deallocate(id);
             let c_idx = class_index(self.arenas[arena_idx].class());
-            if let Some(_curr_active) = self.active_arena[c_idx].filter(|&curr| self.arenas[curr].is_full()) {
+            if let Some(_curr_active) =
+                self.active_arena[c_idx].filter(|&curr| self.arenas[curr].is_full())
+            {
                 self.active_arena[c_idx] = Some(arena_idx);
             }
             return res;

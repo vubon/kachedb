@@ -27,13 +27,11 @@ fn bench_in_memory_set_pipeline(c: &mut Criterion) {
         |b| {
             b.iter(|| {
                 // SET
-                conn.read_from(&mut std::io::Cursor::new(raw_set))
-                    .unwrap();
+                conn.read_from(&mut std::io::Cursor::new(raw_set)).unwrap();
                 conn.process_incoming(&table, &mut pool).unwrap();
 
                 // DEL (to reclaim slab slot for next iteration)
-                conn.read_from(&mut std::io::Cursor::new(raw_del))
-                    .unwrap();
+                conn.read_from(&mut std::io::Cursor::new(raw_del)).unwrap();
                 conn.process_incoming(&table, &mut pool).unwrap();
 
                 black_box(&conn);
@@ -62,8 +60,7 @@ fn bench_in_memory_get_pipeline(c: &mut Criterion) {
         "net::in_memory GET hit pipeline (parse + hash + slab + encode)",
         |b| {
             b.iter(|| {
-                conn.read_from(&mut std::io::Cursor::new(raw_get))
-                    .unwrap();
+                conn.read_from(&mut std::io::Cursor::new(raw_get)).unwrap();
                 conn.process_incoming(&table, &mut pool).unwrap();
                 black_box(&conn);
             });
