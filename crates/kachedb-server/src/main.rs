@@ -9,6 +9,7 @@ use std::thread;
 use config::ServerConfig;
 #[cfg(target_os = "linux")]
 use kachedb_net::UringWorkerThread;
+#[cfg(not(target_os = "linux"))]
 use kachedb_net::WorkerThread;
 use kachedb_shm::ShmChannel;
 
