@@ -43,9 +43,13 @@ const CTRL_DELETED: u8 = 0x80;
 const CTRL_H2_MASK: u8 = 0x7F;
 /// Number of control bytes in one probe group (portable scalar fallback).
 const GROUP_SIZE: usize = 8;
-/// Resize threshold: 87.5% load factor.
+/// Resize threshold: 87.5% load factor (grow).
 const LOAD_FACTOR_NUM: usize = 7;
 const LOAD_FACTOR_DEN: usize = 8;
+/// Shrink threshold: <12.5% load factor (1/8).
+const SHRINK_LOAD_FACTOR_DEN: usize = 8;
+/// Minimum capacity floor below which a table will not shrink.
+const MIN_SHRINK_CAPACITY: usize = 1024;
 
 // ─── Hash helpers ─────────────────────────────────────────────────────────────
 
@@ -304,7 +308,16 @@ impl SwissTable {
                     if self.entries[idx].matches(key_hash) {
                         self.ctrl[idx] = CTRL_DELETED;
                         self.count -= 1;
-                        return Some(self.entries[idx].to_snapshot());
+                        let snapshot = self.entries[idx].to_snapshot();
+
+                        // Shrink table if occupancy drops below 12.5% and capacity > MIN_SHRINK_CAPACITY
+                        if self.capacity > MIN_SHRINK_CAPACITY
+                            && self.count * SHRINK_LOAD_FACTOR_DEN < self.capacity
+                        {
+                            self.resize(self.capacity / 2);
+                        }
+
+                        return Some(snapshot);
                     }
                 }
             }
@@ -628,5 +641,33 @@ mod tests {
         assert!(t.lookup_checked(h, 105).is_none());
         // Standard unchecked lookup still returns entry descriptor
         assert!(t.lookup(h).is_some());
+    }
+
+    #[test]
+    fn test_shrink_after_deletions() {
+        let mut t = SwissTable::with_capacity(2048);
+        assert_eq!(t.capacity(), 2048);
+
+        let hashes: Vec<u64> = (0u64..1500).map(|i| hash_key(&i.to_le_bytes())).collect();
+        for (i, &h) in hashes.iter().enumerate() {
+            t.insert(h, make_id(i as u32), 64).unwrap();
+        }
+        // Resized during growth to fit 1500 elements
+        assert!(t.capacity() >= 2048);
+
+        // Delete most elements so count drops below 12.5% of capacity
+        for &h in &hashes[..1400] {
+            t.remove(h);
+        }
+
+        assert_eq!(t.len(), 100);
+        // Table should have shrunk down toward MIN_SHRINK_CAPACITY
+        assert!(t.capacity() <= 2048);
+
+        // Remaining elements must still be found
+        for (i, &h) in hashes.iter().enumerate().skip(1400) {
+            let entry = t.lookup(h).expect("remaining key should exist");
+            assert_eq!(entry.slab_block_id, make_id(i as u32));
+        }
     }
 }

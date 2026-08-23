@@ -91,7 +91,7 @@ impl SlabPool {
             TENSOR_CACHE_DEFAULT_RATIO,
             TENSOR_CACHE_MAX_RATIO,
         );
-        let mut pool = Self {
+        let pool = Self {
             core_id,
             arenas: Vec::new(),
             active_arena: [None; 6],
@@ -102,14 +102,8 @@ impl SlabPool {
             arena_last_active_sec: Vec::new(),
         };
 
-        // Pre-warm one arena for each app-cache class.
-        for class in [
-            SlabClassType::AppSmall,
-            SlabClassType::AppMedium,
-            SlabClassType::AppLarge,
-        ] {
-            pool.grow(class)?;
-        }
+        // Arenas are grown lazily on first allocation request per class.
+        // This keeps baseline RSS near zero until actual traffic arrives.
 
         Ok(pool)
     }

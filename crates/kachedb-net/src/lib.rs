@@ -11,6 +11,7 @@
 //! - **Shared-nothing memory**: Zero cross-thread mutex locks during request handling.
 //! - **Cross-platform**: Uses `io_uring` on Linux and `mio` on macOS/BSD.
 
+pub mod accept;
 pub mod connection;
 pub mod engine;
 pub mod error;
@@ -18,6 +19,7 @@ pub mod error;
 #[cfg(target_os = "linux")]
 pub mod engine_uring;
 
+pub use accept::{AcceptDispatcher, create_dispatch_channels};
 pub use connection::Connection;
 pub use engine::WorkerThread;
 pub use error::NetError;

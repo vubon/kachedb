@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use config::ServerConfig;
+use kachedb_net::{AcceptDispatcher, create_dispatch_channels};
 use kachedb_shm::ShmChannel;
 
 fn main() {
@@ -19,10 +20,10 @@ fn main() {
         r#"
   _  __           _          _____  ____  
  | |/ /          | |        |  __ \|  _ \ 
- | ' / __ _  ___ | |__   ___| |  | | |_) |
- |  < / _` |/ __|| '_ \ / _ \ |  | |  _ < 
- | . \ (_| | (__ | | | |  __/ |__| | |_) |
- |_|\_\__,_|\___||_| |_|\___|_____/|____/ 
+ | ' / __ _  ___| |__   ___| |  | | |_) |
+ |  < / _` |/ __| '_ \ / _ \ |  | |  _ < 
+ | . \ (_| | (__| | | |  __/ |__| | |_) |
+ |_|\_\__,_|\___|_| |_|\___|_____/|____/ 
 "#
     );
 
@@ -37,6 +38,7 @@ fn main() {
         config.pool_mb_per_core,
         config.num_workers * config.pool_mb_per_core
     );
+    println!("   └─ Connection Dispatch: Accept-Dispatch (round-robin crossbeam channels)");
     println!(
         "   └─ POSIX SHM IPC:      {}",
         if config.shm_enabled {
@@ -46,7 +48,7 @@ fn main() {
         }
     );
     #[cfg(target_os = "linux")]
-    println!("   └─ I/O Engine:         io_uring + SQPOLL (Linux)");
+    println!("   └─ I/O Engine:         epoll + TCP_NODELAY (Linux)");
     #[cfg(not(target_os = "linux"))]
     println!("   └─ I/O Engine:         mio/kqueue (macOS/BSD)");
     println!();
@@ -58,14 +60,16 @@ fn main() {
     let shutdown_signal = shutdown.clone();
     ctrlc_handler(shutdown_signal);
 
-    let mut handles = Vec::with_capacity(config.num_workers);
+    // Create per-worker crossbeam dispatch channels
+    let (senders, receivers) = create_dispatch_channels(config.num_workers);
 
-    for core_id in 0..config.num_workers {
+    let mut handles = Vec::with_capacity(config.num_workers + 1);
+
+    // Spawn worker threads (accept-dispatch mode)
+    for (core_id, receiver) in receivers.into_iter().enumerate() {
         let shutdown_worker = shutdown.clone();
-        let bind_addr = config.bind_addr;
         let shm_enabled = config.shm_enabled;
         let worker_table = shared_table.clone();
-
         let pool_bytes = config.pool_mb_per_core * 1024 * 1024;
 
         let handle = thread::Builder::new()
@@ -90,11 +94,11 @@ fn main() {
                     None
                 };
 
-                let mut worker = match kachedb_net::WorkerThread::with_shared_table(
+                let mut worker = match kachedb_net::WorkerThread::with_channel(
                     core_id as u16,
-                    bind_addr,
                     pool_bytes,
                     worker_table,
+                    receiver,
                 ) {
                     Ok(w) => w,
                     Err(e) => {
@@ -110,6 +114,20 @@ fn main() {
 
         handles.push(handle);
     }
+
+    // Spawn the accept-dispatcher thread (floating, no CPU pinning)
+    let accept_shutdown = shutdown.clone();
+    let accept_handle = thread::Builder::new()
+        .name("kachedb-accept".to_string())
+        .spawn(move || {
+            let dispatcher = AcceptDispatcher::new(config.bind_addr, senders, accept_shutdown);
+            if let Err(e) = dispatcher.run() {
+                log::error!("AcceptDispatcher: terminated with error: {e}");
+            }
+        })
+        .expect("failed to spawn accept-dispatcher thread");
+
+    handles.push(accept_handle);
 
     println!("🚀 KacheDB is ready to accept Redis & LLM tensor connections!");
 

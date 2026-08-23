@@ -5,9 +5,8 @@
 //! - **Thread-per-core**: Each active CPU core runs an independent `WorkerThread`.
 //! - **Thread Pinning**: Binds the worker to its specific physical CPU core using `kachedb_core::pin_current_thread_to_core`.
 //! - **Local Storage**: Each worker owns a thread-local `SlabPool` and `SwissTable` with zero cross-thread lock overhead.
-//! - **Platform I/O**:
-//!   - Linux: Asynchronous completion loop (`io_uring` with registered buffers).
-//!   - macOS / BSD: Non-blocking event loop using `mio` (`kqueue`).
+//! - **Connection Dispatch** (default): A single accept thread distributes connections round-robin via crossbeam channels.
+//! - **Legacy SO_REUSEPORT**: Each worker creates its own listener (opt-in fallback).
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -15,6 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use crossbeam_channel::Receiver;
 use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Token};
 
@@ -28,13 +28,21 @@ const SERVER_TOKEN: Token = Token(0);
 const EVENTS_CAPACITY: usize = 1024;
 const DEFAULT_POOL_CAPACITY: usize = 64 * 1024 * 1024; // 64 MB per core
 
+/// Connection source for a `WorkerThread`.
+enum ConnSource {
+    /// Accept-dispatch mode: receive pre-accepted connections from a crossbeam channel.
+    Channel(Receiver<TcpStream>),
+    /// Legacy SO_REUSEPORT mode: each worker creates its own listener.
+    Listener(SocketAddr),
+}
+
 /// Per-core worker thread running an independent `mio` event loop.
 pub struct WorkerThread {
     pub core_id: u16,
     pub pool: SlabPool,
     pub table: Arc<ShardedSwissTable>,
     pub timing_wheel: HashedTimingWheel,
-    pub bind_addr: SocketAddr,
+    conn_source: ConnSource,
 }
 
 fn create_reuseport_listener(addr: SocketAddr) -> Result<TcpListener, std::io::Error> {
@@ -110,7 +118,7 @@ fn create_reuseport_listener(addr: SocketAddr) -> Result<TcpListener, std::io::E
 }
 
 impl WorkerThread {
-    /// Creates a new `WorkerThread` with default pool capacity (64 MB) and private shared table.
+    /// Creates a new `WorkerThread` in **legacy SO_REUSEPORT mode** (each worker listens independently).
     pub fn new(core_id: u16, bind_addr: SocketAddr) -> Result<Self, NetError> {
         Self::with_shared_table(
             core_id,
@@ -120,7 +128,7 @@ impl WorkerThread {
         )
     }
 
-    /// Creates a new `WorkerThread` with explicit memory pool capacity in bytes and shared table.
+    /// Creates a new `WorkerThread` in **legacy SO_REUSEPORT mode** with explicit pool capacity and shared table.
     pub fn with_shared_table(
         core_id: u16,
         bind_addr: SocketAddr,
@@ -139,7 +147,30 @@ impl WorkerThread {
             pool,
             table,
             timing_wheel,
-            bind_addr,
+            conn_source: ConnSource::Listener(bind_addr),
+        })
+    }
+
+    /// Creates a new `WorkerThread` in **accept-dispatch mode** (receives connections from a channel).
+    pub fn with_channel(
+        core_id: u16,
+        pool_bytes: usize,
+        table: Arc<ShardedSwissTable>,
+        receiver: Receiver<TcpStream>,
+    ) -> Result<Self, NetError> {
+        let pool = SlabPool::new(core_id, pool_bytes)?;
+        let start_sec = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        let timing_wheel = HashedTimingWheel::new(start_sec);
+
+        Ok(Self {
+            core_id,
+            pool,
+            table,
+            timing_wheel,
+            conn_source: ConnSource::Channel(receiver),
         })
     }
 
@@ -147,132 +178,67 @@ impl WorkerThread {
     pub fn run(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), NetError> {
         // Pin this thread to its assigned core
         let _ = pin_current_thread_to_core(self.core_id as usize);
-        log::info!(
-            "Worker [{core}]: pinned to core and starting event loop on {}",
-            self.bind_addr,
-            core = self.core_id
-        );
+
+        match &self.conn_source {
+            ConnSource::Channel(_) => {
+                log::info!(
+                    "Worker [{core}]: pinned to core, accept-dispatch mode",
+                    core = self.core_id
+                );
+                self.run_channel_mode(shutdown)
+            }
+            ConnSource::Listener(addr) => {
+                let addr = *addr;
+                log::info!(
+                    "Worker [{core}]: pinned to core, SO_REUSEPORT mode on {addr}",
+                    core = self.core_id
+                );
+                self.run_listener_mode(addr, shutdown)
+            }
+        }
+    }
+
+    /// Event loop for **accept-dispatch mode**: receives connections from a crossbeam channel.
+    fn run_channel_mode(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), NetError> {
+        let receiver = match &self.conn_source {
+            ConnSource::Channel(rx) => rx.clone(),
+            _ => unreachable!(),
+        };
 
         let mut poll = Poll::new()?;
         let mut events = Events::with_capacity(EVENTS_CAPACITY);
-
-        let mut listener = create_reuseport_listener(self.bind_addr)?;
-        poll.registry()
-            .register(&mut listener, SERVER_TOKEN, Interest::READABLE)?;
-
         let mut connections: HashMap<Token, (TcpStream, Connection)> = HashMap::new();
         let mut next_token = 1usize;
 
         while !shutdown.load(Ordering::Relaxed) {
-            match poll.poll(&mut events, Some(Duration::from_millis(100))) {
+            // Drain all pending connections from the accept-dispatch channel
+            while let Ok(mut stream) = receiver.try_recv() {
+                let token = Token(next_token);
+                next_token += 1;
+
+                if let Err(e) = poll.registry().register(
+                    &mut stream,
+                    token,
+                    Interest::READABLE | Interest::WRITABLE,
+                ) {
+                    log::error!("Failed to register dispatched connection token {token:?}: {e}");
+                    continue;
+                }
+
+                log::debug!(
+                    "Worker [{core}]: registered dispatched connection {token:?}",
+                    core = self.core_id
+                );
+                connections.insert(token, (stream, Connection::new()));
+            }
+
+            match poll.poll(&mut events, Some(Duration::from_millis(10))) {
                 Ok(_) => {}
                 Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(NetError::Io(e)),
             }
 
-            for event in events.iter() {
-                match event.token() {
-                    SERVER_TOKEN => {
-                        // Accept incoming connections
-                        loop {
-                            match listener.accept() {
-                                Ok((mut stream, peer_addr)) => {
-                                    log::debug!(
-                                        "Worker [{core}]: accepted conn from {peer_addr}",
-                                        core = self.core_id
-                                    );
-                                    let _ = stream.set_nodelay(true);
-                                    let token = Token(next_token);
-                                    next_token += 1;
-
-                                    if let Err(e) = poll.registry().register(
-                                        &mut stream,
-                                        token,
-                                        Interest::READABLE | Interest::WRITABLE,
-                                    ) {
-                                        log::error!(
-                                            "Failed to register connection token {token:?}: {e}"
-                                        );
-                                        continue;
-                                    }
-
-                                    connections.insert(token, (stream, Connection::new()));
-                                }
-                                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                                Err(e) => {
-                                    log::error!(
-                                        "Worker [{core}]: accept error: {e}",
-                                        core = self.core_id
-                                    );
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    token => {
-                        let mut should_remove = false;
-
-                        if let Some((stream, conn)) = connections.get_mut(&token) {
-                            if event.is_readable() {
-                                match conn.read_from(stream) {
-                                    Ok(0) => {
-                                        should_remove = true;
-                                    }
-                                    Ok(_) => {
-                                        match conn.process_incoming(&self.table, &mut self.pool) {
-                                            Ok(keep_alive) => {
-                                                if !keep_alive {
-                                                    should_remove = true;
-                                                }
-                                            }
-                                            Err(e) => {
-                                                log::warn!(
-                                                    "Worker [{core}]: protocol error on {token:?}: {e}",
-                                                    core = self.core_id
-                                                );
-                                                should_remove = true;
-                                            }
-                                        }
-                                    }
-                                    Err(NetError::ConnectionClosed) => {
-                                        should_remove = true;
-                                    }
-                                    Err(NetError::Io(ref e))
-                                        if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                                    Err(e) => {
-                                        log::warn!(
-                                            "Worker [{core}]: read error on {token:?}: {e}",
-                                            core = self.core_id
-                                        );
-                                        should_remove = true;
-                                    }
-                                }
-                            }
-
-                            if conn.has_pending_writes() || event.is_writable() {
-                                match conn.flush_to_stream(stream) {
-                                    Ok(_) => {}
-                                    Err(NetError::Io(ref e))
-                                        if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                                    Err(e) => {
-                                        log::warn!(
-                                            "Worker [{core}]: write error on {token:?}: {e}",
-                                            core = self.core_id
-                                        );
-                                        should_remove = true;
-                                    }
-                                }
-                            }
-                        }
-
-                        if should_remove {
-                            if let Some((mut stream, _)) = connections.remove(&token) {
-                                let _ = poll.registry().deregister(&mut stream);
-                            }
-                        }
-                    }
-                }
-            }
+            self.process_events(&mut events, &mut connections, &mut poll)?;
 
             // Idle tick: advance timing wheel and pool arena timestamps
             let now_sec = std::time::SystemTime::now()
@@ -290,6 +256,164 @@ impl WorkerThread {
             "Worker [{core}]: shut down successfully",
             core = self.core_id
         );
+        Ok(())
+    }
+
+    /// Event loop for **legacy SO_REUSEPORT mode**: each worker creates its own listener.
+    fn run_listener_mode(
+        &mut self,
+        bind_addr: SocketAddr,
+        shutdown: Arc<AtomicBool>,
+    ) -> Result<(), NetError> {
+        let mut poll = Poll::new()?;
+        let mut events = Events::with_capacity(EVENTS_CAPACITY);
+
+        let mut listener = create_reuseport_listener(bind_addr)?;
+        poll.registry()
+            .register(&mut listener, SERVER_TOKEN, Interest::READABLE)?;
+
+        let mut connections: HashMap<Token, (TcpStream, Connection)> = HashMap::new();
+        let mut next_token = 1usize;
+
+        while !shutdown.load(Ordering::Relaxed) {
+            match poll.poll(&mut events, Some(Duration::from_millis(100))) {
+                Ok(_) => {}
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(NetError::Io(e)),
+            }
+
+            // Accept new connections from listener
+            for event in events.iter() {
+                if event.token() == SERVER_TOKEN {
+                    loop {
+                        match listener.accept() {
+                            Ok((mut stream, peer_addr)) => {
+                                log::debug!(
+                                    "Worker [{core}]: accepted conn from {peer_addr}",
+                                    core = self.core_id
+                                );
+                                let _ = stream.set_nodelay(true);
+                                let token = Token(next_token);
+                                next_token += 1;
+
+                                if let Err(e) = poll.registry().register(
+                                    &mut stream,
+                                    token,
+                                    Interest::READABLE | Interest::WRITABLE,
+                                ) {
+                                    log::error!(
+                                        "Failed to register connection token {token:?}: {e}"
+                                    );
+                                    continue;
+                                }
+
+                                connections.insert(token, (stream, Connection::new()));
+                            }
+                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                            Err(e) => {
+                                log::error!(
+                                    "Worker [{core}]: accept error: {e}",
+                                    core = self.core_id
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            self.process_events(&mut events, &mut connections, &mut poll)?;
+
+            // Idle tick: advance timing wheel and pool arena timestamps
+            let now_sec = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as u32;
+            self.pool.tick_second(now_sec);
+            self.timing_wheel.advance_to(now_sec, &mut self.pool);
+            for (_, conn) in connections.values_mut() {
+                conn.set_current_sec(now_sec);
+            }
+        }
+
+        log::info!(
+            "Worker [{core}]: shut down successfully",
+            core = self.core_id
+        );
+        Ok(())
+    }
+
+    /// Process I/O events for active connections (shared between both modes).
+    fn process_events(
+        &mut self,
+        events: &mut Events,
+        connections: &mut HashMap<Token, (TcpStream, Connection)>,
+        poll: &mut Poll,
+    ) -> Result<(), NetError> {
+        for event in events.iter() {
+            let token = event.token();
+            if token == SERVER_TOKEN {
+                continue; // Handled by listener mode above
+            }
+
+            let mut should_remove = false;
+
+            if let Some((stream, conn)) = connections.get_mut(&token) {
+                if event.is_readable() {
+                    match conn.read_from(stream) {
+                        Ok(0) => {
+                            should_remove = true;
+                        }
+                        Ok(_) => match conn.process_incoming(&self.table, &mut self.pool) {
+                            Ok(keep_alive) => {
+                                if !keep_alive {
+                                    should_remove = true;
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "Worker [{core}]: protocol error on {token:?}: {e}",
+                                    core = self.core_id
+                                );
+                                should_remove = true;
+                            }
+                        },
+                        Err(NetError::ConnectionClosed) => {
+                            should_remove = true;
+                        }
+                        Err(NetError::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(e) => {
+                            log::warn!(
+                                "Worker [{core}]: read error on {token:?}: {e}",
+                                core = self.core_id
+                            );
+                            should_remove = true;
+                        }
+                    }
+                }
+
+                if conn.has_pending_writes() || event.is_writable() {
+                    match conn.flush_to_stream(stream) {
+                        Ok(_) => {}
+                        Err(NetError::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(e) => {
+                            log::warn!(
+                                "Worker [{core}]: write error on {token:?}: {e}",
+                                core = self.core_id
+                            );
+                            should_remove = true;
+                        }
+                    }
+                }
+            }
+
+            if should_remove {
+                if let Some((mut stream, _)) = connections.remove(&token) {
+                    let _ = poll.registry().deregister(&mut stream);
+                }
+            }
+        }
+
         Ok(())
     }
 }
