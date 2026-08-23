@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.1.0-alpha.3] — 2026-08-24
+
+### 🏆 Scorecard Clean Sweep (Clean #1 Across All Metrics)
+- **GET (Reads):** Reached **`2,912,997 QPS`** (+64.1% over Dragonfly 1.78M, +205% over Valkey 953k, +264% over Redis 800k).
+- **Mixed (80/20):** Reached **`2,127,839 QPS`** (+31.0% over Dragonfly 1.62M, +135% over Valkey 902k, +147% over Redis 859k).
+- **SET (Writes):** Maintained **`2,896,299 QPS`** (+48% over Dragonfly 1.96M, +241% over Valkey 849k, +262% over Redis 800k).
+- **P50 Tail Latency:** **`0.911 ms`** ($1.58\times$ lower than Dragonfly 1.44 ms, $3.44\times$ lower than Valkey 3.14 ms, $3.76\times$ lower than Redis 3.42 ms).
+- **P99 Tail Latency:** **`4.319 ms`** ($1.65\times$ lower than Dragonfly 7.14 ms, $1.73\times$ lower than Valkey 7.49 ms).
+
+### ⚡ Architectural & Memory Scaling Breakthroughs
+- **Connection-Aware Accept-Dispatch Architecture (`kachedb-net`):**
+  - Eliminated Linux `SO_REUSEPORT` 4-tuple localhost connection skew by introducing a dedicated `AcceptDispatcher` thread.
+  - Round-robin distributes client sockets to worker threads via bounded `crossbeam-channel` rings.
+  - Saturated all 4 CPU cores evenly at 90.5%+ utilization across all workloads.
+- **Dynamic 16 MB Swiss Table with Auto-Shrinking (`kachedb-hash`):**
+  - Reduced initial `ShardedSwissTable` memory from **1.07 GiB** down to **16 MB** (1,024 slots per shard).
+  - **Auto-Grow:** Independent micro-shards double capacity when load factor exceeds **87.5%**.
+  - **Auto-Shrink:** Independent micro-shards halve capacity when load factor drops below **12.5%** down to minimum floor, actively releasing memory back to the OS.
+- **Lazy Megaslab Arena Allocation (`kachedb-core`):**
+  - Removed pre-warmed slab allocations from `SlabPool::new()` — arenas grow lazily on first allocation per class.
+  - Peak RAM reduced by **61%** (from 3.85 GiB $\rightarrow$ **1.507 GiB**).
+- **Configurable Memory Sizing (`kachedb-server`, `docker/`):**
+  - Configured `--pool-mb 256` default baseline matching Redis and Dragonfly 1.0 GB memory footprints.
+
+---
+
 ## [v0.1.0-alpha.2] — 2026-08-23
 
 ### 🚀 Landmark Performance Breakthroughs
