@@ -23,6 +23,44 @@
       <feGaussianBlur stdDeviation="6" result="blur" />
       <feComposite in="SourceGraphic" in2="blur" operator="over" />
     </filter>
+
+    <style>
+      .brand-title {
+        fill: #0F172A;
+      }
+      .brand-db {
+        fill: #0284C7;
+      }
+      .brand-subtitle {
+        fill: #475569;
+      }
+      .badge-bg {
+        fill: #0F172A;
+        stroke: #CBD5E1;
+      }
+      .badge-text {
+        fill: #F8FAFC;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        .brand-title {
+          fill: #F8FAFC;
+        }
+        .brand-db {
+          fill: #38BDF8;
+        }
+        .brand-subtitle {
+          fill: #94A3B8;
+        }
+        .badge-bg {
+          fill: #1E293B;
+          stroke: #334155;
+        }
+        .badge-text {
+          fill: #E2E8F0;
+        }
+      }
+    </style>
   </defs>
 
   <!-- ==================== LOGO ICON (Stylized 'K') ==================== -->
@@ -63,18 +101,18 @@
   <!-- ==================== LOGO TEXT & TYPOGRAPHY ==================== -->
   <!-- Wordmark: KacheDB -->
   <text x="240" y="112" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'JetBrains Mono', sans-serif" font-weight="800" font-size="64" letter-spacing="-1.5">
-    <tspan fill="#F8FAFC">Kache</tspan><tspan fill="#38BDF8">DB</tspan>
+    <tspan class="brand-title">Kache</tspan><tspan class="brand-db">DB</tspan>
   </text>
 
   <!-- High-Tech Descriptor / Subtitle -->
-  <text x="245" y="148" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'JetBrains Mono', sans-serif" font-weight="500" font-size="14" fill="#94A3B8" letter-spacing="2.5">
+  <text x="245" y="148" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'JetBrains Mono', sans-serif" font-weight="600" font-size="14" class="brand-subtitle" letter-spacing="2.5">
     ZERO-COPY IN-MEMORY CACHE &amp; LLM KV-ENGINE
   </text>
 
   <!-- Status / Engine Badge -->
   <g transform="translate(680, 80)">
-    <rect width="90" height="26" rx="13" fill="#1E293B" stroke="#334155" stroke-width="1"/>
+    <rect width="90" height="26" rx="13" class="badge-bg" stroke-width="1"/>
     <circle cx="14" cy="13" r="4" fill="#10B981"/>
-    <text x="26" y="17" font-family="sans-serif" font-size="11" font-weight="700" fill="#E2E8F0" letter-spacing="0.8">RUST</text>
+    <text x="26" y="17" font-family="sans-serif" font-size="11" font-weight="700" class="badge-text" letter-spacing="0.8">RUST</text>
   </g>
 </svg>

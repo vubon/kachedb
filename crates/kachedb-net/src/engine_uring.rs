@@ -91,27 +91,21 @@ fn make_accept(
     addr: *mut libc::sockaddr,
     addrlen: *mut libc::socklen_t,
 ) -> squeue::Entry {
-    unsafe {
-        opcode::Accept::new(types::Fd(listen_fd), addr as *mut _, addrlen)
-            .build()
-            .user_data(ud(0, OP_ACCEPT))
-    }
+    opcode::Accept::new(types::Fd(listen_fd), addr as *mut _, addrlen)
+        .build()
+        .user_data(ud(0, OP_ACCEPT))
 }
 
 fn make_recv(token: u32, fd: RawFd, buf_ptr: *mut u8, buf_len: usize) -> squeue::Entry {
-    unsafe {
-        opcode::Recv::new(types::Fd(fd), buf_ptr, buf_len as u32)
-            .build()
-            .user_data(ud(token, OP_RECV))
-    }
+    opcode::Recv::new(types::Fd(fd), buf_ptr, buf_len as u32)
+        .build()
+        .user_data(ud(token, OP_RECV))
 }
 
 fn make_send(token: u32, fd: RawFd, buf_ptr: *const u8, buf_len: usize) -> squeue::Entry {
-    unsafe {
-        opcode::Send::new(types::Fd(fd), buf_ptr, buf_len as u32)
-            .build()
-            .user_data(ud(token, OP_SEND))
-    }
+    opcode::Send::new(types::Fd(fd), buf_ptr, buf_len as u32)
+        .build()
+        .user_data(ud(token, OP_SEND))
 }
 
 fn make_close(token: u32, fd: RawFd) -> squeue::Entry {

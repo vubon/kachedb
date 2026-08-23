@@ -1,4 +1,4 @@
-#![allow(clippy::collapsible_if)]
+#![allow(clippy::collapsible_if, clippy::manual_is_multiple_of)]
 
 //! `kachedb-net` — High-performance asynchronous TCP engine with thread-per-core event loops.
 //!
