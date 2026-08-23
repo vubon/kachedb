@@ -30,7 +30,7 @@
 
 | Feature / Metric | Redis 8 | Valkey 9 | DragonflyDB | **KacheDB v0.1** |
 | :--- | :---: | :---: | :---: | :---: |
-| **Language** | C | C | C++ | **Rust 2024** 🦀 |
+| **Language** | C | C | C++ | **Rust** 🦀 |
 | **Memory Architecture** | `jemalloc` / Heap | `jemalloc` / Heap | Custom Slab | **2 MB Megaslab (Bump + Free-list)** |
 | **Hot-Path Alloc Overhead** | 20–50 ns | 20–50 ns | 10–25 ns | **3.84 ns ($\mathcal{O}(1)$)** |
 | **Hash Indexing** | Dict / Chained Hash | Dict / Chained Hash | `dashtable` | **AVX-512 / NEON Swiss Table** |
