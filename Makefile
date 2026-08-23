@@ -41,6 +41,9 @@ benchmark-reproduce:
 	docker exec docker-kachedb-1 kachedb-bench -p 6379 -n 100000 -c 50 --pipeline 16 --command GET
 	docker compose -f docker/docker-compose.yml down
 
+benchmark-compare:
+	./docker/run_benchmark.sh
+
 python-test:
 	PYTHONPATH=bindings/python python3 bindings/python/tests/test_client.py
 

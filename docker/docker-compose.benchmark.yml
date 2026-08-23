@@ -1,0 +1,81 @@
+# ==============================================================================
+# KacheDB vs Redis vs Valkey vs DragonflyDB: Standardized Benchmark Profiles
+# ==============================================================================
+# All engines are configured with IDENTICAL CPU (4 cores) and RAM (4 GB) limits.
+# DO NOT run all services at once! Run them SEQUENTIALLY using run_benchmark.sh.
+# ==============================================================================
+
+services:
+  kachedb:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: kachedb-bench-target
+    image: kachedb:benchmark
+    cpus: 4.0
+    mem_limit: 4g
+    ipc: host
+    privileged: true
+    ports:
+      - "6379:6379"
+    command: ["kachedb-server", "--port", "6379", "--bind", "0.0.0.0:6379", "-w", "4", "--pool-mb", "64"]
+    restart: "no"
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: redis-bench-target
+    cpus: 4.0
+    mem_limit: 4g
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --bind 0.0.0.0
+      --port 6379
+      --io-threads 4
+      --io-threads-do-reads yes
+      --save ""
+      --appendonly no
+      --protected-mode no
+      --maxmemory 3gb
+      --maxmemory-policy allkeys-lru
+    restart: "no"
+
+  valkey:
+    image: valkey/valkey:8.0-alpine
+    container_name: valkey-bench-target
+    cpus: 4.0
+    mem_limit: 4g
+    ports:
+      - "6379:6379"
+    command: >
+      valkey-server
+      --bind 0.0.0.0
+      --port 6379
+      --io-threads 4
+      --io-threads-do-reads yes
+      --save ""
+      --appendonly no
+      --protected-mode no
+      --maxmemory 3gb
+      --maxmemory-policy allkeys-lru
+    restart: "no"
+
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    container_name: dragonfly-bench-target
+    cpus: 4.0
+    mem_limit: 4g
+    ulimits:
+      memlock: -1
+    ports:
+      - "6379:6379"
+    command: >
+      dragonfly
+      --bind 0.0.0.0
+      --port 6379
+      --proactor_threads=4
+      --cache_mode=true
+      --dbfilename ""
+      --maxmemory=3gb
+    restart: "no"
