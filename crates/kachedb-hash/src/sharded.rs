@@ -99,7 +99,7 @@ impl ShardedSwissTable {
     pub fn remove(&self, hash: u64) -> Option<TableEntry> {
         let idx = Self::shard_idx(hash);
         let mut shard = self.shards[idx].write();
-        shard.remove(hash).map(|e| e.to_snapshot())
+        shard.remove(hash)
     }
 
     /// Returns the total count of live entries across all 256 shards.

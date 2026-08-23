@@ -31,7 +31,7 @@ use std::hash::{Hash, Hasher};
 
 use kachedb_core::SlabBlockId;
 
-use crate::entry::HashEntry;
+use crate::entry::{HashEntry, TableEntry};
 
 // ─── Control byte sentinels ───────────────────────────────────────────────────
 
@@ -144,8 +144,8 @@ impl<'a> Group<'a> {
 pub struct SwissTable {
     /// One control byte per slot.
     ctrl: Vec<u8>,
-    /// Slot entries (None = unoccupied).
-    entries: Vec<Option<Box<HashEntry>>>,
+    /// Flat contiguous slot entries (zero heap allocation on insert).
+    entries: Vec<HashEntry>,
     /// Number of occupied (non-deleted) slots.
     count: usize,
     /// Allocated slot count (always a power of two).
@@ -163,7 +163,7 @@ impl SwissTable {
         let capacity = min_capacity.next_power_of_two().max(GROUP_SIZE);
         Self {
             ctrl: vec![CTRL_EMPTY; capacity],
-            entries: (0..capacity).map(|_| None).collect(),
+            entries: (0..capacity).map(|_| HashEntry::default()).collect(),
             count: 0,
             capacity,
             compact_cursor: 0,
@@ -213,16 +213,16 @@ impl SwissTable {
 
             // Check for an existing entry with the same hash (update path).
             for idx in group.match_byte(fingerprint) {
-                if let Some(entry) = &self.entries[idx] {
-                    if entry.matches(key_hash) {
-                        let old_block_id = entry.slab_block_id;
-                        // Update in place.
-                        self.entries[idx] = Some(Box::new(HashEntry::with_ttl(
+                if self.ctrl[idx] != CTRL_EMPTY && self.ctrl[idx] != CTRL_DELETED {
+                    if self.entries[idx].matches(key_hash) {
+                        let old_block_id = self.entries[idx].slab_block_id;
+                        // Update in place without heap allocation.
+                        self.entries[idx] = HashEntry::with_ttl(
                             key_hash,
                             slab_block_id,
                             value_len,
                             expire_at_secs,
-                        )));
+                        );
                         return Ok(Some(old_block_id)); // updated
                     }
                 }
@@ -232,12 +232,12 @@ impl SwissTable {
             if group.has_empty() {
                 let slot = group.first_available().ok_or(())?;
                 self.ctrl[slot] = fingerprint;
-                self.entries[slot] = Some(Box::new(HashEntry::with_ttl(
+                self.entries[slot] = HashEntry::with_ttl(
                     key_hash,
                     slab_block_id,
                     value_len,
                     expire_at_secs,
-                )));
+                );
                 self.count += 1;
                 return Ok(None); // inserted new
             }
@@ -267,7 +267,8 @@ impl SwissTable {
             let group = Group::new(&self.ctrl, pos, self.capacity);
 
             for idx in group.match_byte(fingerprint) {
-                if let Some(entry) = &self.entries[idx] {
+                if self.ctrl[idx] != CTRL_EMPTY && self.ctrl[idx] != CTRL_DELETED {
+                    let entry = &self.entries[idx];
                     if entry.matches(key_hash) {
                         if now_secs != 0 && entry.is_expired(now_secs) {
                             return None; // expired
@@ -290,7 +291,7 @@ impl SwissTable {
     ///
     /// Leaves a `CTRL_DELETED` tombstone so in-progress probe sequences
     /// are not interrupted (deleted entries are compacted during resize).
-    pub fn remove(&mut self, key_hash: u64) -> Option<Box<HashEntry>> {
+    pub fn remove(&mut self, key_hash: u64) -> Option<TableEntry> {
         let fingerprint = h2(key_hash);
         let mut pos = h1(key_hash, self.capacity);
 
@@ -307,11 +308,11 @@ impl SwissTable {
             };
 
             for idx in matches {
-                if let Some(entry) = &self.entries[idx] {
-                    if entry.matches(key_hash) {
+                if self.ctrl[idx] != CTRL_EMPTY && self.ctrl[idx] != CTRL_DELETED {
+                    if self.entries[idx].matches(key_hash) {
                         self.ctrl[idx] = CTRL_DELETED;
                         self.count -= 1;
-                        return self.entries[idx].take();
+                        return Some(self.entries[idx].to_snapshot());
                     }
                 }
             }
@@ -359,24 +360,22 @@ impl SwissTable {
         );
 
         let mut new_ctrl = vec![CTRL_EMPTY; new_capacity];
-        let mut new_entries: Vec<Option<Box<HashEntry>>> =
-            (0..new_capacity).map(|_| None).collect();
+        let mut new_entries: Vec<HashEntry> =
+            (0..new_capacity).map(|_| HashEntry::default()).collect();
 
-        for (idx, entry) in self.entries.iter_mut().enumerate() {
+        for (idx, entry) in self.entries.drain(..).enumerate() {
             if self.ctrl[idx] != CTRL_EMPTY && self.ctrl[idx] != CTRL_DELETED {
-                if let Some(e) = entry.take() {
-                    let hash = e.key_hash;
-                    let fp = h2(hash);
-                    let mut pos = h1(hash, new_capacity);
-                    loop {
-                        let group = Group::new(&new_ctrl, pos, new_capacity);
-                        if let Some(slot) = group.first_available() {
-                            new_ctrl[slot] = fp;
-                            new_entries[slot] = Some(e);
-                            break;
-                        }
-                        pos = (pos + GROUP_SIZE) % new_capacity;
+                let hash = entry.key_hash;
+                let fp = h2(hash);
+                let mut pos = h1(hash, new_capacity);
+                loop {
+                    let group = Group::new(&new_ctrl, pos, new_capacity);
+                    if let Some(slot) = group.first_available() {
+                        new_ctrl[slot] = fp;
+                        new_entries[slot] = entry;
+                        break;
                     }
+                    pos = (pos + GROUP_SIZE) % new_capacity;
                 }
             }
         }
@@ -417,7 +416,7 @@ impl SwissTable {
                 // Move the candidate entry into the tombstone slot.
                 let fingerprint = self.ctrl[backshift_idx];
                 self.ctrl[idx] = fingerprint;
-                self.entries[idx] = self.entries[backshift_idx].take();
+                self.entries.swap(idx, backshift_idx);
                 self.ctrl[backshift_idx] = CTRL_DELETED;
                 reclaimed += 1;
             } else if self.probe_chain_clear_after(idx) {
@@ -455,15 +454,14 @@ impl SwissTable {
             }
 
             // Found a live entry: check if its natural home is at or before tombstone_idx.
-            if let Some(entry) = &self.entries[candidate] {
-                let natural_home = h1(entry.key_hash, self.capacity);
-                // If the entry's natural slot is <= tombstone position (in ring distance),
-                // it can be moved back safely.
-                if ring_distance(natural_home, candidate, self.capacity)
-                    > ring_distance(natural_home, tombstone_idx, self.capacity)
-                {
-                    return Some(candidate);
-                }
+            let entry = &self.entries[candidate];
+            let natural_home = h1(entry.key_hash, self.capacity);
+            // If the entry's natural slot is <= tombstone position (in ring distance),
+            // it can be moved back safely.
+            if ring_distance(natural_home, candidate, self.capacity)
+                > ring_distance(natural_home, tombstone_idx, self.capacity)
+            {
+                return Some(candidate);
             }
         }
         None

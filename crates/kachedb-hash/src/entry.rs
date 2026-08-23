@@ -62,6 +62,20 @@ const _: () = assert!(
     "HashEntry must be exactly 64 bytes"
 );
 
+impl Default for HashEntry {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            key_hash: 0,
+            slab_block_id: SlabBlockId(0),
+            value_len: 0,
+            expire_at_secs: 0,
+            access_flags: AtomicU8::new(0),
+            _pad: [0u8; 43],
+        }
+    }
+}
+
 impl HashEntry {
     /// Constructs a new persistent `HashEntry` (no TTL) from a key hash and slab descriptor.
     #[inline]
