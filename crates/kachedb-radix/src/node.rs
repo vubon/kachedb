@@ -126,8 +126,7 @@ impl RadixNode {
     /// - Has no active children (`child_count == 0`).
     #[inline(always)]
     pub fn is_evictable(&self) -> bool {
-        self.ref_count.load(Ordering::Acquire) == 0
-            && self.child_count.load(Ordering::Acquire) == 0
+        self.ref_count.load(Ordering::Acquire) == 0 && self.child_count.load(Ordering::Acquire) == 0
     }
 
     /// Updates the last-access timestamp for LRU tie-breaking.
@@ -153,7 +152,9 @@ impl RadixNode {
     /// Returns the new `ref_count` value (0 means eviction is now eligible).
     #[inline(always)]
     pub fn unpin(&self) -> u32 {
-        self.ref_count.fetch_sub(1, Ordering::AcqRel).saturating_sub(1)
+        self.ref_count
+            .fetch_sub(1, Ordering::AcqRel)
+            .saturating_sub(1)
     }
 
     /// Returns the first token of this node's edge label.

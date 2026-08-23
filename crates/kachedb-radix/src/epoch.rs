@@ -184,16 +184,18 @@ mod tests {
         let shared = Arc::clone(&epoch_tree);
 
         // Spawn 8 reader threads
-        let readers: Vec<_> = (0..8).map(|_| {
-            let tree = Arc::clone(&shared);
-            thread::spawn(move || {
-                for _ in 0..1000 {
-                    let guard = tree.read();
-                    let _ = guard.node_count();
-                    drop(guard);
-                }
+        let readers: Vec<_> = (0..8)
+            .map(|_| {
+                let tree = Arc::clone(&shared);
+                thread::spawn(move || {
+                    for _ in 0..1000 {
+                        let guard = tree.read();
+                        let _ = guard.node_count();
+                        drop(guard);
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         // Writer installs 10 new versions while readers are running
         for _ in 0..10 {
@@ -236,7 +238,9 @@ mod tests {
 
         // Writer: clone, insert, install
         let mut new_tree = epoch_tree.read().as_ref().clone();
-        new_tree.insert(&tokens, &[SlabBlockId(42)]).expect("insert should succeed");
+        new_tree
+            .insert(&tokens, &[SlabBlockId(42)])
+            .expect("insert should succeed");
         epoch_tree.install_new_version(new_tree);
 
         // Reader: new snapshot has the inserted node

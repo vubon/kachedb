@@ -1,3 +1,5 @@
+#![allow(clippy::result_unit_err, clippy::collapsible_if)]
+
 //! `kachedb-hash` — Swiss Table (open-addressed, SIMD-probed) hash index.
 //!
 //! # Swiss Table Design (Google Abseil / Rust hashbrown)
@@ -82,14 +84,22 @@ struct Group<'a> {
 
 impl<'a> Group<'a> {
     fn new(ctrl: &'a [u8], start: usize, cap: usize) -> Self {
-        Self { ctrl, base: start, cap }
+        Self {
+            ctrl,
+            base: start,
+            cap,
+        }
     }
 
     /// Yields indices of slots matching `fingerprint`.
     fn match_byte(&self, fingerprint: u8) -> impl Iterator<Item = usize> + '_ {
         (0..GROUP_SIZE).filter_map(move |i| {
             let idx = (self.base + i) % self.cap;
-            if self.ctrl[idx] == fingerprint { Some(idx) } else { None }
+            if self.ctrl[idx] == fingerprint {
+                Some(idx)
+            } else {
+                None
+            }
         })
     }
 
@@ -341,7 +351,10 @@ impl SwissTable {
     /// Doubles the capacity and rehashes all live entries.
     fn resize(&mut self, new_capacity: usize) {
         let new_capacity = new_capacity.next_power_of_two().max(GROUP_SIZE);
-        log::debug!("SwissTable: resizing {old} → {new_capacity}", old = self.capacity);
+        log::debug!(
+            "SwissTable: resizing {old} → {new_capacity}",
+            old = self.capacity
+        );
 
         let mut new_ctrl = vec![CTRL_EMPTY; new_capacity];
         let mut new_entries: Vec<Option<Box<HashEntry>>> =
@@ -460,9 +473,9 @@ impl SwissTable {
         for i in 1..=GROUP_SIZE {
             let next = (idx + i) % self.capacity;
             match self.ctrl[next] {
-                CTRL_EMPTY => return true,  // clean break
-                CTRL_DELETED => continue,   // another tombstone, keep checking
-                _ => return false,          // live entry depends on this tombstone
+                CTRL_EMPTY => return true, // clean break
+                CTRL_DELETED => continue,  // another tombstone, keep checking
+                _ => return false,         // live entry depends on this tombstone
             }
         }
         false
@@ -472,7 +485,11 @@ impl SwissTable {
 /// Ring-buffer distance from `from` to `to` in a table of `capacity` slots.
 #[inline(always)]
 fn ring_distance(from: usize, to: usize, capacity: usize) -> usize {
-    if to >= from { to - from } else { capacity - from + to }
+    if to >= from {
+        to - from
+    } else {
+        capacity - from + to
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -528,7 +545,8 @@ mod tests {
     fn insert_many_triggers_resize() {
         let mut t = SwissTable::with_capacity(8);
         for i in 0u64..100 {
-            t.insert(hash_key(&i.to_le_bytes()), make_id(i as u32), 0).unwrap();
+            t.insert(hash_key(&i.to_le_bytes()), make_id(i as u32), 0)
+                .unwrap();
         }
         assert_eq!(t.len(), 100);
         for i in 0u64..100 {
@@ -583,7 +601,10 @@ mod tests {
 
         let after = t.tombstone_count();
         // Tombstone count must not increase
-        assert!(after <= before, "tombstones should not increase after compaction");
+        assert!(
+            after <= before,
+            "tombstones should not increase after compaction"
+        );
 
         // All live entries must still be found
         for &h in &hashes[40..] {
@@ -591,7 +612,10 @@ mod tests {
         }
         // All deleted entries must still be absent
         for &h in &hashes[..40] {
-            assert!(t.lookup(h).is_none(), "deleted entry reappeared after compaction");
+            assert!(
+                t.lookup(h).is_none(),
+                "deleted entry reappeared after compaction"
+            );
         }
     }
 

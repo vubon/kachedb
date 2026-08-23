@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Community Discussions & Questions
+    url: https://github.com/vubon/kachedb/discussions
+    about: Ask questions, discuss architectures, share benchmark results, and interact with the community.
+  - name: 🔒 Security Vulnerability Reporting
+    url: https://github.com/vubon/kachedb/security/advisories/new
+    about: Privately report a security vulnerability according to SECURITY.md.

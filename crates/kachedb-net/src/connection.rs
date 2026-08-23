@@ -151,9 +151,8 @@ impl Connection {
                 let h = hash_key(key);
                 if let Some(entry) = table.lookup_checked(h, now_sec) {
                     if let Ok(ptr) = unsafe { pool.slot_ptr(entry.slab_block_id) } {
-                        let val_slice = unsafe {
-                            std::slice::from_raw_parts(ptr, entry.value_len as usize)
-                        };
+                        let val_slice =
+                            unsafe { std::slice::from_raw_parts(ptr, entry.value_len as usize) };
                         encode_bulk_string(write_buf, val_slice);
                     } else {
                         encode_null(write_buf);
@@ -171,11 +170,7 @@ impl Connection {
 
                         // Copy raw payload into slab slot (cache-line aligned destination)
                         unsafe {
-                            std::ptr::copy_nonoverlapping(
-                                value.as_ptr(),
-                                slot_ptr,
-                                val_len,
-                            );
+                            std::ptr::copy_nonoverlapping(value.as_ptr(), slot_ptr, val_len);
                         }
 
                         let expire_at_secs = ttl_ms
@@ -243,10 +238,7 @@ impl Connection {
             }
             Command::Unknown { name } => {
                 let name_str = std::str::from_utf8(name).unwrap_or("unknown");
-                encode_error(
-                    write_buf,
-                    &format!("ERR unknown command '{name_str}'"),
-                );
+                encode_error(write_buf, &format!("ERR unknown command '{name_str}'"));
             }
         }
 
@@ -353,7 +345,13 @@ mod tests {
         let mut pool = SlabPool::new(0, 16 * 1024 * 1024).unwrap();
 
         // 1. PING
-        Connection::execute_command(Command::Ping { message: None }, &mut conn.write_buf, &mut table, &mut pool).unwrap();
+        Connection::execute_command(
+            Command::Ping { message: None },
+            &mut conn.write_buf,
+            &mut table,
+            &mut pool,
+        )
+        .unwrap();
         assert_eq!(conn.write_buf, b"+PONG\r\n");
         conn.write_buf.clear();
 
@@ -367,31 +365,56 @@ mod tests {
             &mut conn.write_buf,
             &mut table,
             &mut pool,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(conn.write_buf, b"+OK\r\n");
         conn.write_buf.clear();
 
         // 3. GET key1
-        Connection::execute_command(Command::Get { key: b"key1" }, &mut conn.write_buf, &mut table, &mut pool).unwrap();
+        Connection::execute_command(
+            Command::Get { key: b"key1" },
+            &mut conn.write_buf,
+            &mut table,
+            &mut pool,
+        )
+        .unwrap();
         assert_eq!(conn.write_buf, b"$11\r\nhello_world\r\n");
         conn.write_buf.clear();
 
         // 4. EXISTS key1
         let mut keys = smallvec::SmallVec::new();
         keys.push(&b"key1"[..]);
-        Connection::execute_command(Command::Exists { keys }, &mut conn.write_buf, &mut table, &mut pool).unwrap();
+        Connection::execute_command(
+            Command::Exists { keys },
+            &mut conn.write_buf,
+            &mut table,
+            &mut pool,
+        )
+        .unwrap();
         assert_eq!(conn.write_buf, b":1\r\n");
         conn.write_buf.clear();
 
         // 5. DEL key1
         let mut del_keys = smallvec::SmallVec::new();
         del_keys.push(&b"key1"[..]);
-        Connection::execute_command(Command::Del { keys: del_keys }, &mut conn.write_buf, &mut table, &mut pool).unwrap();
+        Connection::execute_command(
+            Command::Del { keys: del_keys },
+            &mut conn.write_buf,
+            &mut table,
+            &mut pool,
+        )
+        .unwrap();
         assert_eq!(conn.write_buf, b":1\r\n");
         conn.write_buf.clear();
 
         // 6. GET key1 (now deleted -> null)
-        Connection::execute_command(Command::Get { key: b"key1" }, &mut conn.write_buf, &mut table, &mut pool).unwrap();
+        Connection::execute_command(
+            Command::Get { key: b"key1" },
+            &mut conn.write_buf,
+            &mut table,
+            &mut pool,
+        )
+        .unwrap();
         assert_eq!(conn.write_buf, b"$-1\r\n");
     }
 
@@ -412,7 +435,8 @@ mod tests {
             &mut table,
             &mut pool,
             1000,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(conn.write_buf, b"+OK\r\n");
         conn.write_buf.clear();
 
@@ -423,7 +447,8 @@ mod tests {
             &mut table,
             &mut pool,
             1005,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(conn.write_buf, b"$4\r\ntemp\r\n");
         conn.write_buf.clear();
 
@@ -436,7 +461,8 @@ mod tests {
             &mut table,
             &mut pool,
             1005,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(conn.write_buf, b":1\r\n");
         conn.write_buf.clear();
 
@@ -447,7 +473,8 @@ mod tests {
             &mut table,
             &mut pool,
             1011,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(conn.write_buf, b"$-1\r\n");
         conn.write_buf.clear();
 
@@ -460,7 +487,8 @@ mod tests {
             &mut table,
             &mut pool,
             1011,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(conn.write_buf, b":0\r\n");
     }
 }

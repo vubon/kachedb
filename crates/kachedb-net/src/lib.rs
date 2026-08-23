@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if)]
+
 //! `kachedb-net` — High-performance asynchronous TCP engine with thread-per-core event loops.
 //!
 //! Exposes a Redis/Valkey wire-compatible TCP server engine executing zero-copy

@@ -2,14 +2,14 @@
 
 mod config;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use config::ServerConfig;
-use kachedb_net::WorkerThread;
 #[cfg(target_os = "linux")]
 use kachedb_net::UringWorkerThread;
+use kachedb_net::WorkerThread;
 use kachedb_shm::ShmChannel;
 
 fn main() {
@@ -31,7 +31,10 @@ fn main() {
 
     println!("⚡ KacheDB Daemon v0.1.0 starting...");
     println!("   └─ TCP Listener:       {}", config.bind_addr);
-    println!("   └─ Worker Threads:     {} cores (Thread-Per-Core topology)", config.num_workers);
+    println!(
+        "   └─ Worker Threads:     {} cores (Thread-Per-Core topology)",
+        config.num_workers
+    );
     println!(
         "   └─ Memory Pool:        {} MB/core (Total: {} MB)",
         config.pool_mb_per_core,
@@ -39,7 +42,11 @@ fn main() {
     );
     println!(
         "   └─ POSIX SHM IPC:      {}",
-        if config.shm_enabled { "Enabled (/dev/shm)" } else { "Disabled" }
+        if config.shm_enabled {
+            "Enabled (/dev/shm)"
+        } else {
+            "Disabled"
+        }
     );
     #[cfg(target_os = "linux")]
     println!("   └─ I/O Engine:         io_uring + SQPOLL (Linux)");
@@ -72,7 +79,9 @@ fn main() {
                             Some(ch)
                         }
                         Err(e) => {
-                            log::warn!("Worker [{core_id}]: failed to create SHM region '{shm_name}': {e}");
+                            log::warn!(
+                                "Worker [{core_id}]: failed to create SHM region '{shm_name}': {e}"
+                            );
                             None
                         }
                     }
@@ -85,7 +94,9 @@ fn main() {
                     let mut worker = match UringWorkerThread::new(core_id as u16, bind_addr) {
                         Ok(w) => w,
                         Err(e) => {
-                            log::error!("Worker [{core_id}]: failed to initialize io_uring worker: {e}");
+                            log::error!(
+                                "Worker [{core_id}]: failed to initialize io_uring worker: {e}"
+                            );
                             return;
                         }
                     };

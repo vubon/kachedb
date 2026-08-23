@@ -23,7 +23,8 @@ fn make_id(n: u32) -> SlabBlockId {
 fn build_table(n: usize) -> SwissTable {
     let mut t = SwissTable::with_capacity(n * 2);
     for i in 0..n as u64 {
-        t.insert(hash_key(&i.to_le_bytes()), make_id(i as u32), 128).unwrap();
+        t.insert(hash_key(&i.to_le_bytes()), make_id(i as u32), 128)
+            .unwrap();
     }
     t
 }
@@ -36,8 +37,12 @@ fn bench_insert_1m_sequential(c: &mut Criterion) {
             || SwissTable::with_capacity(1 << 21), // 2M slots pre-allocated
             |mut t| {
                 for i in 0u64..1_000_000 {
-                    t.insert(black_box(hash_key(&i.to_le_bytes())), make_id(i as u32), 128)
-                        .unwrap();
+                    t.insert(
+                        black_box(hash_key(&i.to_le_bytes())),
+                        make_id(i as u32),
+                        128,
+                    )
+                    .unwrap();
                 }
                 t
             },
@@ -50,9 +55,7 @@ fn bench_lookup_hit(c: &mut Criterion) {
     let table = build_table(1_000_000);
     let probe_hash = hash_key(&42u64.to_le_bytes());
     c.bench_function("swiss_table::lookup hit (warm cache)", |b| {
-        b.iter(|| {
-            black_box(table.lookup(black_box(probe_hash)))
-        });
+        b.iter(|| black_box(table.lookup(black_box(probe_hash))));
     });
 }
 
@@ -61,9 +64,7 @@ fn bench_lookup_miss(c: &mut Criterion) {
     // Key 9_999_999 was never inserted.
     let miss_hash = hash_key(&9_999_999u64.to_le_bytes());
     c.bench_function("swiss_table::lookup miss", |b| {
-        b.iter(|| {
-            black_box(table.lookup(black_box(miss_hash)))
-        });
+        b.iter(|| black_box(table.lookup(black_box(miss_hash))));
     });
 }
 

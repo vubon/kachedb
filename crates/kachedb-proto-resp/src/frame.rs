@@ -33,30 +33,35 @@ pub fn parse_frame<'a>(src: &'a [u8]) -> Result<Option<(Frame<'a>, usize)>, Resp
     }
 
     match src[0] {
-        b'+' => parse_simple_string(&src[1..]).map(|opt| opt.map(|(s, len)| (Frame::SimpleString(s), len + 1))),
-        b'-' => parse_simple_string(&src[1..]).map(|opt| opt.map(|(s, len)| (Frame::Error(s), len + 1))),
-        b':' => parse_integer(&src[1..]).map(|opt| opt.map(|(n, len)| (Frame::Integer(n), len + 1))),
-        b'$' => parse_bulk_string(&src[1..]).map(|opt| opt.map(|(opt_b, len)| {
-            match opt_b {
+        b'+' => parse_simple_string(&src[1..])
+            .map(|opt| opt.map(|(s, len)| (Frame::SimpleString(s), len + 1))),
+        b'-' => {
+            parse_simple_string(&src[1..]).map(|opt| opt.map(|(s, len)| (Frame::Error(s), len + 1)))
+        }
+        b':' => {
+            parse_integer(&src[1..]).map(|opt| opt.map(|(n, len)| (Frame::Integer(n), len + 1)))
+        }
+        b'$' => parse_bulk_string(&src[1..]).map(|opt| {
+            opt.map(|(opt_b, len)| match opt_b {
                 Some(b) => (Frame::BulkString(b), len + 1),
                 None => (Frame::Null, len + 1),
-            }
-        })),
+            })
+        }),
         b'_' => parse_null_resp3(&src[1..]).map(|opt| opt.map(|len| (Frame::Null, len + 1))),
-        b'*' => parse_array(&src[1..]).map(|opt| opt.map(|(arr, len)| (Frame::Array(arr), len + 1))),
+        b'*' => {
+            parse_array(&src[1..]).map(|opt| opt.map(|(arr, len)| (Frame::Array(arr), len + 1)))
+        }
         marker => Err(RespError::InvalidTypeMarker { marker }),
     }
 }
 
 // ─── Helpers for individual frame types ──────────────────────────────────────
 
+type ParsedBulkString<'a> = Option<(Option<&'a [u8]>, usize)>;
+type ParsedArray<'a> = Option<(SmallVec<[Box<Frame<'a>>; 8]>, usize)>;
+
 fn find_crlf(src: &[u8]) -> Option<usize> {
-    for i in 0..src.len().saturating_sub(1) {
-        if src[i] == b'\r' && src[i + 1] == b'\n' {
-            return Some(i);
-        }
-    }
-    None
+    (0..src.len().saturating_sub(1)).find(|&i| src[i] == b'\r' && src[i + 1] == b'\n')
 }
 
 fn parse_simple_string(src: &[u8]) -> Result<Option<(&[u8], usize)>, RespError> {
@@ -79,13 +84,13 @@ fn parse_integer(src: &[u8]) -> Result<Option<(i64, usize)>, RespError> {
 
 fn parse_null_resp3(src: &[u8]) -> Result<Option<usize>, RespError> {
     match find_crlf(src) {
-        Some(pos) if pos == 0 => Ok(Some(2)),
+        Some(0) => Ok(Some(2)),
         Some(_) => Err(RespError::InvalidTypeMarker { marker: b'_' }),
         None => Ok(None),
     }
 }
 
-fn parse_bulk_string(src: &[u8]) -> Result<Option<(Option<&[u8]>, usize)>, RespError> {
+fn parse_bulk_string(src: &[u8]) -> Result<ParsedBulkString<'_>, RespError> {
     match find_crlf(src) {
         Some(pos) => {
             let s = std::str::from_utf8(&src[..pos]).map_err(|_| RespError::InvalidInteger)?;
@@ -120,7 +125,7 @@ fn parse_bulk_string(src: &[u8]) -> Result<Option<(Option<&[u8]>, usize)>, RespE
     }
 }
 
-fn parse_array(src: &[u8]) -> Result<Option<(SmallVec<[Box<Frame<'_>>; 8]>, usize)>, RespError> {
+fn parse_array(src: &[u8]) -> Result<ParsedArray<'_>, RespError> {
     match find_crlf(src) {
         Some(pos) => {
             let s = std::str::from_utf8(&src[..pos]).map_err(|_| RespError::InvalidInteger)?;

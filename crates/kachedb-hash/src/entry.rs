@@ -88,7 +88,8 @@ impl HashEntry {
     /// no pointer mutations, no queue reshuffling, no cache-line bouncing.
     #[inline(always)]
     pub fn mark_accessed(&self) {
-        self.access_flags.fetch_or(ACCESS_BIT_ACCESSED, Ordering::Relaxed);
+        self.access_flags
+            .fetch_or(ACCESS_BIT_ACCESSED, Ordering::Relaxed);
     }
 
     /// Atomically checks and clears the access flag.

@@ -11,14 +11,14 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Token};
 
-use kachedb_core::{pin_current_thread_to_core, HashedTimingWheel, SlabPool};
+use kachedb_core::{HashedTimingWheel, SlabPool, pin_current_thread_to_core};
 use kachedb_hash::SwissTable;
 
 use crate::connection::Connection;
@@ -50,8 +50,20 @@ fn create_reuseport_listener(addr: SocketAddr) -> Result<TcpListener, std::io::E
         }
 
         let opt: libc::c_int = 1;
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &opt as *const _ as *const _, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, &opt as *const _ as *const _, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            &opt as *const _ as *const _,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEPORT,
+            &opt as *const _ as *const _,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
 
         let mut storage: libc::sockaddr_storage = std::mem::zeroed();
         let socklen: libc::socklen_t = match addr {
@@ -59,14 +71,18 @@ fn create_reuseport_listener(addr: SocketAddr) -> Result<TcpListener, std::io::E
                 let sin = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in);
                 sin.sin_family = libc::AF_INET as libc::sa_family_t;
                 sin.sin_port = v4.port().to_be();
-                sin.sin_addr = libc::in_addr { s_addr: u32::from_ne_bytes(v4.ip().octets()) };
+                sin.sin_addr = libc::in_addr {
+                    s_addr: u32::from_ne_bytes(v4.ip().octets()),
+                };
                 std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t
             }
             SocketAddr::V6(v6) => {
                 let sin6 = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6);
                 sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
                 sin6.sin6_port = v6.port().to_be();
-                sin6.sin6_addr = libc::in6_addr { s6_addr: v6.ip().octets() };
+                sin6.sin6_addr = libc::in6_addr {
+                    s6_addr: v6.ip().octets(),
+                };
                 std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t
             }
         };
@@ -117,13 +133,18 @@ impl WorkerThread {
     pub fn run(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), NetError> {
         // Pin this thread to its assigned core
         let _ = pin_current_thread_to_core(self.core_id as usize);
-        log::info!("Worker [{core}]: pinned to core and starting event loop on {}", self.bind_addr, core = self.core_id);
+        log::info!(
+            "Worker [{core}]: pinned to core and starting event loop on {}",
+            self.bind_addr,
+            core = self.core_id
+        );
 
         let mut poll = Poll::new()?;
         let mut events = Events::with_capacity(EVENTS_CAPACITY);
 
         let mut listener = create_reuseport_listener(self.bind_addr)?;
-        poll.registry().register(&mut listener, SERVER_TOKEN, Interest::READABLE)?;
+        poll.registry()
+            .register(&mut listener, SERVER_TOKEN, Interest::READABLE)?;
 
         let mut connections: HashMap<Token, (TcpStream, Connection)> = HashMap::new();
         let mut next_token = 1usize;
@@ -142,7 +163,10 @@ impl WorkerThread {
                         loop {
                             match listener.accept() {
                                 Ok((mut stream, peer_addr)) => {
-                                    log::debug!("Worker [{core}]: accepted conn from {peer_addr}", core = self.core_id);
+                                    log::debug!(
+                                        "Worker [{core}]: accepted conn from {peer_addr}",
+                                        core = self.core_id
+                                    );
                                     let token = Token(next_token);
                                     next_token += 1;
 
@@ -151,7 +175,9 @@ impl WorkerThread {
                                         token,
                                         Interest::READABLE | Interest::WRITABLE,
                                     ) {
-                                        log::error!("Failed to register connection token {token:?}: {e}");
+                                        log::error!(
+                                            "Failed to register connection token {token:?}: {e}"
+                                        );
                                         continue;
                                     }
 
@@ -159,7 +185,10 @@ impl WorkerThread {
                                 }
                                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                                 Err(e) => {
-                                    log::error!("Worker [{core}]: accept error: {e}", core = self.core_id);
+                                    log::error!(
+                                        "Worker [{core}]: accept error: {e}",
+                                        core = self.core_id
+                                    );
                                     break;
                                 }
                             }
@@ -172,14 +201,18 @@ impl WorkerThread {
                             if event.is_readable() {
                                 match conn.read_from_stream(stream) {
                                     Ok(_) => {
-                                        match conn.process_incoming(&mut self.table, &mut self.pool) {
+                                        match conn.process_incoming(&mut self.table, &mut self.pool)
+                                        {
                                             Ok(keep_alive) => {
                                                 if !keep_alive {
                                                     should_remove = true;
                                                 }
                                             }
                                             Err(e) => {
-                                                log::warn!("Worker [{core}]: protocol error on {token:?}: {e}", core = self.core_id);
+                                                log::warn!(
+                                                    "Worker [{core}]: protocol error on {token:?}: {e}",
+                                                    core = self.core_id
+                                                );
                                                 should_remove = true;
                                             }
                                         }
@@ -187,9 +220,13 @@ impl WorkerThread {
                                     Err(NetError::ConnectionClosed) => {
                                         should_remove = true;
                                     }
-                                    Err(NetError::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                                    Err(NetError::Io(ref e))
+                                        if e.kind() == std::io::ErrorKind::WouldBlock => {}
                                     Err(e) => {
-                                        log::warn!("Worker [{core}]: read error on {token:?}: {e}", core = self.core_id);
+                                        log::warn!(
+                                            "Worker [{core}]: read error on {token:?}: {e}",
+                                            core = self.core_id
+                                        );
                                         should_remove = true;
                                     }
                                 }
@@ -198,9 +235,13 @@ impl WorkerThread {
                             if conn.has_pending_writes() || event.is_writable() {
                                 match conn.flush_to_stream(stream) {
                                     Ok(_) => {}
-                                    Err(NetError::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                                    Err(NetError::Io(ref e))
+                                        if e.kind() == std::io::ErrorKind::WouldBlock => {}
                                     Err(e) => {
-                                        log::warn!("Worker [{core}]: write error on {token:?}: {e}", core = self.core_id);
+                                        log::warn!(
+                                            "Worker [{core}]: write error on {token:?}: {e}",
+                                            core = self.core_id
+                                        );
                                         should_remove = true;
                                     }
                                 }
@@ -228,7 +269,10 @@ impl WorkerThread {
             }
         }
 
-        log::info!("Worker [{core}]: shut down successfully", core = self.core_id);
+        log::info!(
+            "Worker [{core}]: shut down successfully",
+            core = self.core_id
+        );
         Ok(())
     }
 }
@@ -256,7 +300,9 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
 
         let mut client = StdTcpStream::connect(bind_addr).expect("connect to worker");
-        client.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
 
         // 1. Send PING
         client.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
@@ -265,12 +311,16 @@ mod tests {
         assert_eq!(&buf[..n], b"+PONG\r\n");
 
         // 2. Send SET
-        client.write_all(b"*3\r\n$3\r\nSET\r\n$4\r\nname\r\n$7\r\nkachedb\r\n").unwrap();
+        client
+            .write_all(b"*3\r\n$3\r\nSET\r\n$4\r\nname\r\n$7\r\nkachedb\r\n")
+            .unwrap();
         let n = client.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"+OK\r\n");
 
         // 3. Send GET
-        client.write_all(b"*2\r\n$3\r\nGET\r\n$4\r\nname\r\n").unwrap();
+        client
+            .write_all(b"*2\r\n$3\r\nGET\r\n$4\r\nname\r\n")
+            .unwrap();
         let n = client.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"$7\r\nkachedb\r\n");
 

@@ -11,7 +11,11 @@ pub enum ShmError {
 
     /// `ftruncate` / `set_len` to the requested size failed.
     #[error("failed to resize shared memory '{name}' to {size} bytes: {reason}")]
-    ResizeFailed { name: String, size: usize, reason: String },
+    ResizeFailed {
+        name: String,
+        size: usize,
+        reason: String,
+    },
 
     /// `mmap` mapping failed.
     #[error("mmap failed for '{name}': {reason}")]

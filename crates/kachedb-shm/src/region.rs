@@ -42,11 +42,7 @@ impl ShmRegion {
     ///
     /// Set `owner = true` when this process creates the region; it will then
     /// call `shm_unlink` on drop to clean up the OS namespace entry.
-    pub fn open_or_create(
-        name: &str,
-        size_bytes: usize,
-        owner: bool,
-    ) -> Result<Self, ShmError> {
+    pub fn open_or_create(name: &str, size_bytes: usize, owner: bool) -> Result<Self, ShmError> {
         cfg_if::cfg_if! {
             if #[cfg(target_os = "linux")] {
                 Self::open_linux(name, size_bytes, owner)
@@ -93,11 +89,12 @@ impl ShmRegion {
                 reason: e.to_string(),
             })?;
 
-        file.set_len(size_bytes as u64).map_err(|e| ShmError::ResizeFailed {
-            name: name.to_string(),
-            size: size_bytes,
-            reason: e.to_string(),
-        })?;
+        file.set_len(size_bytes as u64)
+            .map_err(|e| ShmError::ResizeFailed {
+                name: name.to_string(),
+                size: size_bytes,
+                reason: e.to_string(),
+            })?;
 
         let raw_ptr = unsafe {
             libc::mmap(
@@ -192,7 +189,12 @@ impl ShmRegion {
             ptr.as_ptr()
         );
 
-        Ok(Self { ptr, size, name: name.to_string(), owner })
+        Ok(Self {
+            ptr,
+            size,
+            name: name.to_string(),
+            owner,
+        })
     }
 }
 
@@ -230,8 +232,8 @@ mod tests {
     #[test]
     fn create_and_write_shm_region() {
         let name = format!("kachedb_test_{}", std::process::id());
-        let region = ShmRegion::open_or_create(&name, 4096, true)
-            .expect("ShmRegion should be created");
+        let region =
+            ShmRegion::open_or_create(&name, 4096, true).expect("ShmRegion should be created");
 
         // Write a magic value into the shared memory and read it back.
         unsafe {

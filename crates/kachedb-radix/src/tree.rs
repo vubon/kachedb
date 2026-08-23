@@ -36,7 +36,7 @@ use kachedb_core::SlabBlockId;
 
 use crate::{
     error::RadixError,
-    node::{RadixNode, TokenBlock, TOKENS_PER_BLOCK},
+    node::{RadixNode, TOKENS_PER_BLOCK, TokenBlock},
 };
 
 // ─── LookupResult ─────────────────────────────────────────────────────────────
@@ -128,11 +128,7 @@ impl RadixTree {
 
         while matched_tokens < tokens.len() {
             let remaining = &tokens[matched_tokens..];
-            let chunk: TokenBlock = remaining
-                .iter()
-                .take(TOKENS_PER_BLOCK)
-                .copied()
-                .collect();
+            let chunk: TokenBlock = remaining.iter().take(TOKENS_PER_BLOCK).copied().collect();
 
             match find_child(current, chunk[0]) {
                 None => break, // no matching child — prefix ends here
@@ -156,7 +152,10 @@ impl RadixTree {
             }
         }
 
-        Ok(LookupResult { matched_tokens, slab_block_ids })
+        Ok(LookupResult {
+            matched_tokens,
+            slab_block_ids,
+        })
     }
 
     // ── Insert ───────────────────────────────────────────────────────────────
@@ -191,11 +190,7 @@ impl RadixTree {
 
         while pos < tokens.len() {
             let remaining = &tokens[pos..];
-            let chunk: TokenBlock = remaining
-                .iter()
-                .take(TOKENS_PER_BLOCK)
-                .copied()
-                .collect();
+            let chunk: TokenBlock = remaining.iter().take(TOKENS_PER_BLOCK).copied().collect();
 
             // SAFETY: `current` always points into the tree owned by `self`.
             let node = unsafe { &mut *current };
@@ -340,7 +335,12 @@ fn count_evictable(node: &RadixNode) -> usize {
     } else {
         0
     };
-    self_evictable + node.children.iter().map(|c| count_evictable(c)).sum::<usize>()
+    self_evictable
+        + node
+            .children
+            .iter()
+            .map(|c| count_evictable(c))
+            .sum::<usize>()
 }
 
 /// Returns `(parent_ptr, child_index, slab_id)` for the LRU evictable leaf.
@@ -352,7 +352,9 @@ fn find_lru_leaf_parent(
     let node_ptr: *mut RadixNode = node;
     for (idx, child) in node.children.iter_mut().enumerate() {
         if child.is_evictable() && child.slab_block_id.is_some() {
-            let ts = child.last_accessed_ns.load(std::sync::atomic::Ordering::Relaxed);
+            let ts = child
+                .last_accessed_ns
+                .load(std::sync::atomic::Ordering::Relaxed);
             if best.as_ref().map_or(true, |(best_ts, ..)| ts < *best_ts) {
                 best = Some((ts, node_ptr, idx, child.slab_block_id));
             }

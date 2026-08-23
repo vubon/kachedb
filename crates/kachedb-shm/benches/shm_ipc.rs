@@ -14,8 +14,8 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use kachedb_core::SlabBlockId;
 use kachedb_proto_tensor::{TensorBlockDescriptor, TensorDType};
 use kachedb_shm::{IpcSlot, ShmChannel};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 fn make_slot(seq: u64) -> IpcSlot {
@@ -74,7 +74,7 @@ fn bench_shm_cross_thread_streaming(c: &mut Criterion) {
 
                 for seq in 0..count {
                     let slot = make_slot(seq);
-                    while let Err(_) = ch_p.push(slot) {
+                    while ch_p.push(slot).is_err() {
                         std::hint::spin_loop();
                     }
                 }

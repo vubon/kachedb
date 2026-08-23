@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if, clippy::unnecessary_map_or)]
+
 //! `kachedb-radix` — `&[u32]` token prefix tree for LLM KV-cache offloading.
 //!
 //! This crate implements the **Radix Prefix Tree** index from the KacheDB
@@ -43,5 +45,5 @@ pub mod tree;
 
 pub use epoch::EpochTree;
 pub use error::RadixError;
-pub use node::{RadixNode, TokenBlock, TOKENS_PER_BLOCK};
+pub use node::{RadixNode, TOKENS_PER_BLOCK, TokenBlock};
 pub use tree::{LookupResult, RadixTree};

@@ -25,12 +25,12 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::os::unix::io::{AsRawFd, RawFd};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use io_uring::{opcode, squeue, types, IoUring};
+use io_uring::{IoUring, opcode, squeue, types};
 
-use kachedb_core::{pin_current_thread_to_core, HashedTimingWheel, SlabPool};
+use kachedb_core::{HashedTimingWheel, SlabPool, pin_current_thread_to_core};
 use kachedb_hash::SwissTable;
 
 use crate::connection::Connection;
@@ -86,7 +86,11 @@ impl ConnState {
 
 // ── SQE builder helpers (purely safe, no ring borrow) ─────────────────────────
 
-fn make_accept(listen_fd: RawFd, addr: *mut libc::sockaddr, addrlen: *mut libc::socklen_t) -> squeue::Entry {
+fn make_accept(
+    listen_fd: RawFd,
+    addr: *mut libc::sockaddr,
+    addrlen: *mut libc::socklen_t,
+) -> squeue::Entry {
     unsafe {
         opcode::Accept::new(types::Fd(listen_fd), addr as *mut _, addrlen)
             .build()
@@ -129,8 +133,20 @@ fn create_reuseport_listener(addr: SocketAddr) -> Result<std::net::TcpListener, 
         }
 
         let opt: libc::c_int = 1;
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &opt as *const _ as *const _, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, &opt as *const _ as *const _, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            &opt as *const _ as *const _,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEPORT,
+            &opt as *const _ as *const _,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
 
         let mut storage: libc::sockaddr_storage = std::mem::zeroed();
         let socklen: libc::socklen_t = match addr {
@@ -138,14 +154,18 @@ fn create_reuseport_listener(addr: SocketAddr) -> Result<std::net::TcpListener, 
                 let sin = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in);
                 sin.sin_family = libc::AF_INET as libc::sa_family_t;
                 sin.sin_port = v4.port().to_be();
-                sin.sin_addr = libc::in_addr { s_addr: u32::from_ne_bytes(v4.ip().octets()) };
+                sin.sin_addr = libc::in_addr {
+                    s_addr: u32::from_ne_bytes(v4.ip().octets()),
+                };
                 std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t
             }
             SocketAddr::V6(v6) => {
                 let sin6 = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6);
                 sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
                 sin6.sin6_port = v6.port().to_be();
-                sin6.sin6_addr = libc::in6_addr { s6_addr: v6.ip().octets() };
+                sin6.sin6_addr = libc::in6_addr {
+                    s6_addr: v6.ip().octets(),
+                };
                 std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t
             }
         };
@@ -187,7 +207,13 @@ impl UringWorkerThread {
             .as_secs() as u32;
         let timing_wheel = HashedTimingWheel::new(start_sec);
 
-        Ok(Self { core_id, pool, table, timing_wheel, bind_addr })
+        Ok(Self {
+            core_id,
+            pool,
+            table,
+            timing_wheel,
+            bind_addr,
+        })
     }
 
     pub fn run(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), NetError> {
@@ -196,7 +222,11 @@ impl UringWorkerThread {
         // ── io_uring init ────────────────────────────────────────────────────
         let mut ring = match IoUring::builder().setup_sqpoll(2000).build(RING_ENTRIES) {
             Ok(r) => {
-                log::info!("Worker [{}]: io_uring SQPOLL enabled on {}", self.core_id, self.bind_addr);
+                log::info!(
+                    "Worker [{}]: io_uring SQPOLL enabled on {}",
+                    self.core_id,
+                    self.bind_addr
+                );
                 r
             }
             Err(e) => {
@@ -279,15 +309,19 @@ impl UringWorkerThread {
                                     let recv_ptr = state.recv_buf.as_ptr() as *mut u8;
                                     let recv_len = state.recv_buf.len();
                                     connections.insert(conn_token, state);
-                                    pending_sq.push(make_recv(conn_token, client_fd, recv_ptr, recv_len));
+                                    pending_sq
+                                        .push(make_recv(conn_token, client_fd, recv_ptr, recv_len));
                                 } else {
-                                    unsafe { libc::close(client_fd); }
+                                    unsafe {
+                                        libc::close(client_fd);
+                                    }
                                 }
                             }
 
                             // Re-arm Accept
                             accept_addr = unsafe { std::mem::zeroed() };
-                            accept_addrlen = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+                            accept_addrlen =
+                                std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
                             pending_sq.push(make_accept(
                                 listen_fd,
                                 &mut accept_addr as *mut _ as *mut libc::sockaddr,
@@ -320,7 +354,8 @@ impl UringWorkerThread {
                                             let send_ptr = state.pending_send.as_ptr();
                                             let send_len = state.pending_send.len();
                                             let fd = state.fd;
-                                            pending_sq.push(make_send(token, fd, send_ptr, send_len));
+                                            pending_sq
+                                                .push(make_send(token, fd, send_ptr, send_len));
                                         } else if !keep_alive {
                                             let fd = state.fd;
                                             pending_sq.push(make_close(token, fd));
@@ -328,11 +363,15 @@ impl UringWorkerThread {
                                             let recv_ptr = state.recv_buf.as_ptr() as *mut u8;
                                             let recv_len = state.recv_buf.len();
                                             let fd = state.fd;
-                                            pending_sq.push(make_recv(token, fd, recv_ptr, recv_len));
+                                            pending_sq
+                                                .push(make_recv(token, fd, recv_ptr, recv_len));
                                         }
                                     }
                                     Err(e) => {
-                                        log::warn!("Worker [{}]: protocol error conn {token}: {e}", self.core_id);
+                                        log::warn!(
+                                            "Worker [{}]: protocol error conn {token}: {e}",
+                                            self.core_id
+                                        );
                                         let fd = state.fd;
                                         pending_sq.push(make_close(token, fd));
                                     }
@@ -369,7 +408,9 @@ impl UringWorkerThread {
                 sq.sync();
                 for sqe in pending_sq.drain(..) {
                     // SAFETY: all pointers in sqe remain valid for the duration of this loop
-                    unsafe { let _ = sq.push(&sqe); }
+                    unsafe {
+                        let _ = sq.push(&sqe);
+                    }
                 }
             }
 

@@ -5,8 +5,8 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use kachedb_proto_resp::{encode_array_header, encode_bulk_string};
@@ -54,13 +54,34 @@ fn parse_args() -> BenchConfig {
 
     while i < args.len() {
         match args[i].as_str() {
-            "-h" | "--host" if i + 1 < args.len() => { cfg.host = args[i + 1].clone(); i += 2; }
-            "-p" | "--port" if i + 1 < args.len() => { cfg.port = args[i + 1].parse().unwrap_or(6379); i += 2; }
-            "-n" | "--requests" if i + 1 < args.len() => { cfg.requests = args[i + 1].parse().unwrap_or(100_000); i += 2; }
-            "-c" | "--clients" if i + 1 < args.len() => { cfg.clients = args[i + 1].parse().unwrap_or(50); i += 2; }
-            "--pipeline" if i + 1 < args.len() => { cfg.pipeline = args[i + 1].parse().unwrap_or(16); i += 2; }
-            "--key-size" if i + 1 < args.len() => { cfg.key_size = args[i + 1].parse().unwrap_or(16); i += 2; }
-            "--value-size" if i + 1 < args.len() => { cfg.value_size = args[i + 1].parse().unwrap_or(64); i += 2; }
+            "-h" | "--host" if i + 1 < args.len() => {
+                cfg.host = args[i + 1].clone();
+                i += 2;
+            }
+            "-p" | "--port" if i + 1 < args.len() => {
+                cfg.port = args[i + 1].parse().unwrap_or(6379);
+                i += 2;
+            }
+            "-n" | "--requests" if i + 1 < args.len() => {
+                cfg.requests = args[i + 1].parse().unwrap_or(100_000);
+                i += 2;
+            }
+            "-c" | "--clients" if i + 1 < args.len() => {
+                cfg.clients = args[i + 1].parse().unwrap_or(50);
+                i += 2;
+            }
+            "--pipeline" if i + 1 < args.len() => {
+                cfg.pipeline = args[i + 1].parse().unwrap_or(16);
+                i += 2;
+            }
+            "--key-size" if i + 1 < args.len() => {
+                cfg.key_size = args[i + 1].parse().unwrap_or(16);
+                i += 2;
+            }
+            "--value-size" if i + 1 < args.len() => {
+                cfg.value_size = args[i + 1].parse().unwrap_or(64);
+                i += 2;
+            }
             "--command" if i + 1 < args.len() => {
                 cfg.command = match args[i + 1].to_uppercase().as_str() {
                     "SET" => BenchCommand::Set,
@@ -69,15 +90,21 @@ fn parse_args() -> BenchConfig {
                 };
                 i += 2;
             }
-            "--help" => { print_help(); std::process::exit(0); }
-            _ => { i += 1; }
+            "--help" => {
+                print_help();
+                std::process::exit(0);
+            }
+            _ => {
+                i += 1;
+            }
         }
     }
     cfg
 }
 
 fn print_help() {
-    println!(r#"
+    println!(
+        r#"
   KacheDB Bench — Multi-Connection Pipelined Load Generator
 
   USAGE:
@@ -93,7 +120,8 @@ fn print_help() {
           --key-size <N>        Key length in bytes (default: 16)
           --value-size <N>      Value length in bytes for SET (default: 64)
           --help                Print this help message
-"#);
+"#
+    );
 }
 
 // ── Latency Histogram ─────────────────────────────────────────────────────────
@@ -258,7 +286,9 @@ fn run_worker(
                             break;
                         }
                     }
-                    _ => { pos += 1; }
+                    _ => {
+                        pos += 1;
+                    }
                 }
             }
             carry.drain(..pos);
@@ -279,7 +309,10 @@ fn run_worker(
 }
 
 fn find_crlf(buf: &[u8], from: usize) -> Option<usize> {
-    buf[from..].windows(2).position(|w| w == b"\r\n").map(|p| from + p)
+    buf[from..]
+        .windows(2)
+        .position(|w| w == b"\r\n")
+        .map(|p| from + p)
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -310,7 +343,7 @@ fn main() {
         }
     }
 
-    let requests_per_client = (cfg.requests + cfg.clients - 1) / cfg.clients;
+    let requests_per_client = cfg.requests.div_ceil(cfg.clients);
     let done = Arc::new(AtomicBool::new(false));
     let total_completed = Arc::new(AtomicU64::new(0));
 
@@ -351,9 +384,13 @@ fn main() {
     let p99 = merged.percentile(99.0);
     let p999 = merged.percentile(99.9);
     let avg_us = if merged.total > 0 {
-        merged.buckets.iter().enumerate()
+        merged
+            .buckets
+            .iter()
+            .enumerate()
             .map(|(i, &c)| i as f64 * c as f64)
-            .sum::<f64>() / merged.total as f64
+            .sum::<f64>()
+            / merged.total as f64
     } else {
         0.0
     };

@@ -4,9 +4,7 @@ use std::io::{BufRead, Read, Write};
 use std::net::TcpStream;
 use std::time::Instant;
 
-use kachedb_proto_resp::{
-    encode_array_header, encode_bulk_string, parse_frame, Frame,
-};
+use kachedb_proto_resp::{Frame, encode_array_header, encode_bulk_string, parse_frame};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -76,7 +74,10 @@ fn print_help() {
 }
 
 fn run_benchmark(addr: &str, requests: usize) {
-    println!("🔥 Connecting to {} for live benchmark ({} requests)...", addr, requests);
+    println!(
+        "🔥 Connecting to {} for live benchmark ({} requests)...",
+        addr, requests
+    );
 
     let mut stream = match TcpStream::connect(addr) {
         Ok(s) => s,
@@ -125,7 +126,9 @@ fn run_repl(addr: &str) {
         }
     };
 
-    println!("Connected to KacheDB. Type commands (e.g. PING, SET foo bar, GET foo, QUIT) or Ctrl+C to exit.\n");
+    println!(
+        "Connected to KacheDB. Type commands (e.g. PING, SET foo bar, GET foo, QUIT) or Ctrl+C to exit.\n"
+    );
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -164,19 +167,17 @@ fn run_repl(addr: &str) {
                 println!("Connection closed by server.");
                 break;
             }
-            Ok(n) => {
-                match parse_frame(&read_buf[..n]) {
-                    Ok(Some((frame, _))) => {
-                        print_frame(&frame);
-                    }
-                    Ok(None) => {
-                        println!("(Incomplete response)");
-                    }
-                    Err(e) => {
-                        println!("(Protocol error: {})", e);
-                    }
+            Ok(n) => match parse_frame(&read_buf[..n]) {
+                Ok(Some((frame, _))) => {
+                    print_frame(&frame);
                 }
-            }
+                Ok(None) => {
+                    println!("(Incomplete response)");
+                }
+                Err(e) => {
+                    println!("(Protocol error: {})", e);
+                }
+            },
             Err(e) => {
                 eprintln!("Error reading response: {}", e);
                 break;

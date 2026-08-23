@@ -1,0 +1,74 @@
+name: KacheDB CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  check-format:
+    name: Code Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy Linter (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: Unit & Integration Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run Workspace Tests
+        run: cargo test --workspace --verbose
+      - name: Run Doc Tests
+        run: cargo test --doc --workspace
+
+  docker-build-test:
+    name: Linux Docker Engine & io_uring Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build KacheDB Docker Image
+        run: docker compose -f docker/docker-compose.yml build
+      - name: Start Docker Container
+        run: docker compose -f docker/docker-compose.yml up -d
+      - name: Health Check via CLI
+        run: |
+          sleep 2
+          docker exec docker-kachedb-1 kachedb-cli -p 6379 ping
+      - name: Teardown
+        run: docker compose -f docker/docker-compose.yml down

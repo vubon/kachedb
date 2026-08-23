@@ -1,4 +1,4 @@
-.PHONY: all build release test bench bench-live bench-live-set bench-live-get server cli python-test clean fmt check
+.PHONY: all build release test bench bench-live bench-live-set bench-live-get benchmark-reproduce server cli python-test clean fmt check lint
 
 all: build test
 
@@ -10,6 +10,10 @@ release:
 
 test:
 	cargo test --workspace
+
+lint:
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets -- -D warnings
 
 bench:
 	cargo bench --workspace
@@ -28,6 +32,14 @@ bench-live-set: release
 
 bench-live-get: release
 	./target/release/kachedb-bench --port 6379 --requests 100000 --clients 50 --pipeline 16 --command GET
+
+benchmark-reproduce:
+	docker compose -f docker/docker-compose.yml up -d --build
+	@sleep 2
+	docker exec docker-kachedb-1 kachedb-bench -p 6379 -n 100000 -c 50 --pipeline 16 --command PING
+	docker exec docker-kachedb-1 kachedb-bench -p 6379 -n 100000 -c 50 --pipeline 16 --command SET
+	docker exec docker-kachedb-1 kachedb-bench -p 6379 -n 100000 -c 50 --pipeline 16 --command GET
+	docker compose -f docker/docker-compose.yml down
 
 python-test:
 	PYTHONPATH=bindings/python python3 bindings/python/tests/test_client.py

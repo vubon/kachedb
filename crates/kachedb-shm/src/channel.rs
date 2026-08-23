@@ -177,7 +177,9 @@ impl ShmChannel {
         let header = self.header();
 
         if !header.has_space() {
-            return Err(ShmError::RingFull { capacity: self.capacity });
+            return Err(ShmError::RingFull {
+                capacity: self.capacity,
+            });
         }
 
         let head = header.head.load(Ordering::Relaxed);
@@ -285,9 +287,7 @@ impl ShmChannel {
 
     unsafe fn slot_ptr(&self, idx: usize) -> *mut IpcSlot {
         let header_size = next_align(size_of::<ShmRingHeader>(), 64);
-        unsafe {
-            (self.region.as_ptr().add(header_size) as *mut IpcSlot).add(idx)
-        }
+        unsafe { (self.region.as_ptr().add(header_size) as *mut IpcSlot).add(idx) }
     }
 }
 

@@ -76,20 +76,24 @@ impl<'a> Command<'a> {
                         if let Ok(opt) = extract_required_bytes(&args[i], "SET") {
                             if opt.eq_ignore_ascii_case(b"EX") && i + 1 < args.len() {
                                 if let Ok(sec_bytes) = extract_required_bytes(&args[i + 1], "SET") {
-                                    if let Ok(sec_str) = std::str::from_utf8(sec_bytes) {
-                                        if let Ok(sec) = sec_str.parse::<u64>() {
-                                            ttl_ms = Some(sec * 1000);
-                                        }
+                                    let sec = std::str::from_utf8(sec_bytes)
+                                        .unwrap_or("")
+                                        .parse::<u64>()
+                                        .unwrap_or(0);
+                                    if sec > 0 {
+                                        ttl_ms = Some(sec * 1000);
                                     }
                                 }
                                 i += 2;
                                 continue;
                             } else if opt.eq_ignore_ascii_case(b"PX") && i + 1 < args.len() {
                                 if let Ok(ms_bytes) = extract_required_bytes(&args[i + 1], "SET") {
-                                    if let Ok(ms_str) = std::str::from_utf8(ms_bytes) {
-                                        if let Ok(ms) = ms_str.parse::<u64>() {
-                                            ttl_ms = Some(ms);
-                                        }
+                                    let ms = std::str::from_utf8(ms_bytes)
+                                        .unwrap_or("")
+                                        .parse::<u64>()
+                                        .unwrap_or(0);
+                                    if ms > 0 {
+                                        ttl_ms = Some(ms);
                                     }
                                 }
                                 i += 2;
@@ -181,14 +185,19 @@ mod tests {
 
     #[test]
     fn parse_get_command() {
-        let (frame, _) = parse_frame(b"*2\r\n$3\r\nGET\r\n$6\r\nmy_key\r\n").unwrap().unwrap();
+        let (frame, _) = parse_frame(b"*2\r\n$3\r\nGET\r\n$6\r\nmy_key\r\n")
+            .unwrap()
+            .unwrap();
         let cmd = Command::from_frame(frame).unwrap();
         assert_eq!(cmd, Command::Get { key: b"my_key" });
     }
 
     #[test]
     fn parse_set_command_with_ex() {
-        let (frame, _) = parse_frame(b"*5\r\n$3\r\nSET\r\n$4\r\nuser\r\n$3\r\n100\r\n$2\r\nEX\r\n$2\r\n60\r\n").unwrap().unwrap();
+        let (frame, _) =
+            parse_frame(b"*5\r\n$3\r\nSET\r\n$4\r\nuser\r\n$3\r\n100\r\n$2\r\nEX\r\n$2\r\n60\r\n")
+                .unwrap()
+                .unwrap();
         let cmd = Command::from_frame(frame).unwrap();
         assert_eq!(
             cmd,
@@ -202,7 +211,9 @@ mod tests {
 
     #[test]
     fn parse_mget_command() {
-        let (frame, _) = parse_frame(b"*3\r\n$4\r\nMGET\r\n$2\r\nk1\r\n$2\r\nk2\r\n").unwrap().unwrap();
+        let (frame, _) = parse_frame(b"*3\r\n$4\r\nMGET\r\n$2\r\nk1\r\n$2\r\nk2\r\n")
+            .unwrap()
+            .unwrap();
         let cmd = Command::from_frame(frame).unwrap();
         match cmd {
             Command::MGet { keys } => {

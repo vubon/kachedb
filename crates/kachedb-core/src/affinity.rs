@@ -66,7 +66,10 @@ mod tests {
     fn pin_to_core_zero_succeeds() {
         // On macOS this is always Ok(()); on Linux it should succeed for core 0.
         let result = pin_current_thread_to_core(0);
-        assert!(result.is_ok(), "pinning core 0 should not error: {result:?}");
+        assert!(
+            result.is_ok(),
+            "pinning core 0 should not error: {result:?}"
+        );
     }
 
     #[test]

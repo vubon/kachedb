@@ -15,6 +15,6 @@ pub mod frame;
 pub use command::Command;
 pub use error::RespError;
 pub use frame::{
-    encode_array_header, encode_bulk_string, encode_error, encode_integer, encode_null,
-    encode_simple_string, parse_frame, Frame,
+    Frame, encode_array_header, encode_bulk_string, encode_error, encode_integer, encode_null,
+    encode_simple_string, parse_frame,
 };

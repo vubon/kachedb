@@ -1,0 +1,27 @@
+name: 📐 Architecture RFC Proposal
+description: Submit a formal Request For Comments (RFC) for a major architectural change
+labels: ["rfc", "architecture"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Major architectural modifications (e.g. new memory allocators, transport layers, eviction policies) require an RFC. Please review the template in `docs/rfcs/0000-template.md`.
+  - type: input
+    id: title
+    attributes:
+      label: RFC Title
+      placeholder: "e.g. RFC: RDMA Transport Layer for Multi-Node Tensor Streaming"
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Executive Summary
+      description: 2-3 paragraph summary of the proposed architectural change and target subsystem.
+    validations:
+      required: true
+  - type: textarea
+    id: pr-link
+    attributes:
+      label: Pull Request Link (if created)
+      description: If you have already opened a PR in `docs/rfcs/`, link it here.

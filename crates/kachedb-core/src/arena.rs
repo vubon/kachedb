@@ -23,10 +23,7 @@ use std::{
 
 use crate::{
     error::CoreError,
-    slab::{
-        CACHE_LINE_BYTES, MEGASLAB_BYTES, MEGASLAB_HEADER_BYTES,
-        SlabClassType,
-    },
+    slab::{CACHE_LINE_BYTES, MEGASLAB_BYTES, MEGASLAB_HEADER_BYTES, SlabClassType},
 };
 
 // ─── Magic constant ───────────────────────────────────────────────────────────
@@ -317,8 +314,8 @@ impl MegaslabArena {
 impl Drop for MegaslabArena {
     fn drop(&mut self) {
         // SAFETY: `base` was allocated with the same layout; exclusive ownership.
-        let layout = Layout::from_size_align(MEGASLAB_BYTES, MEGASLAB_BYTES)
-            .expect("valid layout at drop");
+        let layout =
+            Layout::from_size_align(MEGASLAB_BYTES, MEGASLAB_BYTES).expect("valid layout at drop");
         unsafe { alloc::dealloc(self.base.as_ptr(), layout) };
         log::debug!("MegaslabArena: freed slab_id={}", self.slab_id);
     }

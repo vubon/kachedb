@@ -88,21 +88,9 @@ impl ShmRingHeader {
             (*ptr).capacity = capacity;
             (*ptr).eventfd_fd = AtomicI32::new(eventfd_fd);
             // Zero the padding arrays.
-            std::ptr::write_bytes(
-                (*ptr)._pad0.as_mut_ptr(),
-                0,
-                CACHE_LINE_BYTES - 4,
-            );
-            std::ptr::write_bytes(
-                (*ptr)._pad1.as_mut_ptr(),
-                0,
-                CACHE_LINE_BYTES - 8,
-            );
-            std::ptr::write_bytes(
-                (*ptr)._pad2.as_mut_ptr(),
-                0,
-                CACHE_LINE_BYTES - 8,
-            );
+            std::ptr::write_bytes((*ptr)._pad0.as_mut_ptr(), 0, CACHE_LINE_BYTES - 4);
+            std::ptr::write_bytes((*ptr)._pad1.as_mut_ptr(), 0, CACHE_LINE_BYTES - 8);
+            std::ptr::write_bytes((*ptr)._pad2.as_mut_ptr(), 0, CACHE_LINE_BYTES - 8);
         }
     }
 
@@ -118,8 +106,7 @@ impl ShmRingHeader {
     /// Sets the consumer state (called by the consumer thread only).
     #[inline(always)]
     pub fn set_consumer_state(&self, state: ConsumerState) {
-        self.consumer_state
-            .store(state as u32, Ordering::Release);
+        self.consumer_state.store(state as u32, Ordering::Release);
     }
 
     /// Returns `true` if there is at least one slot available for writing.

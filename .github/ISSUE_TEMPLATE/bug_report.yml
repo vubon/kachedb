@@ -1,0 +1,48 @@
+name: 🐛 Bug Report
+description: Report a reproducible bug or unexpected behavior in KacheDB
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve KacheDB! Please provide as much detail as possible so we can diagnose and fix the issue quickly.
+  - type: input
+    id: version
+    attributes:
+      label: KacheDB Version / Commit SHA
+      description: What version or git commit of KacheDB are you running? (e.g. `v0.1.0` or git SHA `21cd7e5`)
+      placeholder: e.g., v0.1.0 / git commit SHA
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating System & Hardware
+      description: OS version, CPU architecture, core count (e.g. `Linux 6.8.0 x86_64, 16 cores` or `macOS Darwin ARM64 M2 Max`)
+      placeholder: e.g., Ubuntu 24.04, Kernel 6.8, 16 cores
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description of the Bug
+      description: Clear and concise explanation of what happened versus what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Provide exact commands, code snippets, or client queries to reproduce.
+      placeholder: |
+        1. Start server: `./target/release/kachedb-server --port 6379`
+        2. Execute query: `redis-cli SET foo bar EX 10`
+        3. Observe error...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs or Terminal Output
+      description: Paste any server stderr / panic backtraces here.
+      render: shell

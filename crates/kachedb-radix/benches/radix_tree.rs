@@ -54,18 +54,21 @@ fn bench_insert_branching_conversations(c: &mut Criterion) {
         .collect();
     let slabs = generate_slab_ids(40);
 
-    c.bench_function("radix::insert 10 branching dialogues (shared prefix)", |b| {
-        b.iter_batched(
-            RadixTree::new,
-            |mut tree| {
-                for seq in &user_turns {
-                    tree.insert(black_box(seq), black_box(&slabs)).unwrap();
-                }
-                tree
-            },
-            BatchSize::SmallInput,
-        );
-    });
+    c.bench_function(
+        "radix::insert 10 branching dialogues (shared prefix)",
+        |b| {
+            b.iter_batched(
+                RadixTree::new,
+                |mut tree| {
+                    for seq in &user_turns {
+                        tree.insert(black_box(seq), black_box(&slabs)).unwrap();
+                    }
+                    tree
+                },
+                BatchSize::SmallInput,
+            );
+        },
+    );
 }
 
 // ─── Lookup Benchmarks ────────────────────────────────────────────────────────

@@ -1,0 +1,28 @@
+name: 💡 Feature Request
+description: Propose a new feature, optimization, command, or client binding for KacheDB
+labels: ["enhancement", "proposal"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature for KacheDB!
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Motivation
+      description: Is your feature request related to a specific performance bottleneck, missing command, or new integration?
+      placeholder: "e.g. As an ML inference engineer, I need to..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed Solution / Architectural Design
+      description: Describe the technical implementation or proposed API surface.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What other approaches or workarounds have you considered?
