@@ -176,6 +176,8 @@ impl MegaslabArena {
             // `allocated_slots` is zero-initialized by `alloc_zeroed`.
         }
 
+        crate::registry::register_arena(slab_id, base.as_ptr(), class.slot_bytes());
+
         log::debug!(
             "MegaslabArena: allocated slab_id={slab_id} class={class:?} \
              capacity={capacity} core={owning_core}"
@@ -313,6 +315,7 @@ impl MegaslabArena {
 
 impl Drop for MegaslabArena {
     fn drop(&mut self) {
+        crate::registry::unregister_arena(self.slab_id);
         // SAFETY: `base` was allocated with the same layout; exclusive ownership.
         let layout =
             Layout::from_size_align(MEGASLAB_BYTES, MEGASLAB_BYTES).expect("valid layout at drop");

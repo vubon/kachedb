@@ -49,8 +49,6 @@ pub struct SlabPool {
     pub core_id: u16,
     /// Active arenas for all size classes.
     arenas: Vec<MegaslabArena>,
-    /// Monotonic counter for generating unique `slab_id` values.
-    next_slab_id: u16,
     /// Maximum total megaslabs allowed across all workloads.
     max_megaslabs: usize,
     /// Dynamic quota budget for App Cache workload (Improvement 4).
@@ -78,7 +76,6 @@ impl SlabPool {
         let mut pool = Self {
             core_id,
             arenas: Vec::new(),
-            next_slab_id: 0,
             max_megaslabs,
             app_quota,
             tensor_quota,
@@ -203,8 +200,7 @@ impl SlabPool {
             return Err(CoreError::PoolExhausted { class });
         }
 
-        let slab_id = self.next_slab_id;
-        self.next_slab_id = self.next_slab_id.wrapping_add(1);
+        let slab_id = crate::registry::allocate_global_slab_id();
         let arena = MegaslabArena::new(class, slab_id, self.core_id)?;
         self.arenas.push(arena);
         self.arena_last_active_sec.push(now_secs());
@@ -316,7 +312,7 @@ mod tests {
     fn pool_allocates_app_small_slot() {
         let mut pool = make_pool();
         let id = pool.allocate(SlabClassType::AppSmall).unwrap();
-        assert_eq!(id.slab_id(), 0); // first arena has slab_id=0
+        assert!(id.slab_id() > 0);
         assert_eq!(pool.total_allocated_bytes(), 128);
     }
 

@@ -56,6 +56,7 @@ fn main() {
     println!();
 
     let shutdown = Arc::new(AtomicBool::new(false));
+    let shared_table = Arc::new(kachedb_hash::ShardedSwissTable::new());
 
     // Handle Ctrl+C gracefully
     let shutdown_signal = shutdown.clone();
@@ -67,6 +68,7 @@ fn main() {
         let shutdown_worker = shutdown.clone();
         let bind_addr = config.bind_addr;
         let shm_enabled = config.shm_enabled;
+        let worker_table = shared_table.clone();
 
         let pool_bytes = config.pool_mb_per_core * 1024 * 1024;
 
@@ -94,10 +96,11 @@ fn main() {
 
                 #[cfg(target_os = "linux")]
                 {
-                    let mut worker = match UringWorkerThread::with_capacity(
+                    let mut worker = match UringWorkerThread::with_shared_table(
                         core_id as u16,
                         bind_addr,
                         pool_bytes,
+                        worker_table,
                     ) {
                         Ok(w) => w,
                         Err(e) => {
@@ -114,10 +117,11 @@ fn main() {
 
                 #[cfg(not(target_os = "linux"))]
                 {
-                    let mut worker = match WorkerThread::with_capacity(
+                    let mut worker = match WorkerThread::with_shared_table(
                         core_id as u16,
                         bind_addr,
                         pool_bytes,
+                        worker_table,
                     ) {
                         Ok(w) => w,
                         Err(e) => {

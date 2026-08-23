@@ -19,7 +19,7 @@ use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Token};
 
 use kachedb_core::{HashedTimingWheel, SlabPool, pin_current_thread_to_core};
-use kachedb_hash::SwissTable;
+use kachedb_hash::ShardedSwissTable;
 
 use crate::connection::Connection;
 use crate::error::NetError;
@@ -32,7 +32,7 @@ const DEFAULT_POOL_CAPACITY: usize = 64 * 1024 * 1024; // 64 MB per core
 pub struct WorkerThread {
     pub core_id: u16,
     pub pool: SlabPool,
-    pub table: SwissTable,
+    pub table: Arc<ShardedSwissTable>,
     pub timing_wheel: HashedTimingWheel,
     pub bind_addr: SocketAddr,
 }
@@ -49,19 +49,19 @@ fn create_reuseport_listener(addr: SocketAddr) -> Result<TcpListener, std::io::E
             return Err(std::io::Error::last_os_error());
         }
 
-        let opt: libc::c_int = 1;
+        let optval: libc::c_int = 1;
         libc::setsockopt(
             fd,
             libc::SOL_SOCKET,
             libc::SO_REUSEADDR,
-            &opt as *const _ as *const _,
+            &optval as *const _ as *const libc::c_void,
             std::mem::size_of::<libc::c_int>() as libc::socklen_t,
         );
         libc::setsockopt(
             fd,
             libc::SOL_SOCKET,
             libc::SO_REUSEPORT,
-            &opt as *const _ as *const _,
+            &optval as *const _ as *const libc::c_void,
             std::mem::size_of::<libc::c_int>() as libc::socklen_t,
         );
 
@@ -110,24 +110,24 @@ fn create_reuseport_listener(addr: SocketAddr) -> Result<TcpListener, std::io::E
 }
 
 impl WorkerThread {
-    /// Creates a new `WorkerThread` with default pool capacity (64 MB).
+    /// Creates a new `WorkerThread` with default pool capacity (64 MB) and private shared table.
     pub fn new(core_id: u16, bind_addr: SocketAddr) -> Result<Self, NetError> {
-        Self::with_capacity(core_id, bind_addr, DEFAULT_POOL_CAPACITY)
+        Self::with_shared_table(
+            core_id,
+            bind_addr,
+            DEFAULT_POOL_CAPACITY,
+            Arc::new(ShardedSwissTable::new()),
+        )
     }
 
-    /// Creates a new `WorkerThread` with explicit memory pool capacity in bytes.
-    pub fn with_capacity(
+    /// Creates a new `WorkerThread` with explicit memory pool capacity in bytes and shared table.
+    pub fn with_shared_table(
         core_id: u16,
         bind_addr: SocketAddr,
         pool_bytes: usize,
+        table: Arc<ShardedSwissTable>,
     ) -> Result<Self, NetError> {
         let pool = SlabPool::new(core_id, pool_bytes)?;
-        let table_cap = if pool_bytes >= 256 * 1024 * 1024 {
-            524_288
-        } else {
-            65_536
-        };
-        let table = SwissTable::with_capacity(table_cap);
         let start_sec = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -213,10 +213,12 @@ impl WorkerThread {
 
                         if let Some((stream, conn)) = connections.get_mut(&token) {
                             if event.is_readable() {
-                                match conn.read_from_stream(stream) {
+                                match conn.read_from(stream) {
+                                    Ok(0) => {
+                                        should_remove = true;
+                                    }
                                     Ok(_) => {
-                                        match conn.process_incoming(&mut self.table, &mut self.pool)
-                                        {
+                                        match conn.process_incoming(&self.table, &mut self.pool) {
                                             Ok(keep_alive) => {
                                                 if !keep_alive {
                                                     should_remove = true;

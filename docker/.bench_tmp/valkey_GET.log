@@ -1,24 +1,0 @@
-Writing results to stdout
-[RUN #1] Preparing benchmark client...
-[RUN #1] Launching threads now...
-[RUN #1 5%,   0 secs]  4 threads 50 conns:     1001296 ops, 1002113 (avg: 1002113) ops/sec, 101.30MB/sec (avg: 101.30MB/sec),  3.18 (avg:  3.18) msec latency[RUN #1 10%,   1 secs]  4 threads 50 conns:     2095883 ops, 1094454 (avg: 1048305) ops/sec, 110.63MB/sec (avg: 105.97MB/sec),  2.92 (avg:  3.04) msec latency[RUN #1 16%,   3 secs]  4 threads 50 conns:     3187632 ops, 1090961 (avg: 1062534) ops/sec, 110.28MB/sec (avg: 107.40MB/sec),  2.93 (avg:  3.00) msec latency[RUN #1 21%,   4 secs]  4 threads 50 conns:     4244405 ops, 1056667 (avg: 1061067) ops/sec, 106.81MB/sec (avg: 107.26MB/sec),  3.02 (avg:  3.01) msec latency[RUN #1 26%,   5 secs]  4 threads 50 conns:     5248512 ops, 1004000 (avg: 1049653) ops/sec, 101.49MB/sec (avg: 106.10MB/sec),  3.18 (avg:  3.04) msec latency[RUN #1 31%,   6 secs]  4 threads 50 conns:     6277669 ops, 1029046 (avg: 1046218) ops/sec, 104.02MB/sec (avg: 105.75MB/sec),  3.10 (avg:  3.05) msec latency[RUN #1 36%,   7 secs]  4 threads 50 conns:     7261519 ops,  983385 (avg: 1037239) ops/sec, 99.40MB/sec (avg: 104.85MB/sec),  3.25 (avg:  3.08) msec latency[RUN #1 42%,   8 secs]  4 threads 50 conns:     8300736 ops, 1039109 (avg: 1037473) ops/sec, 105.04MB/sec (avg: 104.87MB/sec),  3.07 (avg:  3.08) msec latency[RUN #1 47%,   9 secs]  4 threads 50 conns:     9327760 ops, 1026910 (avg: 1036299) ops/sec, 103.80MB/sec (avg: 104.75MB/sec),  3.11 (avg:  3.08) msec latency[RUN #1 52%,  10 secs]  4 threads 50 conns:    10334736 ops, 1006865 (avg: 1033356) ops/sec, 101.78MB/sec (avg: 104.45MB/sec),  3.17 (avg:  3.09) msec latency[RUN #1 57%,  11 secs]  4 threads 50 conns:    11373904 ops, 1039047 (avg: 1033873) ops/sec, 105.03MB/sec (avg: 104.51MB/sec),  3.07 (avg:  3.09) msec latency[RUN #1 62%,  12 secs]  4 threads 50 conns:    12417504 ops, 1043492 (avg: 1034675) ops/sec, 105.48MB/sec (avg: 104.59MB/sec),  3.06 (avg:  3.09) msec latency[RUN #1 67%,  13 secs]  4 threads 50 conns:    13432448 ops, 1014838 (avg: 1033149) ops/sec, 102.58MB/sec (avg: 104.43MB/sec),  3.15 (avg:  3.09) msec latency[RUN #1 72%,  14 secs]  4 threads 50 conns:    14468342 ops, 1035780 (avg: 1033337) ops/sec, 104.70MB/sec (avg: 104.45MB/sec),  3.08 (avg:  3.09) msec latency[RUN #1 77%,  15 secs]  4 threads 50 conns:    15489744 ops, 1021287 (avg: 1032533) ops/sec, 103.23MB/sec (avg: 104.37MB/sec),  3.13 (avg:  3.09) msec latency[RUN #1 83%,  16 secs]  4 threads 50 conns:    16527600 ops, 1037737 (avg: 1032859) ops/sec, 104.90MB/sec (avg: 104.40MB/sec),  3.08 (avg:  3.09) msec latency[RUN #1 88%,  17 secs]  4 threads 50 conns:    17554384 ops, 1025732 (avg: 1032439) ops/sec, 103.68MB/sec (avg: 104.36MB/sec),  3.11 (avg:  3.09) msec latency[RUN #1 93%,  18 secs]  4 threads 50 conns:    18598037 ops, 1043531 (avg: 1033055) ops/sec, 105.48MB/sec (avg: 104.42MB/sec),  3.06 (avg:  3.09) msec latency[RUN #1 98%,  19 secs]  4 threads 50 conns:    19596416 ops,  998279 (avg: 1031225) ops/sec, 100.91MB/sec (avg: 104.24MB/sec),  3.20 (avg:  3.10) msec latency[RUN #1 100%,  19 secs]  0 threads 50 conns:    20000000 ops,  998279 (avg: 1036391) ops/sec, 100.91MB/sec (avg: 104.76MB/sec),  3.20 (avg:  3.08) msec latency
-
-
-CPU Utilization Summary
-  Total CPU time:   38.811s  (user 22.780s, sys 16.031s)
-  Wall time:        19.389s
-  Cores used:       2.002   (avg 50.0% across 4 worker threads)
-  Peak utilization: 214.7%
-4         Threads
-50        Connections per thread
-100000    Requests per client
-
-
-ALL STATS
-============================================================================================================================
-Type         Ops/sec     Hits/sec   Misses/sec    Avg. Latency     p50 Latency     p99 Latency   p99.9 Latency       KB/sec 
-----------------------------------------------------------------------------------------------------------------------------
-Sets            0.00          ---          ---             ---             ---             ---             ---         0.00 
-Gets      1036892.48   1036892.48         0.00         3.08194         3.07100         5.37500        11.07100    107327.31 
-Waits           0.00          ---          ---             ---             ---             ---             ---          --- 
-Totals    1036892.48   1036892.48         0.00         3.08194         3.07100         5.37500        11.07100    107327.31 

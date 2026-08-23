@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use io_uring::{IoUring, opcode, squeue, types};
 
 use kachedb_core::{HashedTimingWheel, SlabPool, pin_current_thread_to_core};
-use kachedb_hash::SwissTable;
+use kachedb_hash::ShardedSwissTable;
 
 use crate::connection::Connection;
 use crate::error::NetError;
@@ -126,19 +126,19 @@ fn create_reuseport_listener(addr: SocketAddr) -> Result<std::net::TcpListener, 
             return Err(std::io::Error::last_os_error());
         }
 
-        let opt: libc::c_int = 1;
+        let optval: libc::c_int = 1;
         libc::setsockopt(
             fd,
             libc::SOL_SOCKET,
             libc::SO_REUSEADDR,
-            &opt as *const _ as *const _,
+            &optval as *const _ as *const libc::c_void,
             std::mem::size_of::<libc::c_int>() as libc::socklen_t,
         );
         libc::setsockopt(
             fd,
             libc::SOL_SOCKET,
             libc::SO_REUSEPORT,
-            &opt as *const _ as *const _,
+            &optval as *const _ as *const libc::c_void,
             std::mem::size_of::<libc::c_int>() as libc::socklen_t,
         );
 
@@ -182,11 +182,11 @@ fn create_reuseport_listener(addr: SocketAddr) -> Result<std::net::TcpListener, 
 
 // ── UringWorkerThread ─────────────────────────────────────────────────────────
 
-/// Per-core io_uring worker.
+/// Per-core io_uring worker with shared global sharded hash index.
 pub struct UringWorkerThread {
     pub core_id: u16,
     pub pool: SlabPool,
-    pub table: SwissTable,
+    pub table: Arc<ShardedSwissTable>,
     pub timing_wheel: HashedTimingWheel,
     pub bind_addr: SocketAddr,
 }
@@ -194,22 +194,22 @@ pub struct UringWorkerThread {
 impl UringWorkerThread {
     /// Creates a new `UringWorkerThread` with default pool capacity (64 MB).
     pub fn new(core_id: u16, bind_addr: SocketAddr) -> Result<Self, NetError> {
-        Self::with_capacity(core_id, bind_addr, DEFAULT_POOL_CAPACITY)
+        Self::with_shared_table(
+            core_id,
+            bind_addr,
+            DEFAULT_POOL_CAPACITY,
+            Arc::new(ShardedSwissTable::new()),
+        )
     }
 
-    /// Creates a new `UringWorkerThread` with explicit memory pool capacity in bytes.
-    pub fn with_capacity(
+    /// Creates a new `UringWorkerThread` with explicit memory pool capacity in bytes and shared table.
+    pub fn with_shared_table(
         core_id: u16,
         bind_addr: SocketAddr,
         pool_bytes: usize,
+        table: Arc<ShardedSwissTable>,
     ) -> Result<Self, NetError> {
         let pool = SlabPool::new(core_id, pool_bytes)?;
-        let table_cap = if pool_bytes >= 256 * 1024 * 1024 {
-            524_288
-        } else {
-            65_536
-        };
-        let table = SwissTable::with_capacity(table_cap);
         let start_sec = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -353,7 +353,7 @@ impl UringWorkerThread {
                                 let data = state.recv_buf[..n].to_vec();
                                 state.conn.feed_bytes(&data);
 
-                                match state.conn.process_pending(&mut self.table, &mut self.pool) {
+                                match state.conn.process_pending(&self.table, &mut self.pool) {
                                     Ok(keep_alive) => {
                                         if state.conn.has_pending_writes() {
                                             let response = state.conn.take_write_buf();

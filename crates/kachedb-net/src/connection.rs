@@ -2,8 +2,8 @@
 
 use std::io::{Read, Write};
 
-use kachedb_core::{SlabClassType, SlabPool};
-use kachedb_hash::{SwissTable, hash_key};
+use kachedb_core::{SlabClassType, SlabPool, resolve_slot_ptr};
+use kachedb_hash::{ShardedSwissTable, hash_key};
 use kachedb_proto_resp::{
     Command, encode_array_header, encode_bulk_string, encode_error, encode_integer, encode_null,
     encode_simple_string, parse_frame,
@@ -17,7 +17,7 @@ const READ_BUF_SIZE: usize = 64 * 1024;
 const WRITE_BUF_SIZE: usize = 64 * 1024;
 
 /// Connection state machine managing the read buffer, parsing incoming commands,
-/// executing them directly against the per-core `SwissTable` and `SlabPool`,
+/// executing them directly against the per-core `SlabPool` and `ShardedSwissTable`,
 /// and staging responses in the write buffer.
 pub struct Connection {
     /// Inbound TCP byte buffer.
@@ -58,10 +58,10 @@ impl Connection {
         self.current_sec = now_sec;
     }
 
-    /// Reads available bytes from `stream` into the internal `read_buf`.
-    /// Returns number of bytes read, or 0 if EOF (client disconnected).
-    pub fn read_from_stream(&mut self, stream: &mut impl Read) -> Result<usize, NetError> {
-        // Compact buffer if needed
+    /// Reads incoming bytes from `stream` into the internal ring buffer.
+    /// Returns number of bytes read, or 0 on EOF.
+    pub fn read_from<R: Read>(&mut self, stream: &mut R) -> Result<usize, NetError> {
+        // Compact buffer if read_pos is past halfway
         if self.read_pos > 0 {
             if self.read_pos < self.read_len {
                 self.read_buf.copy_within(self.read_pos..self.read_len, 0);
@@ -72,27 +72,30 @@ impl Connection {
             self.read_pos = 0;
         }
 
-        if self.read_len >= self.read_buf.len() {
-            // Buffer is full — expand dynamically if needed for very large payloads
+        // Grow buffer if full
+        if self.read_len == self.read_buf.len() {
             self.read_buf.resize(self.read_buf.len() * 2, 0);
         }
 
-        let n = stream.read(&mut self.read_buf[self.read_len..])?;
-        if n == 0 {
-            return Err(NetError::ConnectionClosed);
-        }
+        let n = match stream.read(&mut self.read_buf[self.read_len..]) {
+            Ok(0) => return Ok(0), // EOF
+            Ok(n) => n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(0),
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => return Ok(0),
+            Err(e) => return Err(NetError::Io(e)),
+        };
 
         self.read_len += n;
         Ok(n)
     }
 
-    /// Processes all complete RESP frames currently in `read_buf`.
+    /// Parses and processes all complete frames in the read buffer.
     ///
     /// Executes decoded commands directly against `table` and `pool`.
     /// Returns `Ok(true)` if connection should stay open, or `Ok(false)` on `QUIT`.
     pub fn process_incoming(
         &mut self,
-        table: &mut SwissTable,
+        table: &ShardedSwissTable,
         pool: &mut SlabPool,
     ) -> Result<bool, NetError> {
         loop {
@@ -128,7 +131,7 @@ impl Connection {
     pub fn execute_command(
         cmd: Command<'_>,
         write_buf: &mut Vec<u8>,
-        table: &mut SwissTable,
+        table: &ShardedSwissTable,
         pool: &mut SlabPool,
     ) -> Result<bool, NetError> {
         Self::execute_command_with_time(cmd, write_buf, table, pool, 0)
@@ -138,7 +141,7 @@ impl Connection {
     pub fn execute_command_with_time(
         cmd: Command<'_>,
         write_buf: &mut Vec<u8>,
-        table: &mut SwissTable,
+        table: &ShardedSwissTable,
         pool: &mut SlabPool,
         now_sec: u32,
     ) -> Result<bool, NetError> {
@@ -150,7 +153,7 @@ impl Connection {
             Command::Get { key } => {
                 let h = hash_key(key);
                 if let Some(entry) = table.lookup_checked(h, now_sec) {
-                    if let Ok(ptr) = unsafe { pool.slot_ptr(entry.slab_block_id) } {
+                    if let Some(ptr) = unsafe { resolve_slot_ptr(entry.slab_block_id) } {
                         let val_slice =
                             unsafe { std::slice::from_raw_parts(ptr, entry.value_len as usize) };
                         encode_bulk_string(write_buf, val_slice);
@@ -166,7 +169,6 @@ impl Connection {
                 match SlabClassType::for_size(val_len) {
                     Some(class) => {
                         let h = hash_key(key);
-                        let old_block_id = table.lookup(h).map(|e| e.slab_block_id);
 
                         let block_id = match pool.allocate(class) {
                             Ok(id) => id,
@@ -179,9 +181,9 @@ impl Connection {
                             }
                         };
 
-                        let slot_ptr = match unsafe { pool.slot_ptr(block_id) } {
-                            Ok(ptr) => ptr,
-                            Err(_) => {
+                        let slot_ptr = match unsafe { resolve_slot_ptr(block_id) } {
+                            Some(ptr) => ptr,
+                            None => {
                                 let _ = pool.deallocate(block_id);
                                 encode_error(write_buf, "ERR internal slab slot error");
                                 return Ok(true);
@@ -193,11 +195,6 @@ impl Connection {
                             std::ptr::copy_nonoverlapping(value.as_ptr(), slot_ptr, val_len);
                         }
 
-                        // Deallocate old slab slot if this is a key overwrite
-                        if let Some(old_id) = old_block_id {
-                            let _ = pool.deallocate(old_id);
-                        }
-
                         let expire_at_secs = ttl_ms
                             .map(|ms| {
                                 let secs = (ms / 1000).max(1) as u32;
@@ -205,7 +202,15 @@ impl Connection {
                             })
                             .unwrap_or(0);
 
-                        let _ = table.insert_with_ttl(h, block_id, val_len as u32, expire_at_secs);
+                        // Insert atomically into the global sharded index
+                        let old_block_id =
+                            table.insert_with_ttl(h, block_id, val_len as u32, expire_at_secs);
+
+                        // Deallocate old slab slot if this is a key overwrite
+                        if let Some(old_id) = old_block_id {
+                            let _ = pool.deallocate(old_id);
+                        }
+
                         encode_simple_string(write_buf, "OK");
                     }
                     None => {
@@ -221,7 +226,7 @@ impl Connection {
                 for key in keys {
                     let h = hash_key(key);
                     if let Some(entry) = table.lookup_checked(h, now_sec) {
-                        if let Ok(ptr) = unsafe { pool.slot_ptr(entry.slab_block_id) } {
+                        if let Some(ptr) = unsafe { resolve_slot_ptr(entry.slab_block_id) } {
                             let val_slice = unsafe {
                                 std::slice::from_raw_parts(ptr, entry.value_len as usize)
                             };
@@ -333,7 +338,7 @@ impl Connection {
     #[cfg(target_os = "linux")]
     pub fn process_pending(
         &mut self,
-        table: &mut SwissTable,
+        table: &ShardedSwissTable,
         pool: &mut SlabPool,
     ) -> Result<bool, NetError> {
         self.process_incoming(table, pool)
@@ -365,14 +370,14 @@ mod tests {
     #[test]
     fn execute_ping_and_get_set_flow() {
         let mut conn = Connection::new();
-        let mut table = SwissTable::with_capacity(128);
+        let table = ShardedSwissTable::new();
         let mut pool = SlabPool::new(0, 16 * 1024 * 1024).unwrap();
 
-        // 1. PING
+        // 1. PING -> PONG
         Connection::execute_command(
             Command::Ping { message: None },
             &mut conn.write_buf,
-            &mut table,
+            &table,
             &mut pool,
         )
         .unwrap();
@@ -387,7 +392,7 @@ mod tests {
                 ttl_ms: None,
             },
             &mut conn.write_buf,
-            &mut table,
+            &table,
             &mut pool,
         )
         .unwrap();
@@ -398,7 +403,7 @@ mod tests {
         Connection::execute_command(
             Command::Get { key: b"key1" },
             &mut conn.write_buf,
-            &mut table,
+            &table,
             &mut pool,
         )
         .unwrap();
@@ -411,7 +416,7 @@ mod tests {
         Connection::execute_command(
             Command::Exists { keys },
             &mut conn.write_buf,
-            &mut table,
+            &table,
             &mut pool,
         )
         .unwrap();
@@ -424,7 +429,7 @@ mod tests {
         Connection::execute_command(
             Command::Del { keys: del_keys },
             &mut conn.write_buf,
-            &mut table,
+            &table,
             &mut pool,
         )
         .unwrap();
@@ -435,7 +440,7 @@ mod tests {
         Connection::execute_command(
             Command::Get { key: b"key1" },
             &mut conn.write_buf,
-            &mut table,
+            &table,
             &mut pool,
         )
         .unwrap();
@@ -445,7 +450,7 @@ mod tests {
     #[test]
     fn execute_set_with_ttl_and_expiry_flow() {
         let mut conn = Connection::new();
-        let mut table = SwissTable::with_capacity(128);
+        let table = ShardedSwissTable::new();
         let mut pool = SlabPool::new(0, 16 * 1024 * 1024).unwrap();
 
         // 1. SET key_ttl "temp" EX 10 (at epoch 1000s -> expires at 1010s)
@@ -456,7 +461,7 @@ mod tests {
                 ttl_ms: Some(10_000), // 10 seconds
             },
             &mut conn.write_buf,
-            &mut table,
+            &table,
             &mut pool,
             1000,
         )
@@ -468,7 +473,7 @@ mod tests {
         Connection::execute_command_with_time(
             Command::Get { key: b"key_ttl" },
             &mut conn.write_buf,
-            &mut table,
+            &table,
             &mut pool,
             1005,
         )
@@ -482,7 +487,7 @@ mod tests {
         Connection::execute_command_with_time(
             Command::Exists { keys },
             &mut conn.write_buf,
-            &mut table,
+            &table,
             &mut pool,
             1005,
         )
@@ -494,7 +499,7 @@ mod tests {
         Connection::execute_command_with_time(
             Command::Get { key: b"key_ttl" },
             &mut conn.write_buf,
-            &mut table,
+            &table,
             &mut pool,
             1011,
         )
@@ -508,7 +513,7 @@ mod tests {
         Connection::execute_command_with_time(
             Command::Exists { keys: keys2 },
             &mut conn.write_buf,
-            &mut table,
+            &table,
             &mut pool,
             1011,
         )

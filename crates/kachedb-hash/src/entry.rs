@@ -17,6 +17,17 @@ use kachedb_core::SlabBlockId;
 /// - `1` — accessed at least once; entry is promotion candidate.
 pub const ACCESS_BIT_ACCESSED: u8 = 1;
 
+/// Copyable snapshot of key metadata retrieved from a Swiss Table lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TableEntry {
+    /// Opaque block identifier pointing into `kachedb-core`'s `SlabPool`.
+    pub slab_block_id: SlabBlockId,
+    /// Byte length of the value stored in the slab slot.
+    pub value_len: u32,
+    /// Absolute expiration timestamp in epoch seconds (0 = persistent).
+    pub expire_at_secs: u32,
+}
+
 /// An occupied slot in the KacheDB Swiss Table hash index.
 ///
 /// # Layout (64 bytes, cache-line aligned)
@@ -99,6 +110,16 @@ impl HashEntry {
     #[inline(always)]
     pub fn test_and_clear_accessed(&self) -> bool {
         self.access_flags.swap(0, Ordering::Relaxed) > 0
+    }
+
+    /// Returns a copyable `TableEntry` snapshot of this entry.
+    #[inline(always)]
+    pub fn to_snapshot(&self) -> TableEntry {
+        TableEntry {
+            slab_block_id: self.slab_block_id,
+            value_len: self.value_len,
+            expire_at_secs: self.expire_at_secs,
+        }
     }
 
     /// Returns `true` if the stored hash matches `candidate_hash`.

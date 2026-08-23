@@ -27,7 +27,9 @@
 //! ```
 
 pub mod entry;
+pub mod sharded;
 pub mod table;
 
-pub use entry::HashEntry;
+pub use entry::{HashEntry, TableEntry};
+pub use sharded::{NUM_SHARDS, ShardedSwissTable};
 pub use table::{SwissTable, hash_key};

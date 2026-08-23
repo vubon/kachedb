@@ -28,6 +28,7 @@ pub mod arena;
 pub mod error;
 pub mod pool;
 pub mod quota;
+pub mod registry;
 pub mod slab;
 pub mod timing_wheel;
 
@@ -37,6 +38,7 @@ pub use affinity::pin_current_thread_to_core;
 pub use arena::{MegaslabArena, SlabBlockId};
 pub use error::CoreError;
 pub use pool::SlabPool;
+pub use registry::resolve_slot_ptr;
 pub use slab::{
     CACHE_LINE_BYTES, MEGASLAB_BYTES, MEGASLAB_HEADER_BYTES, MEGASLAB_PAYLOAD_BYTES, SlabClass,
     SlabClassType,

@@ -26,3 +26,8 @@ build/
 .env
 *.env
 .env.*
+
+# Benchmark temp logs and generated scorecards
+docker/.bench_tmp/
+.bench_tmp/
+docs/benchmarks/benchmark_comparison_results*.md
