@@ -177,28 +177,29 @@ impl SwissTable {
     /// # Errors
     ///
     /// Returns `Err(())` if the table is completely full (only possible if the
-    /// Inserts a key-hash and slab descriptor, returning `true` on new insert
-    /// or `false` on update.
+    /// Inserts a key-hash and slab descriptor, returning `Some(old_block_id)` if updated
+    /// or `None` if newly inserted.
     #[inline]
     pub fn insert(
         &mut self,
         key_hash: u64,
         slab_block_id: SlabBlockId,
         value_len: u32,
-    ) -> Result<bool, ()> {
+    ) -> Result<Option<SlabBlockId>, ()> {
         self.insert_with_ttl(key_hash, slab_block_id, value_len, 0)
     }
 
     /// Inserts a key-hash and slab descriptor with an explicit expiration timestamp (in epoch seconds).
     ///
-    /// Returns `Ok(true)` if inserted as a new entry, or `Ok(false)` if updated in place.
+    /// Single-pass probe: Returns `Ok(Some(old_block_id))` if updated in place,
+    /// or `Ok(None)` if inserted as a new entry.
     pub fn insert_with_ttl(
         &mut self,
         key_hash: u64,
         slab_block_id: SlabBlockId,
         value_len: u32,
         expire_at_secs: u32,
-    ) -> Result<bool, ()> {
+    ) -> Result<Option<SlabBlockId>, ()> {
         // Grow before exceeding the 87.5% load threshold.
         if self.count * LOAD_FACTOR_DEN >= self.capacity * LOAD_FACTOR_NUM {
             self.resize(self.capacity * 2);
@@ -214,6 +215,7 @@ impl SwissTable {
             for idx in group.match_byte(fingerprint) {
                 if let Some(entry) = &self.entries[idx] {
                     if entry.matches(key_hash) {
+                        let old_block_id = entry.slab_block_id;
                         // Update in place.
                         self.entries[idx] = Some(Box::new(HashEntry::with_ttl(
                             key_hash,
@@ -221,7 +223,7 @@ impl SwissTable {
                             value_len,
                             expire_at_secs,
                         )));
-                        return Ok(false); // updated
+                        return Ok(Some(old_block_id)); // updated
                     }
                 }
             }
@@ -237,7 +239,7 @@ impl SwissTable {
                     expire_at_secs,
                 )));
                 self.count += 1;
-                return Ok(true); // inserted
+                return Ok(None); // inserted new
             }
 
             // Probe next group.

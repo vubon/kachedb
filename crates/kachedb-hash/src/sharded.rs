@@ -86,9 +86,10 @@ impl ShardedSwissTable {
     ) -> Option<SlabBlockId> {
         let idx = Self::shard_idx(hash);
         let mut shard = self.shards[idx].write();
-        let old_block_id = shard.lookup(hash).map(|e| e.slab_block_id);
-        let _ = shard.insert_with_ttl(hash, block_id, value_len, expire_at_secs);
-        old_block_id
+        shard
+            .insert_with_ttl(hash, block_id, value_len, expire_at_secs)
+            .ok()
+            .flatten()
     }
 
     /// Removes an entry by its 64-bit hash.

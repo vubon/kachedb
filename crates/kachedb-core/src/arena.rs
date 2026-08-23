@@ -135,6 +135,8 @@ pub struct MegaslabArena {
     capacity: u32,
     /// Reclaimed slot indices available for immediate reuse.
     free_slots: Vec<u32>,
+    /// Ring-buffer recycling cursor when full.
+    recycle_cursor: u32,
 }
 
 // SAFETY: The memory region is exclusively owned by one thread/core.
@@ -171,7 +173,7 @@ impl MegaslabArena {
             (*header).magic = MEGASLAB_MAGIC;
             (*header).slab_id = slab_id as u32;
             (*header).class_type = class as u8;
-            (*header).total_slots = capacity;
+            (*header).total_slots = capacity as u32;
             (*header).owning_core = owning_core;
             // `allocated_slots` is zero-initialized by `alloc_zeroed`.
         }
@@ -190,6 +192,7 @@ impl MegaslabArena {
             next_free_slot: 0,
             capacity,
             free_slots: Vec::new(),
+            recycle_cursor: 0,
         })
     }
 
@@ -221,6 +224,17 @@ impl MegaslabArena {
             .fetch_add(1, Ordering::Relaxed);
 
         Ok(SlabBlockId::new(self.slab_id, slot_index as u16))
+    }
+
+    /// Allocates a new slot or recycles the oldest slot in FIFO ring order when full.
+    #[inline]
+    pub fn allocate_or_recycle(&mut self) -> SlabBlockId {
+        if let Ok(id) = self.allocate() {
+            return id;
+        }
+        let slot_index = self.recycle_cursor;
+        self.recycle_cursor = (self.recycle_cursor + 1) % self.capacity;
+        SlabBlockId::new(self.slab_id, slot_index as u16)
     }
 
     /// Returns a slot back to this arena for immediate reuse.

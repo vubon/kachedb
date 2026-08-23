@@ -169,6 +169,37 @@ impl Connection {
                 match SlabClassType::for_size(val_len) {
                     Some(class) => {
                         let h = hash_key(key);
+                        let expire_at_secs = ttl_ms
+                            .map(|ms| {
+                                let secs = (ms / 1000).max(1) as u32;
+                                if now_sec > 0 { now_sec + secs } else { secs }
+                            })
+                            .unwrap_or(0);
+
+                        // Fast-path: In-place overwrite if key exists and fits same slab class
+                        if let Some(existing) = table.lookup(h) {
+                            if SlabClassType::for_size(existing.value_len as usize) == Some(class) {
+                                if let Some(slot_ptr) =
+                                    unsafe { resolve_slot_ptr(existing.slab_block_id) }
+                                {
+                                    unsafe {
+                                        std::ptr::copy_nonoverlapping(
+                                            value.as_ptr(),
+                                            slot_ptr,
+                                            val_len,
+                                        );
+                                    }
+                                    let _ = table.insert_with_ttl(
+                                        h,
+                                        existing.slab_block_id,
+                                        val_len as u32,
+                                        expire_at_secs,
+                                    );
+                                    encode_simple_string(write_buf, "OK");
+                                    return Ok(true);
+                                }
+                            }
+                        }
 
                         let block_id = match pool.allocate(class) {
                             Ok(id) => id,
@@ -195,18 +226,11 @@ impl Connection {
                             std::ptr::copy_nonoverlapping(value.as_ptr(), slot_ptr, val_len);
                         }
 
-                        let expire_at_secs = ttl_ms
-                            .map(|ms| {
-                                let secs = (ms / 1000).max(1) as u32;
-                                if now_sec > 0 { now_sec + secs } else { secs }
-                            })
-                            .unwrap_or(0);
-
                         // Insert atomically into the global sharded index
                         let old_block_id =
                             table.insert_with_ttl(h, block_id, val_len as u32, expire_at_secs);
 
-                        // Deallocate old slab slot if this is a key overwrite
+                        // Deallocate old slab slot if this is a key overwrite across different classes
                         if let Some(old_id) = old_block_id {
                             let _ = pool.deallocate(old_id);
                         }
