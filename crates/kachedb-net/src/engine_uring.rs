@@ -350,28 +350,29 @@ impl UringWorkerThread {
                             let n = result as usize;
 
                             if let Some(state) = connections.get_mut(&token) {
-                                let data = state.recv_buf[..n].to_vec();
-                                state.conn.feed_bytes(&data);
+                                state.conn.feed_bytes(&state.recv_buf[..n]);
 
                                 match state.conn.process_pending(&self.table, &mut self.pool) {
                                     Ok(keep_alive) => {
-                                        if state.conn.has_pending_writes() {
-                                            let response = state.conn.take_write_buf();
-                                            state.pending_send = response;
-                                            state.closing = !keep_alive;
+                                        let fd = state.fd;
+                                        state.closing = !keep_alive;
 
+                                        if state.conn.has_pending_writes() {
+                                            state.conn.drain_write_buf_into(&mut state.pending_send);
                                             let send_ptr = state.pending_send.as_ptr();
                                             let send_len = state.pending_send.len();
-                                            let fd = state.fd;
                                             pending_sq
                                                 .push(make_send(token, fd, send_ptr, send_len));
-                                        } else if !keep_alive {
-                                            let fd = state.fd;
-                                            pending_sq.push(make_close(token, fd));
+                                        }
+
+                                        if state.closing {
+                                            if !state.conn.has_pending_writes() {
+                                                pending_sq.push(make_close(token, fd));
+                                            }
                                         } else {
+                                            // Re-arm RECV immediately for continuous full-duplex pipelining!
                                             let recv_ptr = state.recv_buf.as_ptr() as *mut u8;
                                             let recv_len = state.recv_buf.len();
-                                            let fd = state.fd;
                                             pending_sq
                                                 .push(make_recv(token, fd, recv_ptr, recv_len));
                                         }
@@ -393,11 +394,6 @@ impl UringWorkerThread {
                                 if state.closing {
                                     let fd = state.fd;
                                     pending_sq.push(make_close(token, fd));
-                                } else {
-                                    let recv_ptr = state.recv_buf.as_ptr() as *mut u8;
-                                    let recv_len = state.recv_buf.len();
-                                    let fd = state.fd;
-                                    pending_sq.push(make_recv(token, fd, recv_ptr, recv_len));
                                 }
                             }
                         }

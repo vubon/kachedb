@@ -61,15 +61,16 @@ impl Connection {
     /// Reads incoming bytes from `stream` into the internal ring buffer.
     /// Returns number of bytes read, or 0 on EOF.
     pub fn read_from<R: Read>(&mut self, stream: &mut R) -> Result<usize, NetError> {
-        // Compact buffer if read_pos is past halfway
+        // Compact buffer only when empty or past halfway mark to avoid redundant memory copies
         if self.read_pos > 0 {
-            if self.read_pos < self.read_len {
+            if self.read_pos == self.read_len {
+                self.read_pos = 0;
+                self.read_len = 0;
+            } else if self.read_pos >= self.read_buf.len() / 2 {
                 self.read_buf.copy_within(self.read_pos..self.read_len, 0);
                 self.read_len -= self.read_pos;
-            } else {
-                self.read_len = 0;
+                self.read_pos = 0;
             }
-            self.read_pos = 0;
         }
 
         // Grow buffer if full
@@ -306,15 +307,16 @@ impl Connection {
     /// calls this to hand the received slice to the connection state machine.
     #[cfg(target_os = "linux")]
     pub fn feed_bytes(&mut self, data: &[u8]) {
-        // Compact buffer if cursor has advanced
+        // Compact buffer only when empty or past halfway mark
         if self.read_pos > 0 {
-            if self.read_pos < self.read_len {
+            if self.read_pos == self.read_len {
+                self.read_pos = 0;
+                self.read_len = 0;
+            } else if self.read_pos >= self.read_buf.len() / 2 {
                 self.read_buf.copy_within(self.read_pos..self.read_len, 0);
                 self.read_len -= self.read_pos;
-            } else {
-                self.read_len = 0;
+                self.read_pos = 0;
             }
-            self.read_pos = 0;
         }
 
         // Grow buffer if needed
@@ -341,6 +343,15 @@ impl Connection {
         pool: &mut SlabPool,
     ) -> Result<bool, NetError> {
         self.process_incoming(table, pool)
+    }
+
+    /// Drains the write buffer into `dest` without allocating a new Vec.
+    #[cfg(target_os = "linux")]
+    pub fn drain_write_buf_into(&mut self, dest: &mut Vec<u8>) {
+        dest.clear();
+        dest.extend_from_slice(&self.write_buf[self.write_pos..]);
+        self.write_buf.clear();
+        self.write_pos = 0;
     }
 
     /// Drains the write buffer and returns its contents as a `Vec<u8>`.

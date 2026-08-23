@@ -181,6 +181,7 @@ impl WorkerThread {
                                         "Worker [{core}]: accepted conn from {peer_addr}",
                                         core = self.core_id
                                     );
+                                    let _ = stream.set_nodelay(true);
                                     let token = Token(next_token);
                                     next_token += 1;
 
