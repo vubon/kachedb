@@ -31,8 +31,8 @@ impl ArenaEntry {
 }
 
 // Fixed-size global registry array initialized at compile-time
+#[allow(clippy::declare_interior_mutable_const)]
 static GLOBAL_ARENAS: [ArenaEntry; MAX_GLOBAL_SLABS] = {
-    // Const initialization of 16k elements
     const INIT: ArenaEntry = ArenaEntry::new();
     [INIT; MAX_GLOBAL_SLABS]
 };

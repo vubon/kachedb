@@ -173,7 +173,7 @@ impl MegaslabArena {
             (*header).magic = MEGASLAB_MAGIC;
             (*header).slab_id = slab_id as u32;
             (*header).class_type = class as u8;
-            (*header).total_slots = capacity as u32;
+            (*header).total_slots = capacity;
             (*header).owning_core = owning_core;
             // `allocated_slots` is zero-initialized by `alloc_zeroed`.
         }

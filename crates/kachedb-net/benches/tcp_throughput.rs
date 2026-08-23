@@ -11,12 +11,12 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use kachedb_core::SlabPool;
-use kachedb_hash::SwissTable;
+use kachedb_hash::ShardedSwissTable;
 use kachedb_net::Connection;
 
 fn bench_in_memory_set_pipeline(c: &mut Criterion) {
     let mut conn = Connection::new();
-    let mut table = SwissTable::with_capacity(1024);
+    let table = ShardedSwissTable::new();
     let mut pool = SlabPool::new(0, 64 * 1024 * 1024).unwrap();
 
     let raw_set = b"*3\r\n$3\r\nSET\r\n$4\r\nkey1\r\n$4\r\nval1\r\n";
@@ -27,14 +27,14 @@ fn bench_in_memory_set_pipeline(c: &mut Criterion) {
         |b| {
             b.iter(|| {
                 // SET
-                conn.read_from_stream(&mut std::io::Cursor::new(raw_set))
+                conn.read_from(&mut std::io::Cursor::new(raw_set))
                     .unwrap();
-                conn.process_incoming(&mut table, &mut pool).unwrap();
+                conn.process_incoming(&table, &mut pool).unwrap();
 
                 // DEL (to reclaim slab slot for next iteration)
-                conn.read_from_stream(&mut std::io::Cursor::new(raw_del))
+                conn.read_from(&mut std::io::Cursor::new(raw_del))
                     .unwrap();
-                conn.process_incoming(&mut table, &mut pool).unwrap();
+                conn.process_incoming(&table, &mut pool).unwrap();
 
                 black_box(&conn);
             });
@@ -43,17 +43,17 @@ fn bench_in_memory_set_pipeline(c: &mut Criterion) {
 }
 
 fn bench_in_memory_get_pipeline(c: &mut Criterion) {
-    let mut table = SwissTable::with_capacity(1024);
+    let table = ShardedSwissTable::new();
     let mut pool = SlabPool::new(0, 64 * 1024 * 1024).unwrap();
 
     // Populate key once
     let mut setup_conn = Connection::new();
     setup_conn
-        .read_from_stream(&mut std::io::Cursor::new(
+        .read_from(&mut std::io::Cursor::new(
             b"*3\r\n$3\r\nSET\r\n$4\r\nuser\r\n$5\r\nalice\r\n",
         ))
         .unwrap();
-    setup_conn.process_incoming(&mut table, &mut pool).unwrap();
+    setup_conn.process_incoming(&table, &mut pool).unwrap();
 
     let raw_get = b"*2\r\n$3\r\nGET\r\n$4\r\nuser\r\n";
     let mut conn = Connection::new();
@@ -62,9 +62,9 @@ fn bench_in_memory_get_pipeline(c: &mut Criterion) {
         "net::in_memory GET hit pipeline (parse + hash + slab + encode)",
         |b| {
             b.iter(|| {
-                conn.read_from_stream(&mut std::io::Cursor::new(raw_get))
+                conn.read_from(&mut std::io::Cursor::new(raw_get))
                     .unwrap();
-                conn.process_incoming(&mut table, &mut pool).unwrap();
+                conn.process_incoming(&table, &mut pool).unwrap();
                 black_box(&conn);
             });
         },
