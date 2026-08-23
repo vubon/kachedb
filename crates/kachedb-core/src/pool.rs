@@ -31,7 +31,7 @@ use crate::{
 /// Default fraction of total megaslabs assigned to the App Cache workload.
 pub const APP_CACHE_DEFAULT_RATIO: f64 = 0.20;
 /// Hard ceiling ratio for App Cache (allows elastic growth when tensors are idle).
-pub const APP_CACHE_MAX_RATIO: f64 = 0.50;
+pub const APP_CACHE_MAX_RATIO: f64 = 0.95;
 /// Default fraction assigned to LLM tensor storage.
 pub const TENSOR_CACHE_DEFAULT_RATIO: f64 = 0.80;
 /// Hard ceiling ratio for tensor storage.

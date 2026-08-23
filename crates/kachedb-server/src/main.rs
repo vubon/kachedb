@@ -68,6 +68,8 @@ fn main() {
         let bind_addr = config.bind_addr;
         let shm_enabled = config.shm_enabled;
 
+        let pool_bytes = config.pool_mb_per_core * 1024 * 1024;
+
         let handle = thread::Builder::new()
             .name(format!("kachedb-worker-{}", core_id))
             .spawn(move || {
@@ -92,7 +94,11 @@ fn main() {
 
                 #[cfg(target_os = "linux")]
                 {
-                    let mut worker = match UringWorkerThread::new(core_id as u16, bind_addr) {
+                    let mut worker = match UringWorkerThread::with_capacity(
+                        core_id as u16,
+                        bind_addr,
+                        pool_bytes,
+                    ) {
                         Ok(w) => w,
                         Err(e) => {
                             log::error!(
@@ -108,7 +114,11 @@ fn main() {
 
                 #[cfg(not(target_os = "linux"))]
                 {
-                    let mut worker = match WorkerThread::new(core_id as u16, bind_addr) {
+                    let mut worker = match WorkerThread::with_capacity(
+                        core_id as u16,
+                        bind_addr,
+                        pool_bytes,
+                    ) {
                         Ok(w) => w,
                         Err(e) => {
                             log::error!("Worker [{core_id}]: failed to initialize: {e}");

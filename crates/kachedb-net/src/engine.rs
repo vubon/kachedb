@@ -110,10 +110,24 @@ fn create_reuseport_listener(addr: SocketAddr) -> Result<TcpListener, std::io::E
 }
 
 impl WorkerThread {
-    /// Creates a new `WorkerThread` for the given core ID.
+    /// Creates a new `WorkerThread` with default pool capacity (64 MB).
     pub fn new(core_id: u16, bind_addr: SocketAddr) -> Result<Self, NetError> {
-        let pool = SlabPool::new(core_id, DEFAULT_POOL_CAPACITY)?;
-        let table = SwissTable::with_capacity(65536);
+        Self::with_capacity(core_id, bind_addr, DEFAULT_POOL_CAPACITY)
+    }
+
+    /// Creates a new `WorkerThread` with explicit memory pool capacity in bytes.
+    pub fn with_capacity(
+        core_id: u16,
+        bind_addr: SocketAddr,
+        pool_bytes: usize,
+    ) -> Result<Self, NetError> {
+        let pool = SlabPool::new(core_id, pool_bytes)?;
+        let table_cap = if pool_bytes >= 256 * 1024 * 1024 {
+            524_288
+        } else {
+            65_536
+        };
+        let table = SwissTable::with_capacity(table_cap);
         let start_sec = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

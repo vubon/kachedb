@@ -165,12 +165,37 @@ impl Connection {
                 let val_len = value.len();
                 match SlabClassType::for_size(val_len) {
                     Some(class) => {
-                        let block_id = pool.allocate(class)?;
-                        let slot_ptr = unsafe { pool.slot_ptr(block_id)? };
+                        let h = hash_key(key);
+                        let old_block_id = table.lookup(h).map(|e| e.slab_block_id);
+
+                        let block_id = match pool.allocate(class) {
+                            Ok(id) => id,
+                            Err(_) => {
+                                encode_error(
+                                    write_buf,
+                                    "OOM command not allowed when used memory > 'maxmemory'",
+                                );
+                                return Ok(true);
+                            }
+                        };
+
+                        let slot_ptr = match unsafe { pool.slot_ptr(block_id) } {
+                            Ok(ptr) => ptr,
+                            Err(_) => {
+                                let _ = pool.deallocate(block_id);
+                                encode_error(write_buf, "ERR internal slab slot error");
+                                return Ok(true);
+                            }
+                        };
 
                         // Copy raw payload into slab slot (cache-line aligned destination)
                         unsafe {
                             std::ptr::copy_nonoverlapping(value.as_ptr(), slot_ptr, val_len);
+                        }
+
+                        // Deallocate old slab slot if this is a key overwrite
+                        if let Some(old_id) = old_block_id {
+                            let _ = pool.deallocate(old_id);
                         }
 
                         let expire_at_secs = ttl_ms
@@ -180,7 +205,6 @@ impl Connection {
                             })
                             .unwrap_or(0);
 
-                        let h = hash_key(key);
                         let _ = table.insert_with_ttl(h, block_id, val_len as u32, expire_at_secs);
                         encode_simple_string(write_buf, "OK");
                     }
