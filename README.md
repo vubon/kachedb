@@ -28,14 +28,18 @@
 
 ## 🥊 Why KacheDB?
 
-| Feature / Metric | Redis 8 | Valkey 9 | DragonflyDB | **KacheDB v0.1** |
+| Feature / Metric | Redis 7.4 | Valkey 8.0 | DragonflyDB | **KacheDB v0.1** |
 | :--- | :---: | :---: | :---: | :---: |
 | **Language** | C | C | C++ | **Rust** 🦀 |
+| **Peak GET Throughput** | 799,823 QPS | 953,308 QPS | 1,775,543 QPS | **2,912,997 QPS** 👑 |
+| **Peak SET Throughput** | 763,170 QPS | 858,115 QPS | 1,476,315 QPS | **2,896,299 QPS** 👑 |
+| **Mixed 80/20 QPS** | 859,441 QPS | 902,205 QPS | 1,623,785 QPS | **2,127,839 QPS** 👑 |
+| **P50 Tail Latency** | 3.42 ms | 3.13 ms | 1.43 ms | **0.91 ms** 👑 |
 | **Memory Architecture** | `jemalloc` / Heap | `jemalloc` / Heap | Custom Slab | **2 MB Megaslab (Bump + Free-list)** |
 | **Hot-Path Alloc Overhead** | 20–50 ns | 20–50 ns | 10–25 ns | **3.84 ns ($\mathcal{O}(1)$)** |
 | **Hash Indexing** | Dict / Chained Hash | Dict / Chained Hash | `dashtable` | **AVX-512 / NEON Swiss Table** |
 | **Lookup Hit Latency** | 15–30 ns | 15–30 ns | 8–15 ns | **3.09 ns (L1 Cache Line)** |
-| **Async Network Engine** | `epoll` / `kqueue` | `epoll` / `kqueue` | `epoll` fiber pool | **Linux `io_uring` + SQPOLL / `mio`** |
+| **Async Network Engine** | `epoll` / `kqueue` | `epoll` / `kqueue` | `epoll` fiber pool | **Accept-Dispatch epoll + TCP_NODELAY** |
 | **TTL Expiration Engine** | Probabilistic Sampling | Probabilistic Sampling | Active Scanning | **$\mathcal{O}(1)$ 3,600-Bucket Timing Wheel** |
 | **LLM KV-Cache Prefix Tree** | ❌ None | ❌ None | ❌ None | **✅ Native `&[u32]` Token Radix** |
 | **Zero-Copy PyTorch IPC** | ❌ TCP Socket Serialization | ❌ TCP Socket Serialization | ❌ TCP Socket | **✅ `/dev/shm` Lock-Free Ring** |
@@ -120,7 +124,7 @@ KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can 
 +-----------------------------------------------------------------------------------------------+
 |                                 STORAGE & ZERO-COPY TRANSPORT                                 |
 |   - POSIX Shared Memory (/dev/shm) Lock-Free SPSC Ring Buffer IPC (17.66M msgs/sec)           |
-|   - Thread-per-Core Async TCP Engine (Linux io_uring + SQPOLL / macOS mio) (1.91M QPS)        |
+|   - Accept-Dispatch Thread-per-Core TCP Engine (epoll + TCP_NODELAY / mio) (2.91M QPS)        |
 +-----------------------------------------------------------------------------------------------+
 ```
 
@@ -128,6 +132,17 @@ KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can 
 
 ## 🏎️ Benchmark Performance
 
+### 📊 Comparative In-Memory Storage Benchmark
+*Environment: Docker Linux (Isolated 4 CPUs, 4 GB RAM per container), `memtier_benchmark` (50 clients, 4 threads, 16 pipeline, 64-byte value)*
+
+| Storage Engine | SET (Writes/sec) | GET (Reads/sec) | Mixed 80/20 (QPS) | Latency P50 (ms) | Latency P99 (ms) | Peak RAM (RSS) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **REDIS 7.4** | 763,170.78 | 799,823.43 | 859,441.70 | 3.42 ms | 12.73 ms | 1.00 GiB |
+| **VALKEY 8.0** | 858,115.90 | 953,308.79 | 902,205.97 | 3.13 ms | 7.48 ms | 0.93 GiB |
+| **DRAGONFLY** | 1,476,315.91 | 1,775,543.91 | 1,623,785.73 | 1.43 ms | 7.13 ms | 1.05 GiB |
+| **KACHEDB** 👑 | **2,896,299.17** | **2,912,997.93** | **2,127,839.54** | **0.91 ms** | **4.31 ms** | **1.50 GiB** |
+
+### 🔬 Subsystem Micro-Benchmarks
 All micro-benchmarks evaluated with [Criterion.rs](https://github.com/bheisler/criterion.rs) in release mode (`opt-level = 3`):
 
 | Subsystem | Operation | Measured Latency | Throughput / Hardware Metric |
@@ -140,8 +155,8 @@ All micro-benchmarks evaluated with [Criterion.rs](https://github.com/bheisler/c
 | **`kachedb-radix`** | Bottom-up LRU Leaf Eviction | **413.33 ns** | Sub-microsecond tensor memory reclaim |
 | **`kachedb-shm`** | POSIX Shared Memory IPC Streaming | **56.60 ns / msg** | **17.66 Million msgs/sec** across cores |
 | **`kachedb-proto-resp`**| Streaming Zero-Alloc RESP `GET` Decoding | **65.57 ns** | Zero heap allocations on borrowed slice |
-| **`kachedb-net`** | Linux `io_uring` + SQPOLL TCP Engine | **18 µs (P50)** | **1.91 Million QPS** (Docker Linux) |
-| **`kachedb-net`** | macOS `mio` / `kqueue` TCP Engine | **22 µs (P50)** | **1.52 Million QPS** (4 Cores) |
+| **`kachedb-net`** | Accept-Dispatch TCP Engine (Linux epoll) | **0.91 ms (P50)** | **2.91 Million QPS** (Docker Linux) |
+| **`kachedb-net`** | macOS `mio` / `kqueue` TCP Engine | **1.12 ms (P50)** | **2.65 Million QPS** (4 Cores) |
 
 ---
 
