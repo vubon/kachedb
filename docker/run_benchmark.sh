@@ -165,8 +165,8 @@ for target in "${TARGETS[@]}"; do
   SET_QPS=$(grep -E "^Totals" "${TMP_DIR}/${target}_SET.log" 2>/dev/null | awk '{print $2}' || echo "N/A")
   GET_QPS=$(grep -E "^Totals" "${TMP_DIR}/${target}_GET.log" 2>/dev/null | awk '{print $2}' || echo "N/A")
   MIX_QPS=$(grep -E "^Totals" "${TMP_DIR}/${target}_MIXED.log" 2>/dev/null | awk '{print $2}' || echo "N/A")
-  P50_LAT=$(grep -E "^Totals" "${TMP_DIR}/${target}_GET.log" 2>/dev/null | awk '{print $5}' || echo "N/A")
-  P99_LAT=$(grep -E "^Totals" "${TMP_DIR}/${target}_GET.log" 2>/dev/null | awk '{print $6}' || echo "N/A")
+  P50_LAT=$(grep -E "^Totals" "${TMP_DIR}/${target}_GET.log" 2>/dev/null | awk '{print $6}' || echo "N/A")
+  P99_LAT=$(grep -E "^Totals" "${TMP_DIR}/${target}_GET.log" 2>/dev/null | awk '{print $7}' || echo "N/A")
   MEM=$(cat "${TMP_DIR}/${target}_mem.txt" 2>/dev/null || echo "N/A")
 
   echo "| **${target^^}** | ${SET_QPS} | ${GET_QPS} | ${MIX_QPS} | ${P50_LAT} | ${P99_LAT} | ${MEM} |" >> "${RESULTS_FILE}"
