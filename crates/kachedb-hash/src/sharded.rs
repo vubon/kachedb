@@ -48,11 +48,12 @@ impl Default for ShardedSwissTable {
     }
 }
 
-/// Default initial capacity per shard (1,024 slots × 64 B = 64 KB per shard, 16 MB total across 256 shards).
-pub const DEFAULT_PER_SHARD_CAPACITY: usize = 1024;
+/// Default initial capacity per shard (16,384 slots per shard across 256 shards = 4.19M keys, 268 MB index).
+/// Prevents runtime resize stalls for multi-million key workloads while keeping memory lean.
+pub const DEFAULT_PER_SHARD_CAPACITY: usize = 16_384;
 
 impl ShardedSwissTable {
-    /// Creates a new `ShardedSwissTable` with 256 shards and 1,024 slots per shard (16 MB starting memory).
+    /// Creates a new `ShardedSwissTable` with 256 shards and 16,384 slots per shard.
     pub fn new() -> Self {
         Self::with_total_capacity(DEFAULT_PER_SHARD_CAPACITY * NUM_SHARDS)
     }

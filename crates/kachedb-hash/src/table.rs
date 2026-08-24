@@ -365,8 +365,8 @@ impl SwissTable {
         );
 
         let mut new_ctrl = vec![CTRL_EMPTY; new_capacity];
-        let mut new_entries: Vec<HashEntry> =
-            (0..new_capacity).map(|_| HashEntry::default()).collect();
+        let mut new_entries = Vec::with_capacity(new_capacity);
+        new_entries.resize_with(new_capacity, HashEntry::default);
 
         for (idx, entry) in self.entries.drain(..).enumerate() {
             if self.ctrl[idx] != CTRL_EMPTY && self.ctrl[idx] != CTRL_DELETED {
