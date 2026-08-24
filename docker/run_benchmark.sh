@@ -136,12 +136,16 @@ done
 echo ""
 echo "📝 Compiling benchmark scorecard..."
 
-cat << 'EOF' > "${RESULTS_FILE}"
+GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "N/A")
+GIT_SUBJECT=$(git log -1 --pretty=%s 2>/dev/null || echo "Working Tree")
+
+cat << EOF > "${RESULTS_FILE}"
 # 🏎️ In-Memory Storage Engine Benchmark Scorecard
 
 **Benchmark Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")  
+**Git Commit:** \`${GIT_COMMIT}\` (${GIT_SUBJECT})  
 **Environment:** Docker Linux (Isolated 4 CPUs, 4 GB RAM per container)  
-**Load Generator:** `memtier_benchmark` (50 clients, 4 threads, 16 pipeline, 64-byte value)
+**Load Generator:** \`memtier_benchmark\` (50 clients, 4 threads, 16 pipeline, 64-byte value)
 
 ---
 

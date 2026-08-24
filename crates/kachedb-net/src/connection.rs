@@ -6,7 +6,7 @@ use kachedb_core::{SlabClassType, SlabPool, resolve_slot_ptr};
 use kachedb_hash::{ShardedSwissTable, hash_key};
 use kachedb_proto_resp::{
     Command, encode_array_header, encode_bulk_string, encode_error, encode_integer, encode_null,
-    encode_simple_string, parse_frame,
+    encode_simple_string, parse_command,
 };
 
 use crate::error::NetError;
@@ -90,7 +90,7 @@ impl Connection {
         Ok(n)
     }
 
-    /// Parses and processes all complete frames in the read buffer.
+    /// Parses and processes all complete frames in the read buffer with zero heap allocations.
     ///
     /// Executes decoded commands directly against `table` and `pool`.
     /// Returns `Ok(true)` if connection should stay open, or `Ok(false)` on `QUIT`.
@@ -105,10 +105,9 @@ impl Connection {
                 break;
             }
 
-            match parse_frame(slice)? {
-                Some((frame, consumed)) => {
+            match parse_command(slice)? {
+                Some((cmd, consumed)) => {
                     self.read_pos += consumed;
-                    let cmd = Command::from_frame(frame)?;
                     let keep_alive = Self::execute_command_with_time(
                         cmd,
                         &mut self.write_buf,

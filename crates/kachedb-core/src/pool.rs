@@ -173,19 +173,16 @@ impl SlabPool {
         }
     }
 
-    /// Returns a raw mutable pointer to the payload bytes of `id`.
+    /// Returns the raw pointer to the slot payload for a live block ID.
     ///
     /// # Safety
-    ///
     /// The caller must guarantee `id` is live and was obtained from this pool.
     pub unsafe fn slot_ptr(&self, id: SlabBlockId) -> Result<*mut u8, CoreError> {
         let slab_id = id.slab_id();
-        if let Some(&arena_idx) = self
-            .slab_id_to_arena
-            .get(&slab_id)
-            .filter(|&&idx| idx < self.arenas.len())
-        {
-            return Ok(unsafe { self.arenas[arena_idx].slot_ptr(id) });
+        for arena in &self.arenas {
+            if arena.header_slab_id() == slab_id as u32 {
+                return Ok(unsafe { arena.slot_ptr(id) });
+            }
         }
         Err(CoreError::InvalidBlockId { id: id.0 })
     }
