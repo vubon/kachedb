@@ -15,12 +15,31 @@ use kachedb_core::SlabBlockId;
 pub const NUM_SHARDS: usize = 256;
 const SHARD_MASK: usize = NUM_SHARDS - 1;
 
+/// Cache-line aligned shard container.
+///
+/// `#[repr(align(64))]` guarantees each shard begins on a dedicated 64-byte
+/// CPU cache line boundary. This completely eliminates false sharing between CPU cores
+/// when multiple worker threads concurrently read or write adjacent shards.
+#[repr(align(64))]
+pub struct Shard {
+    table: RwLock<SwissTable>,
+}
+
+impl Shard {
+    /// Creates a new cache-aligned shard with the specified initial slot capacity.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            table: RwLock::new(SwissTable::with_capacity(capacity)),
+        }
+    }
+}
+
 /// A high-concurrency, lock-striped hash index powered by Swiss Tables.
 ///
 /// Thread-safe for simultaneous multi-reader and multi-writer access from
 /// arbitrary worker threads.
 pub struct ShardedSwissTable {
-    shards: Box<[RwLock<SwissTable>]>,
+    shards: Box<[Shard]>,
 }
 
 impl Default for ShardedSwissTable {
@@ -43,7 +62,7 @@ impl ShardedSwissTable {
         let per_shard_cap = (total_capacity / NUM_SHARDS).max(64);
         let mut shards = Vec::with_capacity(NUM_SHARDS);
         for _ in 0..NUM_SHARDS {
-            shards.push(RwLock::new(SwissTable::with_capacity(per_shard_cap)));
+            shards.push(Shard::new(per_shard_cap));
         }
         Self {
             shards: shards.into_boxed_slice(),
@@ -60,18 +79,18 @@ impl ShardedSwissTable {
     /// Point lookup with TTL expiry validation.
     ///
     /// Acquires a short-lived read lock on the target shard (~3 ns).
-    #[inline]
+    #[inline(always)]
     pub fn lookup_checked(&self, hash: u64, now_sec: u32) -> Option<TableEntry> {
         let idx = Self::shard_idx(hash);
-        let shard = self.shards[idx].read();
+        let shard = self.shards[idx].table.read();
         shard.lookup_checked(hash, now_sec).map(|e| e.to_snapshot())
     }
 
     /// Point lookup without TTL validation (for raw metadata inspection).
-    #[inline]
+    #[inline(always)]
     pub fn lookup(&self, hash: u64) -> Option<TableEntry> {
         let idx = Self::shard_idx(hash);
-        let shard = self.shards[idx].read();
+        let shard = self.shards[idx].table.read();
         shard.lookup(hash).map(|e| e.to_snapshot())
     }
 
@@ -79,7 +98,7 @@ impl ShardedSwissTable {
     ///
     /// If the key already existed, returns the previous `SlabBlockId` so
     /// the caller can immediately recycle the old slab memory slot.
-    #[inline]
+    #[inline(always)]
     pub fn insert_with_ttl(
         &self,
         hash: u64,
@@ -88,7 +107,7 @@ impl ShardedSwissTable {
         expire_at_secs: u32,
     ) -> Option<SlabBlockId> {
         let idx = Self::shard_idx(hash);
-        let mut shard = self.shards[idx].write();
+        let mut shard = self.shards[idx].table.write();
         shard
             .insert_with_ttl(hash, block_id, value_len, expire_at_secs)
             .ok()
@@ -98,16 +117,16 @@ impl ShardedSwissTable {
     /// Removes an entry by its 64-bit hash.
     ///
     /// Returns the removed `TableEntry` if found.
-    #[inline]
+    #[inline(always)]
     pub fn remove(&self, hash: u64) -> Option<TableEntry> {
         let idx = Self::shard_idx(hash);
-        let mut shard = self.shards[idx].write();
+        let mut shard = self.shards[idx].table.write();
         shard.remove(hash)
     }
 
     /// Returns the total count of live entries across all 256 shards.
     pub fn len(&self) -> usize {
-        self.shards.iter().map(|s| s.read().len()).sum()
+        self.shards.iter().map(|s| s.table.read().len()).sum()
     }
 
     /// Returns `true` if all shards are empty.
