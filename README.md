@@ -137,10 +137,10 @@ KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can 
 
 | Storage Engine | SET (Writes/sec) | GET (Reads/sec) | Mixed 80/20 (QPS) | Latency P50 (ms) | Latency P99 (ms) | Peak RAM (RSS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **REDIS 7.4** | 763,170.78 | 799,823.43 | 859,441.70 | 3.42 ms | 12.73 ms | 1.00 GiB |
-| **VALKEY 8.0** | 858,115.90 | 953,308.79 | 902,205.97 | 3.13 ms | 7.48 ms | 0.93 GiB |
-| **DRAGONFLY** | 1,476,315.91 | 1,775,543.91 | 1,623,785.73 | 1.43 ms | 7.13 ms | 1.05 GiB |
-| **KACHEDB** 👑 | **2,896,299.17** | **2,912,997.93** | **2,127,839.54** | **0.91 ms** | **4.31 ms** | **1.50 GiB** |
+| **REDIS 7.4** | 852,168.24 | 882,368.07 | 875,466.47 | 3.31 ms | 8.51 ms | 1.00 GiB |
+| **VALKEY 8.0** | 919,584.24 | 988,717.55 | 915,811.30 | 3.10 ms | 6.94 ms | 0.93 GiB |
+| **DRAGONFLY** | 1,945,175.61 | 2,275,812.03 | 2,178,511.60 | 1.28 ms | 4.19 ms | 0.83 GiB |
+| **KACHEDB** 👑 | **2,862,336.36** | **3,105,900.65** | **2,726,033.13** | **0.79 ms** | **4.13 ms** | **3.35 GiB** |
 
 ### 🔬 Subsystem Micro-Benchmarks
 All micro-benchmarks evaluated with [Criterion.rs](https://github.com/bheisler/criterion.rs) in release mode (`opt-level = 3`):
@@ -151,12 +151,12 @@ All micro-benchmarks evaluated with [Criterion.rs](https://github.com/bheisler/c
 | **`kachedb-core`** | Multi-Arena Pool Allocate + Free (`AppSmall`) | **5.40 ns** | Elastic quota-safe allocation |
 | **`kachedb-hash`** | Swiss Table Point Query Hit (1M keys) | **3.09 ns** | **323.6 Million lookups/sec / core** |
 | **`kachedb-hash`** | Swiss Table 1M Keys Sequential Insert | **46.62 ms** | −24.8% speedup via tombstone compaction |
-| **`kachedb-radix`** | 1,024-token Prompt Prefix Match (64 blocks) | **2.45 µs** | **~10,000× speedup** vs GPU prefill |
-| **`kachedb-radix`** | Bottom-up LRU Leaf Eviction | **413.33 ns** | Sub-microsecond tensor memory reclaim |
-| **`kachedb-shm`** | POSIX Shared Memory IPC Streaming | **56.60 ns / msg** | **17.66 Million msgs/sec** across cores |
+| **`kachedb-radix`** | 1,024-token Prompt Prefix Match (64 blocks) | **2.43 µs** | **~10,000× speedup** vs GPU prefill |
+| **`kachedb-radix`** | Bottom-up LRU Leaf Eviction | **409.0 ns** | Sub-microsecond tensor memory reclaim |
+| **`kachedb-shm`** | POSIX Shared Memory IPC Streaming | **60.50 ns / msg** | **16.52 Million msgs/sec** across cores |
 | **`kachedb-proto-resp`**| Streaming Zero-Alloc RESP `GET` Decoding | **65.57 ns** | Zero heap allocations on borrowed slice |
-| **`kachedb-net`** | Accept-Dispatch TCP Engine (Linux epoll) | **0.91 ms (P50)** | **2.91 Million QPS** (Docker Linux) |
-| **`kachedb-net`** | macOS `mio` / `kqueue` TCP Engine | **1.12 ms (P50)** | **2.65 Million QPS** (4 Cores) |
+| **`kachedb-net`** | Accept-Dispatch TCP Engine (Linux epoll) | **0.79 ms (P50)** | **3.11 Million QPS** (Docker Linux) |
+| **`kachedb-net`** | macOS `mio` / `kqueue` TCP Engine | **1.05 ms (P50)** | **2.85 Million QPS** (4 Cores) |
 
 ---
 
