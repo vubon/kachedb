@@ -5,7 +5,7 @@ use crate::frame::Frame;
 use smallvec::SmallVec;
 
 /// Strongly typed Redis commands parsed without heap allocation.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Command<'a> {
     /// `PING [message]`
     Ping { message: Option<&'a [u8]> },
@@ -23,6 +23,26 @@ pub enum Command<'a> {
     Del { keys: SmallVec<[&'a [u8]; 8]> },
     /// `EXISTS <key1> <key2> ...`
     Exists { keys: SmallVec<[&'a [u8]; 8]> },
+    /// `VADD <index> <id> <dim> <vector_bytes> [PAYLOAD <payload>] [EX <seconds>]`
+    VAdd {
+        index: &'a [u8],
+        id: &'a [u8],
+        dim: usize,
+        vector_bytes: &'a [u8],
+        payload: Option<&'a [u8]>,
+        ttl_sec: Option<u32>,
+    },
+    /// `VSEARCH <index> <query_vector_bytes> [TOPK <k>] [THRESHOLD <min_similarity>]`
+    VSearch {
+        index: &'a [u8],
+        query_bytes: &'a [u8],
+        top_k: usize,
+        threshold: f32,
+    },
+    /// `VDEL <index> <id>`
+    VDel { index: &'a [u8], id: &'a [u8] },
+    /// `VSTATS <index>`
+    VStats { index: &'a [u8] },
     /// `COMMAND ...` (client capability discovery)
     CommandDoc,
     /// `QUIT`
@@ -247,6 +267,105 @@ impl<'a> Command<'a> {
                 keys.push(arg);
             }
             Ok(Command::Exists { keys })
+        } else if cmd_name.eq_ignore_ascii_case(b"VADD") {
+            if args.len() < 5 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "VADD".into(),
+                });
+            }
+            let index = args[1];
+            let id = args[2];
+            let dim_str = std::str::from_utf8(args[3]).map_err(|_| RespError::InvalidInteger)?;
+            let dim = dim_str
+                .parse::<usize>()
+                .map_err(|_| RespError::InvalidInteger)?;
+            let vector_bytes = args[4];
+
+            let mut payload = None;
+            let mut ttl_sec = None;
+            let mut i = 5;
+            while i < args.len() {
+                let opt = args[i];
+                if opt.eq_ignore_ascii_case(b"PAYLOAD") && i + 1 < args.len() {
+                    payload = Some(args[i + 1]);
+                    i += 2;
+                } else if opt.eq_ignore_ascii_case(b"EX") && i + 1 < args.len() {
+                    let sec = std::str::from_utf8(args[i + 1])
+                        .unwrap_or("")
+                        .parse::<u32>()
+                        .unwrap_or(0);
+                    if sec > 0 {
+                        ttl_sec = Some(sec);
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+
+            Ok(Command::VAdd {
+                index,
+                id,
+                dim,
+                vector_bytes,
+                payload,
+                ttl_sec,
+            })
+        } else if cmd_name.eq_ignore_ascii_case(b"VSEARCH") {
+            if args.len() < 3 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "VSEARCH".into(),
+                });
+            }
+            let index = args[1];
+            let query_bytes = args[2];
+            let mut top_k = 1usize;
+            let mut threshold = 0.0f32;
+
+            let mut i = 3;
+            while i < args.len() {
+                let opt = args[i];
+                if opt.eq_ignore_ascii_case(b"TOPK") && i + 1 < args.len() {
+                    top_k = std::str::from_utf8(args[i + 1])
+                        .unwrap_or("")
+                        .parse::<usize>()
+                        .unwrap_or(1)
+                        .max(1);
+                    i += 2;
+                } else if opt.eq_ignore_ascii_case(b"THRESHOLD") && i + 1 < args.len() {
+                    threshold = std::str::from_utf8(args[i + 1])
+                        .unwrap_or("")
+                        .parse::<f32>()
+                        .unwrap_or(0.0);
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+
+            Ok(Command::VSearch {
+                index,
+                query_bytes,
+                top_k,
+                threshold,
+            })
+        } else if cmd_name.eq_ignore_ascii_case(b"VDEL") {
+            if args.len() != 3 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "VDEL".into(),
+                });
+            }
+            Ok(Command::VDel {
+                index: args[1],
+                id: args[2],
+            })
+        } else if cmd_name.eq_ignore_ascii_case(b"VSTATS") {
+            if args.len() != 2 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "VSTATS".into(),
+                });
+            }
+            Ok(Command::VStats { index: args[1] })
         } else if cmd_name.eq_ignore_ascii_case(b"COMMAND") {
             Ok(Command::CommandDoc)
         } else if cmd_name.eq_ignore_ascii_case(b"QUIT") {
@@ -361,6 +480,124 @@ impl<'a> Command<'a> {
                         keys.push(extract_required_bytes(arg, "EXISTS")?);
                     }
                     Ok(Command::Exists { keys })
+                } else if cmd_name.eq_ignore_ascii_case(b"VADD") {
+                    if args.len() < 5 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "VADD".into(),
+                        });
+                    }
+                    let index = extract_required_bytes(&args[1], "VADD")?;
+                    let id = extract_required_bytes(&args[2], "VADD")?;
+                    let dim_bytes = extract_required_bytes(&args[3], "VADD")?;
+                    let dim_str =
+                        std::str::from_utf8(dim_bytes).map_err(|_| RespError::InvalidInteger)?;
+                    let dim = dim_str
+                        .parse::<usize>()
+                        .map_err(|_| RespError::InvalidInteger)?;
+                    let vector_bytes = extract_required_bytes(&args[4], "VADD")?;
+
+                    let mut payload = None;
+                    let mut ttl_sec = None;
+                    let mut i = 5;
+                    while i < args.len() {
+                        if let Ok(opt) = extract_required_bytes(&args[i], "VADD") {
+                            if opt.eq_ignore_ascii_case(b"PAYLOAD") && i + 1 < args.len() {
+                                if let Ok(p) = extract_required_bytes(&args[i + 1], "VADD") {
+                                    payload = Some(p);
+                                }
+                                i += 2;
+                                continue;
+                            } else if opt.eq_ignore_ascii_case(b"EX") && i + 1 < args.len() {
+                                if let Ok(sec_bytes) = extract_required_bytes(&args[i + 1], "VADD")
+                                {
+                                    let sec = std::str::from_utf8(sec_bytes)
+                                        .unwrap_or("")
+                                        .parse::<u32>()
+                                        .unwrap_or(0);
+                                    if sec > 0 {
+                                        ttl_sec = Some(sec);
+                                    }
+                                }
+                                i += 2;
+                                continue;
+                            }
+                        }
+                        i += 1;
+                    }
+
+                    Ok(Command::VAdd {
+                        index,
+                        id,
+                        dim,
+                        vector_bytes,
+                        payload,
+                        ttl_sec,
+                    })
+                } else if cmd_name.eq_ignore_ascii_case(b"VSEARCH") {
+                    if args.len() < 3 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "VSEARCH".into(),
+                        });
+                    }
+                    let index = extract_required_bytes(&args[1], "VSEARCH")?;
+                    let query_bytes = extract_required_bytes(&args[2], "VSEARCH")?;
+                    let mut top_k = 1usize;
+                    let mut threshold = 0.0f32;
+
+                    let mut i = 3;
+                    while i < args.len() {
+                        if let Ok(opt) = extract_required_bytes(&args[i], "VSEARCH") {
+                            if opt.eq_ignore_ascii_case(b"TOPK") && i + 1 < args.len() {
+                                if let Ok(topk_bytes) =
+                                    extract_required_bytes(&args[i + 1], "VSEARCH")
+                                {
+                                    top_k = std::str::from_utf8(topk_bytes)
+                                        .unwrap_or("")
+                                        .parse::<usize>()
+                                        .unwrap_or(1)
+                                        .max(1);
+                                }
+                                i += 2;
+                                continue;
+                            } else if opt.eq_ignore_ascii_case(b"THRESHOLD") && i + 1 < args.len() {
+                                if let Ok(th_bytes) =
+                                    extract_required_bytes(&args[i + 1], "VSEARCH")
+                                {
+                                    threshold = std::str::from_utf8(th_bytes)
+                                        .unwrap_or("")
+                                        .parse::<f32>()
+                                        .unwrap_or(0.0);
+                                }
+                                i += 2;
+                                continue;
+                            }
+                        }
+                        i += 1;
+                    }
+
+                    Ok(Command::VSearch {
+                        index,
+                        query_bytes,
+                        top_k,
+                        threshold,
+                    })
+                } else if cmd_name.eq_ignore_ascii_case(b"VDEL") {
+                    if args.len() != 3 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "VDEL".into(),
+                        });
+                    }
+                    let index = extract_required_bytes(&args[1], "VDEL")?;
+                    let id = extract_required_bytes(&args[2], "VDEL")?;
+                    Ok(Command::VDel { index, id })
+                } else if cmd_name.eq_ignore_ascii_case(b"VSTATS") {
+                    if args.len() != 2 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "VSTATS".into(),
+                        });
+                    }
+                    let index = extract_required_bytes(&args[1], "VSTATS")?;
+                    Ok(Command::VStats { index })
                 } else if cmd_name.eq_ignore_ascii_case(b"COMMAND") {
                     Ok(Command::CommandDoc)
                 } else if cmd_name.eq_ignore_ascii_case(b"QUIT") {
@@ -476,5 +713,74 @@ mod tests {
     fn zero_alloc_parse_command_partial() {
         let partial = b"*2\r\n$3\r\nGET\r\n$6\r\nmy_";
         assert_eq!(parse_command(partial).unwrap(), None);
+    }
+
+    #[test]
+    fn parse_vadd_command() {
+        // VADD faq doc1 3 <bytes> PAYLOAD "my answer" EX 3600
+        let vec_bytes = [0u8; 12];
+        let mut input = Vec::new();
+        input.extend_from_slice(
+            b"*9\r\n$4\r\nVADD\r\n$3\r\nfaq\r\n$4\r\ndoc1\r\n$1\r\n3\r\n$12\r\n",
+        );
+        input.extend_from_slice(&vec_bytes);
+        input.extend_from_slice(
+            b"\r\n$7\r\nPAYLOAD\r\n$9\r\nmy answer\r\n$2\r\nEX\r\n$4\r\n3600\r\n",
+        );
+
+        let (cmd, consumed) = parse_command(&input).unwrap().unwrap();
+        assert_eq!(consumed, input.len());
+        assert_eq!(
+            cmd,
+            Command::VAdd {
+                index: b"faq",
+                id: b"doc1",
+                dim: 3,
+                vector_bytes: &vec_bytes,
+                payload: Some(b"my answer"),
+                ttl_sec: Some(3600),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_vsearch_command() {
+        // VSEARCH faq <bytes> TOPK 5 THRESHOLD 0.88
+        let vec_bytes = [0u8; 12];
+        let mut input = Vec::new();
+        input.extend_from_slice(b"*7\r\n$7\r\nVSEARCH\r\n$3\r\nfaq\r\n$12\r\n");
+        input.extend_from_slice(&vec_bytes);
+        input.extend_from_slice(b"\r\n$4\r\nTOPK\r\n$1\r\n5\r\n$9\r\nTHRESHOLD\r\n$4\r\n0.88\r\n");
+
+        let (cmd, consumed) = parse_command(&input).unwrap().unwrap();
+        assert_eq!(consumed, input.len());
+        assert_eq!(
+            cmd,
+            Command::VSearch {
+                index: b"faq",
+                query_bytes: &vec_bytes,
+                top_k: 5,
+                threshold: 0.88,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_vdel_and_vstats() {
+        let (del_cmd, _) = parse_command(b"*3\r\n$4\r\nVDEL\r\n$3\r\nfaq\r\n$4\r\ndoc1\r\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            del_cmd,
+            Command::VDel {
+                index: b"faq",
+                id: b"doc1"
+            }
+        );
+
+        let (stats_cmd, _) = parse_command(b"*2\r\n$6\r\nVSTATS\r\n$3\r\nfaq\r\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats_cmd, Command::VStats { index: b"faq" });
     }
 }

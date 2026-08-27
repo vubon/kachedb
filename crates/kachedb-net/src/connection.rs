@@ -2,14 +2,19 @@
 
 use std::io::{Read, Write};
 
+use std::sync::LazyLock;
+
 use kachedb_core::{SlabClassType, SlabPool, resolve_slot_ptr};
 use kachedb_hash::{ShardedSwissTable, hash_key};
 use kachedb_proto_resp::{
     Command, encode_array_header, encode_bulk_string, encode_error, encode_integer, encode_null,
     encode_simple_string, parse_command,
 };
+use kachedb_vector::VectorIndexRegistry;
 
 use crate::error::NetError;
+
+static DEFAULT_VECTORS: LazyLock<VectorIndexRegistry> = LazyLock::new(VectorIndexRegistry::new);
 
 /// Default buffer capacity for incoming connection stream (64 KB).
 const READ_BUF_SIZE: usize = 64 * 1024;
@@ -99,6 +104,16 @@ impl Connection {
         table: &ShardedSwissTable,
         pool: &mut SlabPool,
     ) -> Result<bool, NetError> {
+        self.process_incoming_with_vectors(table, pool, &DEFAULT_VECTORS)
+    }
+
+    /// Parses and processes all complete frames with explicit vector index registry.
+    pub fn process_incoming_with_vectors(
+        &mut self,
+        table: &ShardedSwissTable,
+        pool: &mut SlabPool,
+        vectors: &VectorIndexRegistry,
+    ) -> Result<bool, NetError> {
         loop {
             let slice = &self.read_buf[self.read_pos..self.read_len];
             if slice.is_empty() {
@@ -108,12 +123,13 @@ impl Connection {
             match parse_command(slice)? {
                 Some((cmd, consumed)) => {
                     self.read_pos += consumed;
-                    let keep_alive = Self::execute_command_with_time(
+                    let keep_alive = Self::execute_command_with_vectors(
                         cmd,
                         &mut self.write_buf,
                         table,
                         pool,
                         self.current_sec,
+                        vectors,
                     )?;
                     if !keep_alive {
                         return Ok(false);
@@ -134,7 +150,7 @@ impl Connection {
         table: &ShardedSwissTable,
         pool: &mut SlabPool,
     ) -> Result<bool, NetError> {
-        Self::execute_command_with_time(cmd, write_buf, table, pool, 0)
+        Self::execute_command_with_vectors(cmd, write_buf, table, pool, 0, &DEFAULT_VECTORS)
     }
 
     /// Executes a command with explicit `now_sec` for deterministic TTL evaluation.
@@ -144,6 +160,18 @@ impl Connection {
         table: &ShardedSwissTable,
         pool: &mut SlabPool,
         now_sec: u32,
+    ) -> Result<bool, NetError> {
+        Self::execute_command_with_vectors(cmd, write_buf, table, pool, now_sec, &DEFAULT_VECTORS)
+    }
+
+    /// Executes a command with explicit `now_sec` and `VectorIndexRegistry`.
+    pub fn execute_command_with_vectors(
+        cmd: Command<'_>,
+        write_buf: &mut Vec<u8>,
+        table: &ShardedSwissTable,
+        pool: &mut SlabPool,
+        now_sec: u32,
+        vectors: &VectorIndexRegistry,
     ) -> Result<bool, NetError> {
         match cmd {
             Command::Ping { message } => match message {
@@ -256,6 +284,110 @@ impl Connection {
                     }
                 }
                 encode_integer(write_buf, count);
+            }
+            Command::VAdd {
+                index,
+                id,
+                dim,
+                vector_bytes,
+                payload,
+                ttl_sec,
+            } => {
+                if vector_bytes.len() != dim * 4 {
+                    encode_error(
+                        write_buf,
+                        &format!(
+                            "ERR vector byte length {} does not match dimension {} (expected {} bytes)",
+                            vector_bytes.len(),
+                            dim,
+                            dim * 4
+                        ),
+                    );
+                    return Ok(true);
+                }
+
+                let mut floats = Vec::with_capacity(dim);
+                for chunk in vector_bytes.chunks_exact(4) {
+                    floats.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
+                }
+
+                let vec_idx = vectors.get_or_create(index);
+                match vec_idx.insert(id, &floats, payload, ttl_sec, now_sec) {
+                    Ok(()) => {
+                        encode_integer(write_buf, 1);
+                    }
+                    Err(e) => {
+                        encode_error(write_buf, &format!("ERR {e}"));
+                    }
+                }
+            }
+            Command::VSearch {
+                index,
+                query_bytes,
+                top_k,
+                threshold,
+            } => {
+                if query_bytes.len() % 4 != 0 {
+                    encode_error(
+                        write_buf,
+                        "ERR query vector byte length must be a multiple of 4",
+                    );
+                    return Ok(true);
+                }
+
+                let dim = query_bytes.len() / 4;
+                let mut query_floats = Vec::with_capacity(dim);
+                for chunk in query_bytes.chunks_exact(4) {
+                    query_floats.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
+                }
+
+                if let Some(vec_idx) = vectors.get(index) {
+                    match vec_idx.search(&query_floats, top_k, threshold, now_sec) {
+                        Ok(results) => {
+                            encode_array_header(write_buf, results.len());
+                            for r in results {
+                                encode_array_header(write_buf, 3);
+                                encode_bulk_string(write_buf, &r.key);
+                                let score_str = format!("{:.6}", r.similarity);
+                                encode_bulk_string(write_buf, score_str.as_bytes());
+                                if let Some(ref p) = r.payload {
+                                    encode_bulk_string(write_buf, p);
+                                } else {
+                                    encode_null(write_buf);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            encode_error(write_buf, &format!("ERR {e}"));
+                        }
+                    }
+                } else {
+                    encode_array_header(write_buf, 0);
+                }
+            }
+            Command::VDel { index, id } => {
+                if let Some(vec_idx) = vectors.get(index) {
+                    let deleted = vec_idx.delete(id);
+                    encode_integer(write_buf, if deleted { 1 } else { 0 });
+                } else {
+                    encode_integer(write_buf, 0);
+                }
+            }
+            Command::VStats { index } => {
+                if let Some(vec_idx) = vectors.get(index) {
+                    let stats = vec_idx.stats(now_sec);
+                    encode_array_header(write_buf, 8);
+                    encode_bulk_string(write_buf, b"dimension");
+                    encode_integer(write_buf, stats.dimension as i64);
+                    encode_bulk_string(write_buf, b"total_vectors");
+                    encode_integer(write_buf, stats.total_vectors as i64);
+                    encode_bulk_string(write_buf, b"active_vectors");
+                    encode_integer(write_buf, stats.active_vectors as i64);
+                    encode_bulk_string(write_buf, b"memory_bytes");
+                    encode_integer(write_buf, stats.memory_bytes as i64);
+                } else {
+                    encode_null(write_buf);
+                }
             }
             Command::CommandDoc => {
                 encode_simple_string(write_buf, "OK");
@@ -528,5 +660,90 @@ mod tests {
         )
         .unwrap();
         assert_eq!(conn.write_buf, b":0\r\n");
+    }
+
+    #[test]
+    fn execute_vector_commands_flow() {
+        let mut conn = Connection::new();
+        let table = ShardedSwissTable::new();
+        let mut pool = SlabPool::new(0, 16 * 1024 * 1024).unwrap();
+        let vectors = VectorIndexRegistry::new();
+
+        // 1. VADD faq doc1 3 <floats> PAYLOAD "answer1"
+        let v1 = [1.0f32, 0.0, 0.0];
+        let mut v1_bytes = Vec::new();
+        for f in &v1 {
+            v1_bytes.extend_from_slice(&f.to_ne_bytes());
+        }
+
+        Connection::execute_command_with_vectors(
+            Command::VAdd {
+                index: b"faq",
+                id: b"doc1",
+                dim: 3,
+                vector_bytes: &v1_bytes,
+                payload: Some(b"answer1"),
+                ttl_sec: None,
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &vectors,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b":1\r\n");
+        conn.write_buf.clear();
+
+        // 2. VSEARCH faq <v1_bytes> TOPK 1 THRESHOLD 0.8
+        Connection::execute_command_with_vectors(
+            Command::VSearch {
+                index: b"faq",
+                query_bytes: &v1_bytes,
+                top_k: 1,
+                threshold: 0.8,
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &vectors,
+        )
+        .unwrap();
+
+        // Expected array with 1 item: [doc1, "1.000000", "answer1"]
+        let resp_str = String::from_utf8_lossy(&conn.write_buf);
+        assert!(resp_str.contains("*1\r\n*3\r\n$4\r\ndoc1\r\n"));
+        assert!(resp_str.contains("answer1"));
+        conn.write_buf.clear();
+
+        // 3. VSTATS faq
+        Connection::execute_command_with_vectors(
+            Command::VStats { index: b"faq" },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &vectors,
+        )
+        .unwrap();
+        let stats_resp = String::from_utf8_lossy(&conn.write_buf);
+        assert!(stats_resp.contains("total_vectors"));
+        conn.write_buf.clear();
+
+        // 4. VDEL faq doc1
+        Connection::execute_command_with_vectors(
+            Command::VDel {
+                index: b"faq",
+                id: b"doc1",
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &vectors,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b":1\r\n");
     }
 }

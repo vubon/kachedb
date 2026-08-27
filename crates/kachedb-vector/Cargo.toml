@@ -1,0 +1,22 @@
+[package]
+name        = "kachedb-vector"
+version     = "0.1.0"
+edition     = "2024"
+description = "KacheDB SIMD vector search kernel and in-memory semantic cache index"
+license     = "Apache-2.0 OR MIT"
+
+[dependencies]
+kachedb-core = { path = "../kachedb-core" }
+ahash        = { workspace = true }
+smallvec     = { workspace = true }
+log          = { workspace = true }
+thiserror    = { workspace = true }
+cfg-if       = { workspace = true }
+parking_lot  = { workspace = true }
+
+[[bench]]
+name    = "simd_vector"
+harness = false
+
+[dev-dependencies]
+criterion = { workspace = true }

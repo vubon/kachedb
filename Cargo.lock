@@ -372,6 +372,7 @@ dependencies = [
  "kachedb-core",
  "kachedb-hash",
  "kachedb-proto-resp",
+ "kachedb-vector",
  "libc",
  "log",
  "mio",
@@ -422,6 +423,7 @@ dependencies = [
  "kachedb-proto-tensor",
  "kachedb-radix",
  "kachedb-shm",
+ "kachedb-vector",
  "log",
  "thiserror",
 ]
@@ -436,6 +438,20 @@ dependencies = [
  "kachedb-proto-tensor",
  "libc",
  "log",
+ "thiserror",
+]
+
+[[package]]
+name = "kachedb-vector"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "cfg-if",
+ "criterion",
+ "kachedb-core",
+ "log",
+ "parking_lot",
+ "smallvec",
  "thiserror",
 ]
 

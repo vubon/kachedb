@@ -17,6 +17,7 @@ kachedb-shm          = { path = "../kachedb-shm" }
 kachedb-net          = { path = "../kachedb-net" }
 kachedb-proto-resp   = { path = "../kachedb-proto-resp" }
 kachedb-proto-tensor = { path = "../kachedb-proto-tensor" }
+kachedb-vector       = { path = "../kachedb-vector" }
 log                  = { workspace = true }
 thiserror            = { workspace = true }
 cfg-if               = { workspace = true }

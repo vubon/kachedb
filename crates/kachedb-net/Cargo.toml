@@ -9,6 +9,7 @@ license     = "Apache-2.0 OR MIT"
 kachedb-core       = { path = "../kachedb-core" }
 kachedb-hash       = { path = "../kachedb-hash" }
 kachedb-proto-resp = { path = "../kachedb-proto-resp" }
+kachedb-vector     = { path = "../kachedb-vector" }
 mio                = { workspace = true }
 cfg-if             = { workspace = true }
 log                = { workspace = true }
