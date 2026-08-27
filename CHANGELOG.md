@@ -5,6 +5,27 @@ All notable changes to **KacheDB** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.1.0-alpha.4] — 2026-08-28
+
+### 🧠 In-Memory SIMD Vector Search & Semantic Cache Engine
+- **Hardware-Accelerated SIMD Vector Math Kernel (`crates/kachedb-vector`):**
+  - **ARM NEON Kernel (`aarch64`):** 128-bit `vfmaq_f32` with 4-way loop unrolling (16 floats per iteration) delivering $< 120\text{ ns}$ dot products.
+  - **x86_64 AVX2 / FMA Kernel:** 256-bit `_mm256_fmadd_ps` with 4-way loop unrolling (32 floats per iteration) delivering $> 40\text{ GB/s}$ throughput.
+  - **Runtime CPUID Probing:** Dynamic feature detection on x86_64 (`is_x86_feature_detected!`) with auto-vectorized portable scalar fallback.
+  - **Math Routines:** $L_2$ vector pre-normalization (`l2_normalize`), normalized Cosine Similarity (`cosine_similarity_normalized`), and Euclidean distance.
+- **In-Memory `VectorIndex` & `VectorIndexRegistry`:**
+  - Contiguous float storage arena with 64-byte alignment for maximum CPU L1/L2 cache locality.
+  - Multi-tenant named index isolation (`VectorIndexRegistry`).
+  - Active TTL expiration and lazy background reclaiming for temporary session vectors.
+  - Thread-safe concurrency with reader-writer locks (`parking_lot::RwLock`).
+- **RESP Vector Command Suite (`crates/kachedb-proto-resp` & `crates/kachedb-net`):**
+  - Added zero-allocation parsing and execution for:
+    - `VADD <index> <id> <dim> <vector_bytes> [PAYLOAD <payload>] [EX <seconds>]`
+    - `VSEARCH <index> <query_bytes> [TOPK <k>] [THRESHOLD <min_sim>]`
+    - `VDEL <index> <id>`
+    - `VSTATS <index>`
+- **Benchmarks & Test Suite:** Added Criterion micro-benchmarks (`benches/simd_vector.rs`) and unit tests across math kernels, index registry, and RESP wire execution (109/109 workspace tests passing).
+
 ---
 
 ## [v0.1.0-alpha.3] — 2026-08-24
