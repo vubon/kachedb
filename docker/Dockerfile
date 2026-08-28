@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM rust:1.87-slim-bookworm as builder
+FROM rust:1.87-slim-bookworm AS builder
 
 WORKDIR /usr/src/kachedb
 

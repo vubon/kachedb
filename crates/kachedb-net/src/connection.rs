@@ -306,10 +306,10 @@ impl Connection {
                     return Ok(true);
                 }
 
-                let (chunks, _) = vector_bytes.as_chunks::<4>();
-                let floats: Vec<f32> = chunks
-                    .iter()
-                    .map(|&chunk| f32::from_ne_bytes(chunk))
+                #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
+                let floats: Vec<f32> = vector_bytes
+                    .chunks_exact(4)
+                    .map(|chunk| f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
 
                 let vec_idx = vectors.get_or_create(index);
@@ -336,10 +336,10 @@ impl Connection {
                     return Ok(true);
                 }
 
-                let (chunks, _) = query_bytes.as_chunks::<4>();
-                let query_floats: Vec<f32> = chunks
-                    .iter()
-                    .map(|&chunk| f32::from_ne_bytes(chunk))
+                #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
+                let query_floats: Vec<f32> = query_bytes
+                    .chunks_exact(4)
+                    .map(|chunk| f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
 
                 if let Some(vec_idx) = vectors.get(index) {

@@ -235,11 +235,12 @@ impl VectorIndex {
         let mut key_map = self.key_map.write();
         let mut entries = self.entries.write();
 
-        if let Some(idx) = key_map.remove(key)
-            && idx < entries.len()
-        {
-            entries[idx] = None;
-            return true;
+        #[allow(clippy::collapsible_if)]
+        if let Some(idx) = key_map.remove(key) {
+            if idx < entries.len() {
+                entries[idx] = None;
+                return true;
+            }
         }
         false
     }

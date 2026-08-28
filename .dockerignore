@@ -1,0 +1,6 @@
+target/
+.git/
+.github/
+.DS_Store
+*.md
+docker/.bench_tmp/
