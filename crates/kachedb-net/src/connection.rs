@@ -306,10 +306,11 @@ impl Connection {
                     return Ok(true);
                 }
 
-                let mut floats = Vec::with_capacity(dim);
-                for chunk in vector_bytes.chunks_exact(4) {
-                    floats.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-                }
+                let (chunks, _) = vector_bytes.as_chunks::<4>();
+                let floats: Vec<f32> = chunks
+                    .iter()
+                    .map(|&chunk| f32::from_ne_bytes(chunk))
+                    .collect();
 
                 let vec_idx = vectors.get_or_create(index);
                 match vec_idx.insert(id, &floats, payload, ttl_sec, now_sec) {
@@ -335,11 +336,11 @@ impl Connection {
                     return Ok(true);
                 }
 
-                let dim = query_bytes.len() / 4;
-                let mut query_floats = Vec::with_capacity(dim);
-                for chunk in query_bytes.chunks_exact(4) {
-                    query_floats.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-                }
+                let (chunks, _) = query_bytes.as_chunks::<4>();
+                let query_floats: Vec<f32> = chunks
+                    .iter()
+                    .map(|&chunk| f32::from_ne_bytes(chunk))
+                    .collect();
 
                 if let Some(vec_idx) = vectors.get(index) {
                     match vec_idx.search(&query_floats, top_k, threshold, now_sec) {
