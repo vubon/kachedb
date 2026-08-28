@@ -177,21 +177,17 @@ pub fn dot_product_scalar(a: &[f32], b: &[f32]) -> f32 {
 #[inline(always)]
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     #[cfg(target_arch = "aarch64")]
-    unsafe {
-        dot_product_neon(a, b)
-    }
+    return unsafe { dot_product_neon(a, b) };
 
     #[cfg(target_arch = "x86_64")]
-    {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-            unsafe { dot_product_avx2(a, b) }
-        } else {
-            dot_product_scalar(a, b)
-        }
-    }
+    return if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        unsafe { dot_product_avx2(a, b) }
+    } else {
+        dot_product_scalar(a, b)
+    };
 
     #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-    dot_product_scalar(a, b)
+    return dot_product_scalar(a, b);
 }
 
 /// Computes the Euclidean $L_2$ norm ($\|v\|_2 = \sqrt{\sum v_i^2}$) of a vector.
