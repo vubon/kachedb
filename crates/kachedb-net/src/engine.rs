@@ -360,48 +360,62 @@ impl WorkerThread {
 
             if let Some((stream, conn)) = connections.get_mut(&token) {
                 if event.is_readable() {
-                    match conn.read_from(stream) {
-                        Ok(0) => {
-                            should_remove = true;
-                        }
-                        Ok(_) => match conn.process_incoming(&self.table, &mut self.pool) {
-                            Ok(keep_alive) => {
-                                if !keep_alive {
-                                    should_remove = true;
+                    loop {
+                        match conn.read_from(stream) {
+                            Ok(n) if n > 0 => {
+                                match conn.process_incoming(&self.table, &mut self.pool) {
+                                    Ok(keep_alive) => {
+                                        if !keep_alive {
+                                            should_remove = true;
+                                            break;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::warn!(
+                                            "Worker [{core}]: protocol error on {token:?}: {e}",
+                                            core = self.core_id
+                                        );
+                                        should_remove = true;
+                                        break;
+                                    }
                                 }
+                            }
+                            Ok(_) => break, // WouldBlock or buffer drained
+                            Err(NetError::ConnectionClosed) => {
+                                should_remove = true;
+                                break;
+                            }
+                            Err(NetError::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                break;
                             }
                             Err(e) => {
                                 log::warn!(
-                                    "Worker [{core}]: protocol error on {token:?}: {e}",
+                                    "Worker [{core}]: read error on {token:?}: {e}",
                                     core = self.core_id
                                 );
                                 should_remove = true;
+                                break;
                             }
-                        },
-                        Err(NetError::ConnectionClosed) => {
-                            should_remove = true;
-                        }
-                        Err(NetError::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                        Err(e) => {
-                            log::warn!(
-                                "Worker [{core}]: read error on {token:?}: {e}",
-                                core = self.core_id
-                            );
-                            should_remove = true;
                         }
                     }
                 }
 
-                if conn.has_pending_writes() || event.is_writable() {
-                    match conn.flush_to_stream(stream) {
-                        Ok(_) => {}
-                        Err(NetError::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                        Err(e) => {
-                            log::warn!(
-                                "Worker [{core}]: write error on {token:?}: {e}",
-                                core = self.core_id
-                            );
-                            should_remove = true;
+                if !should_remove && (conn.has_pending_writes() || event.is_writable()) {
+                    while conn.has_pending_writes() {
+                        match conn.flush_to_stream(stream) {
+                            Ok(0) => break,
+                            Ok(_) => {}
+                            Err(NetError::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                break;
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "Worker [{core}]: write error on {token:?}: {e}",
+                                    core = self.core_id
+                                );
+                                should_remove = true;
+                                break;
+                            }
                         }
                     }
                 }

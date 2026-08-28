@@ -84,10 +84,10 @@ impl Connection {
         }
 
         let n = match stream.read(&mut self.read_buf[self.read_len..]) {
-            Ok(0) => return Ok(0), // EOF
+            Ok(0) => return Err(NetError::ConnectionClosed), // True EOF from client
             Ok(n) => n,
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(0),
-            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => return Ok(0),
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => 0,
             Err(e) => return Err(NetError::Io(e)),
         };
 
