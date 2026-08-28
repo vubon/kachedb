@@ -402,7 +402,7 @@ impl WorkerThread {
                     }
                 }
 
-                if !should_remove && (conn.has_pending_writes() || event.is_writable()) {
+                if conn.has_pending_writes() || event.is_writable() {
                     while conn.has_pending_writes() {
                         match conn.flush_to_stream(stream) {
                             Ok(0) => break,
