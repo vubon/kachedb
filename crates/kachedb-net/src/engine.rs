@@ -385,7 +385,9 @@ impl WorkerThread {
                                 should_remove = true;
                                 break;
                             }
-                            Err(NetError::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            Err(NetError::Io(ref e))
+                                if e.kind() == std::io::ErrorKind::WouldBlock =>
+                            {
                                 break;
                             }
                             Err(e) => {
@@ -405,7 +407,9 @@ impl WorkerThread {
                         match conn.flush_to_stream(stream) {
                             Ok(0) => break,
                             Ok(_) => {}
-                            Err(NetError::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            Err(NetError::Io(ref e))
+                                if e.kind() == std::io::ErrorKind::WouldBlock =>
+                            {
                                 break;
                             }
                             Err(e) => {
