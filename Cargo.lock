@@ -424,6 +424,7 @@ dependencies = [
  "kachedb-radix",
  "kachedb-shm",
  "kachedb-vector",
+ "libc",
  "log",
  "thiserror",
 ]

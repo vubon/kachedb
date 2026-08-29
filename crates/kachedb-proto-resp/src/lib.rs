@@ -12,7 +12,7 @@ pub mod command;
 pub mod error;
 pub mod frame;
 
-pub use command::{Command, parse_command};
+pub use command::{ClientSubcommand, Command, parse_command};
 pub use error::RespError;
 pub use frame::{
     Frame, encode_array_header, encode_bulk_string, encode_error, encode_integer, encode_null,

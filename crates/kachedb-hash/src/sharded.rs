@@ -124,6 +124,45 @@ impl ShardedSwissTable {
         shard.remove(hash)
     }
 
+    /// Removes an entry only if its slab block ID matches `expected_block_id`.
+    ///
+    /// Protects against double-free when S3-FIFO eviction or explicit DEL
+    /// occurs before the TimingWheel expiry bucket triggers.
+    #[inline(always)]
+    pub fn remove_if_matching(
+        &self,
+        hash: u64,
+        expected_block_id: SlabBlockId,
+    ) -> Option<TableEntry> {
+        let idx = Self::shard_idx(hash);
+        let mut shard = self.shards[idx].table.write();
+        shard.remove_if_matching(hash, expected_block_id)
+    }
+
+    /// Updates the TTL on an existing key in its designated shard.
+    #[inline(always)]
+    pub fn update_ttl(&self, hash: u64, expire_at_secs: u32, now_sec: u32) -> bool {
+        let idx = Self::shard_idx(hash);
+        let mut shard = self.shards[idx].table.write();
+        shard.update_ttl(hash, expire_at_secs, now_sec)
+    }
+
+    /// Retrieves the remaining TTL in seconds (-2 missing/expired, -1 persistent, >=0 seconds).
+    #[inline(always)]
+    pub fn get_ttl(&self, hash: u64, now_sec: u32) -> i64 {
+        let idx = Self::shard_idx(hash);
+        let shard = self.shards[idx].table.read();
+        shard.get_ttl(hash, now_sec)
+    }
+
+    /// Removes TTL, converting key into a persistent key.
+    #[inline(always)]
+    pub fn persist(&self, hash: u64, now_sec: u32) -> bool {
+        let idx = Self::shard_idx(hash);
+        let mut shard = self.shards[idx].table.write();
+        shard.persist(hash, now_sec)
+    }
+
     /// Returns the total count of live entries across all 256 shards.
     pub fn len(&self) -> usize {
         self.shards.iter().map(|s| s.table.read().len()).sum()
@@ -216,5 +255,29 @@ mod tests {
                 assert!(table.lookup_checked(h, 0).is_some());
             }
         }
+    }
+
+    #[test]
+    fn test_sharded_ttl_operations() {
+        let table = ShardedSwissTable::new();
+        let h = hash_key(b"session:user_999");
+        let block_id = SlabBlockId::new(1, 10);
+
+        table.insert_with_ttl(h, block_id, 128, 500);
+        assert_eq!(table.get_ttl(h, 100), 400);
+
+        // Update TTL
+        assert!(table.update_ttl(h, 600, 100));
+        assert_eq!(table.get_ttl(h, 100), 500);
+
+        // Persist
+        assert!(table.persist(h, 100));
+        assert_eq!(table.get_ttl(h, 100), -1);
+        assert!(!table.persist(h, 100)); // Already persistent
+
+        // Missing
+        let missing = hash_key(b"missing");
+        assert_eq!(table.get_ttl(missing, 100), -2);
+        assert!(!table.update_ttl(missing, 500, 100));
     }
 }

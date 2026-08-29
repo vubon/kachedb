@@ -116,6 +116,16 @@ fn run_benchmark(addr: &str, requests: usize) {
 }
 
 fn run_repl(addr: &str) {
+    println!(
+        r#"
+  _  __           _          _____  ____   _____ _      _____ 
+ | |/ /          | |        |  __ \|  _ \ / ____| |    |_   _|
+ | ' / __ _  ___| |__   ___| |  | | |_) | |    | |      | |  
+ |  < / _` |/ __| '_ \ / _ \ |  | |  _ <| |    | |      | |  
+ | . \ (_| | (__| | | |  __/ |__| | |_) | |____| |____ _| |_ 
+ |_|\_\__,_|\___|_| |_|\___|_____/|____/ \_____|______|_____|
+"#
+    );
     println!("Connecting to KacheDB at {}...", addr);
     let mut stream = match TcpStream::connect(addr) {
         Ok(s) => s,
@@ -127,7 +137,7 @@ fn run_repl(addr: &str) {
     };
 
     println!(
-        "Connected to KacheDB. Type commands (e.g. PING, SET foo bar, GET foo, QUIT) or Ctrl+C to exit.\n"
+        "⚡ Connected to KacheDB. Type commands (e.g. SET, GET, EXPIRE, MSET, INCR, INFO, VADD, VSEARCH) or 'help' / 'quit'.\n"
     );
 
     let stdin = std::io::stdin();
@@ -136,10 +146,10 @@ fn run_repl(addr: &str) {
 
     loop {
         print!("{}> ", addr);
-        stdout.flush().unwrap();
+        let _ = stdout.flush();
 
         let mut line = String::new();
-        if stdin.lock().read_line(&mut line).unwrap() == 0 {
+        if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
             break;
         }
 
@@ -148,12 +158,31 @@ fn run_repl(addr: &str) {
             continue;
         }
 
-        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if trimmed.eq_ignore_ascii_case("clear") {
+            print!("\x1B[2J\x1B[1;1H");
+            let _ = stdout.flush();
+            continue;
+        }
+
+        if trimmed.eq_ignore_ascii_case("help") {
+            print_cli_help();
+            continue;
+        }
+
+        if trimmed.eq_ignore_ascii_case("quit") || trimmed.eq_ignore_ascii_case("exit") {
+            println!("Bye!");
+            break;
+        }
+
+        let parts = tokenize_command(trimmed);
+        if parts.is_empty() {
+            continue;
+        }
 
         // Encode as RESP Array
         let mut req_buf = Vec::new();
         encode_array_header(&mut req_buf, parts.len());
-        for part in parts {
+        for part in &parts {
             encode_bulk_string(&mut req_buf, part.as_bytes());
         }
 
@@ -169,7 +198,7 @@ fn run_repl(addr: &str) {
             }
             Ok(n) => match parse_frame(&read_buf[..n]) {
                 Ok(Some((frame, _))) => {
-                    print_frame(&frame);
+                    print_frame(&frame, 0);
                 }
                 Ok(None) => {
                     println!("(Incomplete response)");
@@ -186,28 +215,145 @@ fn run_repl(addr: &str) {
     }
 }
 
-fn print_frame(frame: &Frame) {
-    match frame {
-        Frame::SimpleString(s) => {
-            println!("{}", String::from_utf8_lossy(s));
-        }
-        Frame::Error(e) => {
-            println!("(error) {}", String::from_utf8_lossy(e));
-        }
-        Frame::Integer(i) => {
-            println!("(integer) {}", i);
-        }
-        Frame::BulkString(b) => {
-            println!("\"{}\"", String::from_utf8_lossy(b));
-        }
-        Frame::Null => {
-            println!("(nil)");
-        }
-        Frame::Array(arr) => {
-            for (idx, elem) in arr.iter().enumerate() {
-                print!("{}) ", idx + 1);
-                print_frame(elem);
+fn tokenize_command(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+            }
+            '\\' if in_double_quote => {
+                if let Some(next_ch) = chars.next() {
+                    match next_ch {
+                        'n' => current.push('\n'),
+                        'r' => current.push('\r'),
+                        't' => current.push('\t'),
+                        '\\' => current.push('\\'),
+                        '"' => current.push('"'),
+                        _ => {
+                            current.push('\\');
+                            current.push(next_ch);
+                        }
+                    }
+                }
+            }
+            c if c.is_whitespace() && !in_single_quote && !in_double_quote => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            c => {
+                current.push(c);
             }
         }
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    tokens
+}
+
+fn print_cli_help() {
+    println!(
+        r#"
+Available Commands in KacheDB:
+  • Key-Value:
+      SET <key> <val> [EX <sec>]  - Set key to value with optional TTL in seconds
+      GET <key>                   - Retrieve value of key
+      MSET <k1> <v1> [<k2> <v2>]  - Set multiple keys simultaneously
+      MGET <k1> [<k2> ...]        - Retrieve multiple keys simultaneously
+      DEL <key> [<key> ...]       - Delete key(s)
+      INCR <key> / DECR <key>     - Increment / Decrement integer value by 1
+      INCRBY <key> <delta>        - Increment integer value by delta
+      APPEND <key> <val>          - Append string to key
+      STRLEN <key>                - Return byte length of string value
+  • Expiration & TTL:
+      EXPIRE <key> <sec>          - Set expiration in seconds from now
+      TTL <key> / PTTL <key>      - Query remaining time-to-live
+      PERSIST <key>               - Remove expiration from key
+  • Server & Observability:
+      HELLO [2|3]                 - Handshake and switch RESP protocol version
+      INFO [section]              - Return server runtime, memory, and stats
+      CLIENT SETNAME <name>       - Assign connection name
+      CLIENT GETNAME              - Get connection name
+      PING [msg]                  - Ping server
+  • Vector Engine:
+      VADD <idx> <key> <dim> <f32...>  - Insert embedding vector
+      VSEARCH <idx> <top_k> <f32...>   - Cosine similarity search
+"#
+    );
+}
+
+fn print_frame(frame: &Frame, depth: usize) {
+    let indent = "  ".repeat(depth);
+    match frame {
+        Frame::SimpleString(s) => {
+            println!("{}{}", indent, String::from_utf8_lossy(s));
+        }
+        Frame::Error(e) => {
+            println!("{}(error) {}", indent, String::from_utf8_lossy(e));
+        }
+        Frame::Integer(i) => {
+            println!("{}(integer) {}", indent, i);
+        }
+        Frame::BulkString(b) => {
+            let s = String::from_utf8_lossy(b);
+            if s.contains('\n') {
+                for line in s.lines() {
+                    println!("{}{}", indent, line);
+                }
+            } else {
+                println!("{}\"{}\"", indent, s);
+            }
+        }
+        Frame::Null => {
+            println!("{}(nil)", indent);
+        }
+        Frame::Array(arr) => {
+            if arr.is_empty() {
+                println!("{}(empty list or set)", indent);
+            } else {
+                for (idx, elem) in arr.iter().enumerate() {
+                    print!("{}{}) ", indent, idx + 1);
+                    if matches!(&**elem, Frame::Array(_)) {
+                        println!();
+                    }
+                    print_frame(elem, depth + 1);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tokenize_plain_and_quoted_arguments() {
+        let tokens = tokenize_command("SET foo bar");
+        assert_eq!(tokens, vec!["SET", "foo", "bar"]);
+
+        let tokens = tokenize_command("SET \"user session\" 'logged in value'");
+        assert_eq!(tokens, vec!["SET", "user session", "logged in value"]);
+
+        let tokens = tokenize_command("MSET k1 \"val 1\" k2 \"val 2\"");
+        assert_eq!(tokens, vec!["MSET", "k1", "val 1", "k2", "val 2"]);
+
+        let tokens = tokenize_command("VADD index_a key1 4 0.1 0.2 0.3 0.4");
+        assert_eq!(
+            tokens,
+            vec!["VADD", "index_a", "key1", "4", "0.1", "0.2", "0.3", "0.4"]
+        );
     }
 }

@@ -64,7 +64,7 @@ pub fn hash_key(key: &[u8]) -> u64 {
 /// Extracts `H1`: upper 57 bits used as the slot index.
 #[inline(always)]
 fn h1(hash: u64, capacity: usize) -> usize {
-    ((hash >> 7) as usize) % capacity
+    ((hash >> 7) as usize) & (capacity - 1)
 }
 
 /// Extracts `H2`: lower 7 bits used as the control byte fingerprint.
@@ -83,22 +83,24 @@ fn h2(hash: u64) -> u8 {
 struct Group<'a> {
     ctrl: &'a [u8],
     base: usize,
-    cap: usize,
+    mask: usize,
 }
 
 impl<'a> Group<'a> {
+    #[inline(always)]
     fn new(ctrl: &'a [u8], start: usize, cap: usize) -> Self {
         Self {
             ctrl,
             base: start,
-            cap,
+            mask: cap - 1,
         }
     }
 
     /// Yields indices of slots matching `fingerprint`.
+    #[inline(always)]
     fn match_byte(&self, fingerprint: u8) -> impl Iterator<Item = usize> + '_ {
         (0..GROUP_SIZE).filter_map(move |i| {
-            let idx = (self.base + i) % self.cap;
+            let idx = (self.base + i) & self.mask;
             if self.ctrl[idx] == fingerprint {
                 Some(idx)
             } else {
@@ -108,14 +110,16 @@ impl<'a> Group<'a> {
     }
 
     /// Returns `true` if any slot in the group is empty (`CTRL_EMPTY`).
+    #[inline(always)]
     fn has_empty(&self) -> bool {
-        (0..GROUP_SIZE).any(|i| self.ctrl[(self.base + i) % self.cap] == CTRL_EMPTY)
+        (0..GROUP_SIZE).any(|i| self.ctrl[(self.base + i) & self.mask] == CTRL_EMPTY)
     }
 
     /// Returns the index of the first empty or deleted slot in the group.
+    #[inline(always)]
     fn first_available(&self) -> Option<usize> {
         (0..GROUP_SIZE).find_map(|i| {
-            let idx = (self.base + i) % self.cap;
+            let idx = (self.base + i) & self.mask;
             matches!(self.ctrl[idx], CTRL_EMPTY | CTRL_DELETED).then_some(idx)
         })
     }
@@ -210,7 +214,8 @@ impl SwissTable {
         }
 
         let fingerprint = h2(key_hash);
-        let mut pos = h1(key_hash, self.capacity);
+        let mask = self.capacity - 1;
+        let mut pos = ((key_hash >> 7) as usize) & mask;
 
         loop {
             let group = Group::new(&self.ctrl, pos, self.capacity);
@@ -235,11 +240,11 @@ impl SwissTable {
                 self.entries[slot] =
                     HashEntry::with_ttl(key_hash, slab_block_id, value_len, expire_at_secs);
                 self.count += 1;
-                return Ok(None); // inserted new
+                return Ok(None); // newly inserted
             }
 
-            // Probe next group.
-            pos = (pos + GROUP_SIZE) % self.capacity;
+            // Linear probing with group-size steps (SIMD open-addressing).
+            pos = (pos + GROUP_SIZE) & mask;
         }
     }
 
@@ -255,9 +260,11 @@ impl SwissTable {
     ///
     /// If the entry exists but has expired (`is_expired(now_secs)`), returns `None`.
     /// Marks the entry as accessed (S3-FIFO bit) on every successful lookup.
+    #[inline(always)]
     pub fn lookup_checked(&self, key_hash: u64, now_secs: u32) -> Option<&HashEntry> {
         let fingerprint = h2(key_hash);
-        let mut pos = h1(key_hash, self.capacity);
+        let mask = self.capacity - 1;
+        let mut pos = ((key_hash >> 7) as usize) & mask;
 
         loop {
             let group = Group::new(&self.ctrl, pos, self.capacity);
@@ -279,7 +286,96 @@ impl SwissTable {
                 return None; // key not present
             }
 
-            pos = (pos + GROUP_SIZE) % self.capacity;
+            pos = (pos + GROUP_SIZE) & mask;
+        }
+    }
+
+    /// Updates the expiration timestamp of an existing key in-place.
+    ///
+    /// Returns `true` if the key exists and has not expired; `false` otherwise.
+    pub fn update_ttl(&mut self, key_hash: u64, expire_at_secs: u32, now_secs: u32) -> bool {
+        let fingerprint = h2(key_hash);
+        let mask = self.capacity - 1;
+        let mut pos = ((key_hash >> 7) as usize) & mask;
+
+        loop {
+            let group = Group::new(&self.ctrl, pos, self.capacity);
+
+            for idx in group.match_byte(fingerprint) {
+                if self.ctrl[idx] != CTRL_EMPTY && self.ctrl[idx] != CTRL_DELETED {
+                    let entry = &mut self.entries[idx];
+                    if entry.matches(key_hash) {
+                        if now_secs != 0 && entry.is_expired(now_secs) {
+                            return false; // expired
+                        }
+                        entry.expire_at_secs = expire_at_secs;
+                        entry.mark_accessed();
+                        return true;
+                    }
+                }
+            }
+
+            if group.has_empty() {
+                return false;
+            }
+
+            pos = (pos + GROUP_SIZE) & mask;
+        }
+    }
+
+    /// Returns the remaining TTL in seconds for `key_hash`.
+    ///
+    /// - `-2` if key does not exist or has already expired.
+    /// - `-1` if key exists but has no TTL (persistent).
+    /// - `>= 0` remaining seconds before expiration.
+    pub fn get_ttl(&self, key_hash: u64, now_secs: u32) -> i64 {
+        if let Some(entry) = self.lookup_checked(key_hash, now_secs) {
+            if entry.expire_at_secs == 0 {
+                -1 // Persistent
+            } else if entry.expire_at_secs <= now_secs {
+                -2 // Expired
+            } else {
+                (entry.expire_at_secs - now_secs) as i64
+            }
+        } else {
+            -2 // Missing
+        }
+    }
+
+    /// Removes the TTL from `key_hash`, converting it into a persistent key.
+    ///
+    /// Returns `true` if TTL was removed; `false` if key did not exist, was expired, or had no TTL.
+    pub fn persist(&mut self, key_hash: u64, now_secs: u32) -> bool {
+        let fingerprint = h2(key_hash);
+        let mask = self.capacity - 1;
+        let mut pos = ((key_hash >> 7) as usize) & mask;
+
+        loop {
+            let group = Group::new(&self.ctrl, pos, self.capacity);
+
+            for idx in group.match_byte(fingerprint) {
+                if self.ctrl[idx] != CTRL_EMPTY && self.ctrl[idx] != CTRL_DELETED {
+                    let entry = &mut self.entries[idx];
+                    if entry.matches(key_hash) {
+                        if now_secs != 0 && entry.is_expired(now_secs) {
+                            return false; // expired
+                        }
+                        if entry.expire_at_secs > 0 {
+                            entry.expire_at_secs = 0;
+                            entry.mark_accessed();
+                            return true;
+                        } else {
+                            return false; // Already persistent
+                        }
+                    }
+                }
+            }
+
+            if group.has_empty() {
+                return false;
+            }
+
+            pos = (pos + GROUP_SIZE) & mask;
         }
     }
 
@@ -289,7 +385,8 @@ impl SwissTable {
     /// are not interrupted (deleted entries are compacted during resize).
     pub fn remove(&mut self, key_hash: u64) -> Option<TableEntry> {
         let fingerprint = h2(key_hash);
-        let mut pos = h1(key_hash, self.capacity);
+        let mask = self.capacity - 1;
+        let mut pos = ((key_hash >> 7) as usize) & mask;
 
         loop {
             // Collect matching indices first to avoid holding an immutable
@@ -326,7 +423,57 @@ impl SwissTable {
                 return None;
             }
 
-            pos = (pos + GROUP_SIZE) % self.capacity;
+            pos = (pos + GROUP_SIZE) & mask;
+        }
+    }
+
+    /// Removes the entry for `key_hash` only if its `slab_block_id` matches `expected_block_id`.
+    ///
+    /// This provides CAS-like double-free safety when expiring keys via the background TimingWheel.
+    pub fn remove_if_matching(
+        &mut self,
+        key_hash: u64,
+        expected_block_id: SlabBlockId,
+    ) -> Option<TableEntry> {
+        let fingerprint = h2(key_hash);
+        let mask = self.capacity - 1;
+        let mut pos = ((key_hash >> 7) as usize) & mask;
+
+        loop {
+            let matches: Vec<usize> = {
+                let group = Group::new(&self.ctrl, pos, self.capacity);
+                group.match_byte(fingerprint).collect()
+            };
+            let has_empty = {
+                let group = Group::new(&self.ctrl, pos, self.capacity);
+                group.has_empty()
+            };
+
+            for idx in matches {
+                if self.ctrl[idx] != CTRL_EMPTY && self.ctrl[idx] != CTRL_DELETED {
+                    if self.entries[idx].matches(key_hash)
+                        && self.entries[idx].slab_block_id == expected_block_id
+                    {
+                        self.ctrl[idx] = CTRL_DELETED;
+                        self.count -= 1;
+                        let snapshot = self.entries[idx].to_snapshot();
+
+                        if self.capacity > MIN_SHRINK_CAPACITY
+                            && self.count * SHRINK_LOAD_FACTOR_DEN < self.capacity
+                        {
+                            self.resize(self.capacity / 2);
+                        }
+
+                        return Some(snapshot);
+                    }
+                }
+            }
+
+            if has_empty {
+                return None;
+            }
+
+            pos = (pos + GROUP_SIZE) & mask;
         }
     }
 
@@ -669,5 +816,41 @@ mod tests {
             let entry = t.lookup(h).expect("remaining key should exist");
             assert_eq!(entry.slab_block_id, make_id(i as u32));
         }
+    }
+
+    #[test]
+    fn test_update_ttl_and_get_ttl() {
+        let mut t = SwissTable::with_capacity(32);
+        let h = hash_key(b"user:session");
+        t.insert(h, make_id(10), 64).unwrap(); // Persistent entry
+
+        assert_eq!(t.get_ttl(h, 100), -1); // Persistent
+
+        // Update TTL to expire at 200
+        assert!(t.update_ttl(h, 200, 100));
+        assert_eq!(t.get_ttl(h, 100), 100); // 100s remaining
+        assert_eq!(t.get_ttl(h, 150), 50); // 50s remaining
+        assert_eq!(t.get_ttl(h, 200), -2); // Expired
+        assert_eq!(t.get_ttl(h, 250), -2); // Expired
+
+        // Missing key
+        let missing = hash_key(b"missing");
+        assert_eq!(t.get_ttl(missing, 100), -2);
+        assert!(!t.update_ttl(missing, 200, 100));
+    }
+
+    #[test]
+    fn test_persist_removes_ttl() {
+        let mut t = SwissTable::with_capacity(32);
+        let h = hash_key(b"temp_data");
+        t.insert_with_ttl(h, make_id(12), 64, 200).unwrap();
+
+        assert_eq!(t.get_ttl(h, 100), 100);
+        assert!(t.persist(h, 100));
+        assert_eq!(t.get_ttl(h, 100), -1); // Now persistent
+        assert!(!t.persist(h, 100)); // Already persistent -> false
+
+        let missing = hash_key(b"missing");
+        assert!(!t.persist(missing, 100));
     }
 }

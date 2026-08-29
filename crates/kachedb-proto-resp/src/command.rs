@@ -43,12 +43,62 @@ pub enum Command<'a> {
     VDel { index: &'a [u8], id: &'a [u8] },
     /// `VSTATS <index>`
     VStats { index: &'a [u8] },
+    /// `EXPIRE <key> <seconds>`
+    Expire { key: &'a [u8], seconds: i64 },
+    /// `PEXPIRE <key> <milliseconds>`
+    PExpire { key: &'a [u8], milliseconds: i64 },
+    /// `EXPIREAT <key> <timestamp_sec>`
+    ExpireAt { key: &'a [u8], timestamp: i64 },
+    /// `PEXPIREAT <key> <timestamp_ms>`
+    PExpireAt { key: &'a [u8], timestamp_ms: i64 },
+    /// `TTL <key>`
+    Ttl { key: &'a [u8] },
+    /// `PTTL <key>`
+    PTtl { key: &'a [u8] },
+    /// `PERSIST <key>`
+    Persist { key: &'a [u8] },
+    /// `MSET <key1> <value1> <key2> <value2> ...`
+    MSet {
+        pairs: SmallVec<[(&'a [u8], &'a [u8]); 8]>,
+    },
+    /// `INCR <key>`
+    Incr { key: &'a [u8] },
+    /// `DECR <key>`
+    Decr { key: &'a [u8] },
+    /// `INCRBY <key> <delta>`
+    IncrBy { key: &'a [u8], delta: i64 },
+    /// `DECRBY <key> <delta>`
+    DecrBy { key: &'a [u8], delta: i64 },
+    /// `APPEND <key> <value>`
+    Append { key: &'a [u8], value: &'a [u8] },
+    /// `STRLEN <key>`
+    Strlen { key: &'a [u8] },
+    /// `HELLO [protover [AUTH username password] [SETNAME name]]`
+    Hello {
+        protover: Option<i64>,
+        auth: Option<(&'a [u8], &'a [u8])>,
+        setname: Option<&'a [u8]>,
+    },
+    /// `CLIENT <subcommand> [args...]`
+    Client { subcommand: ClientSubcommand<'a> },
+    /// `INFO [section]`
+    Info { section: Option<&'a [u8]> },
     /// `COMMAND ...` (client capability discovery)
     CommandDoc,
     /// `QUIT`
     Quit,
     /// Unrecognized command
     Unknown { name: &'a [u8] },
+}
+
+/// Subcommand for `CLIENT <subcommand>`.
+#[derive(Debug, PartialEq, Clone)]
+pub enum ClientSubcommand<'a> {
+    SetName(&'a [u8]),
+    GetName,
+    Id,
+    List,
+    Unrecognized(&'a [u8]),
 }
 
 /// Fast zero-allocation parser for Redis wire commands directly from raw TCP stream slices.
@@ -366,6 +416,224 @@ impl<'a> Command<'a> {
                 });
             }
             Ok(Command::VStats { index: args[1] })
+        } else if cmd_name.eq_ignore_ascii_case(b"EXPIRE") {
+            if args.len() != 3 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "EXPIRE".into(),
+                });
+            }
+            let key = args[1];
+            let sec_str = std::str::from_utf8(args[2]).map_err(|_| RespError::InvalidInteger)?;
+            let seconds = sec_str
+                .parse::<i64>()
+                .map_err(|_| RespError::InvalidInteger)?;
+            Ok(Command::Expire { key, seconds })
+        } else if cmd_name.eq_ignore_ascii_case(b"PEXPIRE") {
+            if args.len() != 3 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "PEXPIRE".into(),
+                });
+            }
+            let key = args[1];
+            let ms_str = std::str::from_utf8(args[2]).map_err(|_| RespError::InvalidInteger)?;
+            let milliseconds = ms_str
+                .parse::<i64>()
+                .map_err(|_| RespError::InvalidInteger)?;
+            Ok(Command::PExpire { key, milliseconds })
+        } else if cmd_name.eq_ignore_ascii_case(b"EXPIREAT") {
+            if args.len() != 3 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "EXPIREAT".into(),
+                });
+            }
+            let key = args[1];
+            let ts_str = std::str::from_utf8(args[2]).map_err(|_| RespError::InvalidInteger)?;
+            let timestamp = ts_str
+                .parse::<i64>()
+                .map_err(|_| RespError::InvalidInteger)?;
+            Ok(Command::ExpireAt { key, timestamp })
+        } else if cmd_name.eq_ignore_ascii_case(b"PEXPIREAT") {
+            if args.len() != 3 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "PEXPIREAT".into(),
+                });
+            }
+            let key = args[1];
+            let ts_str = std::str::from_utf8(args[2]).map_err(|_| RespError::InvalidInteger)?;
+            let timestamp_ms = ts_str
+                .parse::<i64>()
+                .map_err(|_| RespError::InvalidInteger)?;
+            Ok(Command::PExpireAt { key, timestamp_ms })
+        } else if cmd_name.eq_ignore_ascii_case(b"TTL") {
+            if args.len() != 2 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "TTL".into(),
+                });
+            }
+            Ok(Command::Ttl { key: args[1] })
+        } else if cmd_name.eq_ignore_ascii_case(b"PTTL") {
+            if args.len() != 2 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "PTTL".into(),
+                });
+            }
+            Ok(Command::PTtl { key: args[1] })
+        } else if cmd_name.eq_ignore_ascii_case(b"PERSIST") {
+            if args.len() != 2 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "PERSIST".into(),
+                });
+            }
+            Ok(Command::Persist { key: args[1] })
+        } else if cmd_name.eq_ignore_ascii_case(b"MSET") {
+            if args.len() < 3 || !(args.len() - 1).is_multiple_of(2) {
+                return Err(RespError::WrongArgumentCount {
+                    command: "MSET".into(),
+                });
+            }
+            let pair_count = (args.len() - 1) / 2;
+            let mut pairs = SmallVec::with_capacity(pair_count.min(8));
+            let mut i = 1;
+            while i < args.len() {
+                pairs.push((args[i], args[i + 1]));
+                i += 2;
+            }
+            Ok(Command::MSet { pairs })
+        } else if cmd_name.eq_ignore_ascii_case(b"INCR") {
+            if args.len() != 2 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "INCR".into(),
+                });
+            }
+            Ok(Command::Incr { key: args[1] })
+        } else if cmd_name.eq_ignore_ascii_case(b"DECR") {
+            if args.len() != 2 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "DECR".into(),
+                });
+            }
+            Ok(Command::Decr { key: args[1] })
+        } else if cmd_name.eq_ignore_ascii_case(b"INCRBY") {
+            if args.len() != 3 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "INCRBY".into(),
+                });
+            }
+            let key = args[1];
+            let delta_str = std::str::from_utf8(args[2]).map_err(|_| RespError::InvalidInteger)?;
+            let delta = delta_str
+                .parse::<i64>()
+                .map_err(|_| RespError::InvalidInteger)?;
+            Ok(Command::IncrBy { key, delta })
+        } else if cmd_name.eq_ignore_ascii_case(b"DECRBY") {
+            if args.len() != 3 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "DECRBY".into(),
+                });
+            }
+            let key = args[1];
+            let delta_str = std::str::from_utf8(args[2]).map_err(|_| RespError::InvalidInteger)?;
+            let delta = delta_str
+                .parse::<i64>()
+                .map_err(|_| RespError::InvalidInteger)?;
+            Ok(Command::DecrBy { key, delta })
+        } else if cmd_name.eq_ignore_ascii_case(b"APPEND") {
+            if args.len() != 3 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "APPEND".into(),
+                });
+            }
+            Ok(Command::Append {
+                key: args[1],
+                value: args[2],
+            })
+        } else if cmd_name.eq_ignore_ascii_case(b"STRLEN") {
+            if args.len() != 2 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "STRLEN".into(),
+                });
+            }
+            Ok(Command::Strlen { key: args[1] })
+        } else if cmd_name.eq_ignore_ascii_case(b"HELLO") {
+            let mut protover = None;
+            let mut auth = None;
+            let mut setname = None;
+            let mut idx = 1;
+
+            if let Some(ver) = args
+                .get(idx)
+                .and_then(|a| std::str::from_utf8(a).ok())
+                .and_then(|s| s.parse::<i64>().ok())
+            {
+                protover = Some(ver);
+                idx += 1;
+            }
+
+            while idx < args.len() {
+                if args[idx].eq_ignore_ascii_case(b"AUTH") {
+                    if idx + 2 < args.len() {
+                        auth = Some((args[idx + 1], args[idx + 2]));
+                        idx += 3;
+                    } else {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "HELLO AUTH".into(),
+                        });
+                    }
+                } else if args[idx].eq_ignore_ascii_case(b"SETNAME") {
+                    if idx + 1 < args.len() {
+                        setname = Some(args[idx + 1]);
+                        idx += 2;
+                    } else {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "HELLO SETNAME".into(),
+                        });
+                    }
+                } else {
+                    idx += 1;
+                }
+            }
+
+            Ok(Command::Hello {
+                protover,
+                auth,
+                setname,
+            })
+        } else if cmd_name.eq_ignore_ascii_case(b"CLIENT") {
+            if args.len() < 2 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "CLIENT".into(),
+                });
+            }
+            let sub = args[1];
+            if sub.eq_ignore_ascii_case(b"SETNAME") {
+                if args.len() != 3 {
+                    return Err(RespError::WrongArgumentCount {
+                        command: "CLIENT SETNAME".into(),
+                    });
+                }
+                Ok(Command::Client {
+                    subcommand: ClientSubcommand::SetName(args[2]),
+                })
+            } else if sub.eq_ignore_ascii_case(b"GETNAME") {
+                Ok(Command::Client {
+                    subcommand: ClientSubcommand::GetName,
+                })
+            } else if sub.eq_ignore_ascii_case(b"ID") {
+                Ok(Command::Client {
+                    subcommand: ClientSubcommand::Id,
+                })
+            } else if sub.eq_ignore_ascii_case(b"LIST") {
+                Ok(Command::Client {
+                    subcommand: ClientSubcommand::List,
+                })
+            } else {
+                Ok(Command::Client {
+                    subcommand: ClientSubcommand::Unrecognized(sub),
+                })
+            }
+        } else if cmd_name.eq_ignore_ascii_case(b"INFO") {
+            let section = if args.len() >= 2 { Some(args[1]) } else { None };
+            Ok(Command::Info { section })
         } else if cmd_name.eq_ignore_ascii_case(b"COMMAND") {
             Ok(Command::CommandDoc)
         } else if cmd_name.eq_ignore_ascii_case(b"QUIT") {
@@ -598,6 +866,257 @@ impl<'a> Command<'a> {
                     }
                     let index = extract_required_bytes(&args[1], "VSTATS")?;
                     Ok(Command::VStats { index })
+                } else if cmd_name.eq_ignore_ascii_case(b"EXPIRE") {
+                    if args.len() != 3 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "EXPIRE".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "EXPIRE")?;
+                    let sec_bytes = extract_required_bytes(&args[2], "EXPIRE")?;
+                    let sec_str =
+                        std::str::from_utf8(sec_bytes).map_err(|_| RespError::InvalidInteger)?;
+                    let seconds = sec_str
+                        .parse::<i64>()
+                        .map_err(|_| RespError::InvalidInteger)?;
+                    Ok(Command::Expire { key, seconds })
+                } else if cmd_name.eq_ignore_ascii_case(b"PEXPIRE") {
+                    if args.len() != 3 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "PEXPIRE".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "PEXPIRE")?;
+                    let ms_bytes = extract_required_bytes(&args[2], "PEXPIRE")?;
+                    let ms_str =
+                        std::str::from_utf8(ms_bytes).map_err(|_| RespError::InvalidInteger)?;
+                    let milliseconds = ms_str
+                        .parse::<i64>()
+                        .map_err(|_| RespError::InvalidInteger)?;
+                    Ok(Command::PExpire { key, milliseconds })
+                } else if cmd_name.eq_ignore_ascii_case(b"EXPIREAT") {
+                    if args.len() != 3 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "EXPIREAT".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "EXPIREAT")?;
+                    let ts_bytes = extract_required_bytes(&args[2], "EXPIREAT")?;
+                    let ts_str =
+                        std::str::from_utf8(ts_bytes).map_err(|_| RespError::InvalidInteger)?;
+                    let timestamp = ts_str
+                        .parse::<i64>()
+                        .map_err(|_| RespError::InvalidInteger)?;
+                    Ok(Command::ExpireAt { key, timestamp })
+                } else if cmd_name.eq_ignore_ascii_case(b"PEXPIREAT") {
+                    if args.len() != 3 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "PEXPIREAT".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "PEXPIREAT")?;
+                    let ts_bytes = extract_required_bytes(&args[2], "PEXPIREAT")?;
+                    let ts_str =
+                        std::str::from_utf8(ts_bytes).map_err(|_| RespError::InvalidInteger)?;
+                    let timestamp_ms = ts_str
+                        .parse::<i64>()
+                        .map_err(|_| RespError::InvalidInteger)?;
+                    Ok(Command::PExpireAt { key, timestamp_ms })
+                } else if cmd_name.eq_ignore_ascii_case(b"TTL") {
+                    if args.len() != 2 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "TTL".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "TTL")?;
+                    Ok(Command::Ttl { key })
+                } else if cmd_name.eq_ignore_ascii_case(b"PTTL") {
+                    if args.len() != 2 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "PTTL".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "PTTL")?;
+                    Ok(Command::PTtl { key })
+                } else if cmd_name.eq_ignore_ascii_case(b"PERSIST") {
+                    if args.len() != 2 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "PERSIST".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "PERSIST")?;
+                    Ok(Command::Persist { key })
+                } else if cmd_name.eq_ignore_ascii_case(b"MSET") {
+                    if args.len() < 3 || !(args.len() - 1).is_multiple_of(2) {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "MSET".into(),
+                        });
+                    }
+                    let pair_count = (args.len() - 1) / 2;
+                    let mut pairs = SmallVec::with_capacity(pair_count.min(8));
+                    let mut i = 1;
+                    while i < args.len() {
+                        let k = extract_required_bytes(&args[i], "MSET")?;
+                        let v = extract_required_bytes(&args[i + 1], "MSET")?;
+                        pairs.push((k, v));
+                        i += 2;
+                    }
+                    Ok(Command::MSet { pairs })
+                } else if cmd_name.eq_ignore_ascii_case(b"INCR") {
+                    if args.len() != 2 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "INCR".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "INCR")?;
+                    Ok(Command::Incr { key })
+                } else if cmd_name.eq_ignore_ascii_case(b"DECR") {
+                    if args.len() != 2 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "DECR".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "DECR")?;
+                    Ok(Command::Decr { key })
+                } else if cmd_name.eq_ignore_ascii_case(b"INCRBY") {
+                    if args.len() != 3 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "INCRBY".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "INCRBY")?;
+                    let delta_bytes = extract_required_bytes(&args[2], "INCRBY")?;
+                    let delta_str =
+                        std::str::from_utf8(delta_bytes).map_err(|_| RespError::InvalidInteger)?;
+                    let delta = delta_str
+                        .parse::<i64>()
+                        .map_err(|_| RespError::InvalidInteger)?;
+                    Ok(Command::IncrBy { key, delta })
+                } else if cmd_name.eq_ignore_ascii_case(b"DECRBY") {
+                    if args.len() != 3 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "DECRBY".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "DECRBY")?;
+                    let delta_bytes = extract_required_bytes(&args[2], "DECRBY")?;
+                    let delta_str =
+                        std::str::from_utf8(delta_bytes).map_err(|_| RespError::InvalidInteger)?;
+                    let delta = delta_str
+                        .parse::<i64>()
+                        .map_err(|_| RespError::InvalidInteger)?;
+                    Ok(Command::DecrBy { key, delta })
+                } else if cmd_name.eq_ignore_ascii_case(b"APPEND") {
+                    if args.len() != 3 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "APPEND".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "APPEND")?;
+                    let value = extract_required_bytes(&args[2], "APPEND")?;
+                    Ok(Command::Append { key, value })
+                } else if cmd_name.eq_ignore_ascii_case(b"STRLEN") {
+                    if args.len() != 2 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "STRLEN".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "STRLEN")?;
+                    Ok(Command::Strlen { key })
+                } else if cmd_name.eq_ignore_ascii_case(b"HELLO") {
+                    let mut protover = None;
+                    let mut auth = None;
+                    let mut setname = None;
+                    let mut idx = 1;
+
+                    if let Some(ver) = args
+                        .get(idx)
+                        .and_then(|f| extract_required_bytes(f, "HELLO").ok())
+                        .and_then(|b| std::str::from_utf8(b).ok())
+                        .and_then(|s| s.parse::<i64>().ok())
+                    {
+                        protover = Some(ver);
+                        idx += 1;
+                    }
+
+                    while idx < args.len() {
+                        if let Ok(flag_bytes) = extract_required_bytes(&args[idx], "HELLO") {
+                            if flag_bytes.eq_ignore_ascii_case(b"AUTH") {
+                                if idx + 2 < args.len() {
+                                    let u = extract_required_bytes(&args[idx + 1], "HELLO AUTH")?;
+                                    let p = extract_required_bytes(&args[idx + 2], "HELLO AUTH")?;
+                                    auth = Some((u, p));
+                                    idx += 3;
+                                } else {
+                                    return Err(RespError::WrongArgumentCount {
+                                        command: "HELLO AUTH".into(),
+                                    });
+                                }
+                            } else if flag_bytes.eq_ignore_ascii_case(b"SETNAME") {
+                                if idx + 1 < args.len() {
+                                    let n =
+                                        extract_required_bytes(&args[idx + 1], "HELLO SETNAME")?;
+                                    setname = Some(n);
+                                    idx += 2;
+                                } else {
+                                    return Err(RespError::WrongArgumentCount {
+                                        command: "HELLO SETNAME".into(),
+                                    });
+                                }
+                            } else {
+                                idx += 1;
+                            }
+                        } else {
+                            idx += 1;
+                        }
+                    }
+
+                    Ok(Command::Hello {
+                        protover,
+                        auth,
+                        setname,
+                    })
+                } else if cmd_name.eq_ignore_ascii_case(b"CLIENT") {
+                    if args.len() < 2 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "CLIENT".into(),
+                        });
+                    }
+                    let sub = extract_required_bytes(&args[1], "CLIENT")?;
+                    if sub.eq_ignore_ascii_case(b"SETNAME") {
+                        if args.len() != 3 {
+                            return Err(RespError::WrongArgumentCount {
+                                command: "CLIENT SETNAME".into(),
+                            });
+                        }
+                        let name = extract_required_bytes(&args[2], "CLIENT SETNAME")?;
+                        Ok(Command::Client {
+                            subcommand: ClientSubcommand::SetName(name),
+                        })
+                    } else if sub.eq_ignore_ascii_case(b"GETNAME") {
+                        Ok(Command::Client {
+                            subcommand: ClientSubcommand::GetName,
+                        })
+                    } else if sub.eq_ignore_ascii_case(b"ID") {
+                        Ok(Command::Client {
+                            subcommand: ClientSubcommand::Id,
+                        })
+                    } else if sub.eq_ignore_ascii_case(b"LIST") {
+                        Ok(Command::Client {
+                            subcommand: ClientSubcommand::List,
+                        })
+                    } else {
+                        Ok(Command::Client {
+                            subcommand: ClientSubcommand::Unrecognized(sub),
+                        })
+                    }
+                } else if cmd_name.eq_ignore_ascii_case(b"INFO") {
+                    let section = if args.len() >= 2 {
+                        Some(extract_required_bytes(&args[1], "INFO")?)
+                    } else {
+                        None
+                    };
+                    Ok(Command::Info { section })
                 } else if cmd_name.eq_ignore_ascii_case(b"COMMAND") {
                     Ok(Command::CommandDoc)
                 } else if cmd_name.eq_ignore_ascii_case(b"QUIT") {
@@ -782,5 +1301,196 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stats_cmd, Command::VStats { index: b"faq" });
+    }
+
+    #[test]
+    fn parse_expire_and_pexpire_commands() {
+        let (exp_cmd, _) = parse_command(b"*3\r\n$6\r\nEXPIRE\r\n$7\r\nsession\r\n$3\r\n300\r\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            exp_cmd,
+            Command::Expire {
+                key: b"session",
+                seconds: 300
+            }
+        );
+
+        let (pexp_cmd, _) =
+            parse_command(b"*3\r\n$7\r\nPEXPIRE\r\n$7\r\nsession\r\n$5\r\n50000\r\n")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            pexp_cmd,
+            Command::PExpire {
+                key: b"session",
+                milliseconds: 50000
+            }
+        );
+    }
+
+    #[test]
+    fn parse_expireat_and_pexpireat_commands() {
+        let (eat_cmd, _) =
+            parse_command(b"*3\r\n$8\r\nEXPIREAT\r\n$3\r\nkey\r\n$10\r\n1893456000\r\n")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            eat_cmd,
+            Command::ExpireAt {
+                key: b"key",
+                timestamp: 1893456000
+            }
+        );
+
+        let (peat_cmd, _) =
+            parse_command(b"*3\r\n$9\r\nPEXPIREAT\r\n$3\r\nkey\r\n$13\r\n1893456000000\r\n")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            peat_cmd,
+            Command::PExpireAt {
+                key: b"key",
+                timestamp_ms: 1893456000000
+            }
+        );
+    }
+
+    #[test]
+    fn parse_ttl_pttl_and_persist_commands() {
+        let (ttl_cmd, _) = parse_command(b"*2\r\n$3\r\nTTL\r\n$4\r\nuser\r\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(ttl_cmd, Command::Ttl { key: b"user" });
+
+        let (pttl_cmd, _) = parse_command(b"*2\r\n$4\r\nPTTL\r\n$4\r\nuser\r\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(pttl_cmd, Command::PTtl { key: b"user" });
+
+        let (persist_cmd, _) = parse_command(b"*2\r\n$7\r\nPERSIST\r\n$4\r\nuser\r\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(persist_cmd, Command::Persist { key: b"user" });
+    }
+
+    #[test]
+    fn parse_mset_command() {
+        let (cmd, _) = parse_command(
+            b"*7\r\n$4\r\nMSET\r\n$2\r\nk1\r\n$2\r\nv1\r\n$2\r\nk2\r\n$2\r\nv2\r\n$2\r\nk3\r\n$2\r\nv3\r\n",
+        )
+        .unwrap()
+        .unwrap();
+
+        match cmd {
+            Command::MSet { pairs } => {
+                assert_eq!(pairs.len(), 3);
+                assert_eq!(pairs[0], (b"k1".as_slice(), b"v1".as_slice()));
+                assert_eq!(pairs[1], (b"k2".as_slice(), b"v2".as_slice()));
+                assert_eq!(pairs[2], (b"k3".as_slice(), b"v3".as_slice()));
+            }
+            _ => panic!("Expected MSet command"),
+        }
+    }
+
+    #[test]
+    fn parse_incr_decr_and_by_commands() {
+        let (incr_cmd, _) = parse_command(b"*2\r\n$4\r\nINCR\r\n$3\r\nctr\r\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(incr_cmd, Command::Incr { key: b"ctr" });
+
+        let (decr_cmd, _) = parse_command(b"*2\r\n$4\r\nDECR\r\n$3\r\nctr\r\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(decr_cmd, Command::Decr { key: b"ctr" });
+
+        let (incrby_cmd, _) = parse_command(b"*3\r\n$6\r\nINCRBY\r\n$3\r\nctr\r\n$2\r\n10\r\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            incrby_cmd,
+            Command::IncrBy {
+                key: b"ctr",
+                delta: 10
+            }
+        );
+
+        let (decrby_cmd, _) = parse_command(b"*3\r\n$6\r\nDECRBY\r\n$3\r\nctr\r\n$1\r\n5\r\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            decrby_cmd,
+            Command::DecrBy {
+                key: b"ctr",
+                delta: 5
+            }
+        );
+    }
+
+    #[test]
+    fn parse_append_and_strlen_commands() {
+        let (app_cmd, _) = parse_command(b"*3\r\n$6\r\nAPPEND\r\n$3\r\nmsg\r\n$5\r\nworld\r\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            app_cmd,
+            Command::Append {
+                key: b"msg",
+                value: b"world"
+            }
+        );
+
+        let (str_cmd, _) = parse_command(b"*2\r\n$6\r\nSTRLEN\r\n$3\r\nmsg\r\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(str_cmd, Command::Strlen { key: b"msg" });
+    }
+
+    #[test]
+    fn parse_hello_client_and_info_commands() {
+        let (hello_cmd, _) =
+            parse_command(b"*4\r\n$5\r\nHELLO\r\n$1\r\n3\r\n$7\r\nSETNAME\r\n$9\r\nmy-client\r\n")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            hello_cmd,
+            Command::Hello {
+                protover: Some(3),
+                auth: None,
+                setname: Some(b"my-client")
+            }
+        );
+
+        let (client_set_cmd, _) =
+            parse_command(b"*3\r\n$6\r\nCLIENT\r\n$7\r\nSETNAME\r\n$7\r\nworker1\r\n")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            client_set_cmd,
+            Command::Client {
+                subcommand: ClientSubcommand::SetName(b"worker1")
+            }
+        );
+
+        let (client_get_cmd, _) = parse_command(b"*2\r\n$6\r\nCLIENT\r\n$7\r\nGETNAME\r\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            client_get_cmd,
+            Command::Client {
+                subcommand: ClientSubcommand::GetName
+            }
+        );
+
+        let (info_cmd, _) = parse_command(b"*2\r\n$4\r\nINFO\r\n$6\r\nserver\r\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            info_cmd,
+            Command::Info {
+                section: Some(b"server")
+            }
+        );
     }
 }

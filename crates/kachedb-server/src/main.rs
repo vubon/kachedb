@@ -56,9 +56,13 @@ fn main() {
     let shutdown = Arc::new(AtomicBool::new(false));
     let shared_table = Arc::new(kachedb_hash::ShardedSwissTable::new());
 
-    // Handle Ctrl+C gracefully
-    let shutdown_signal = shutdown.clone();
-    ctrlc_handler(shutdown_signal);
+    // Handle SIGINT (Ctrl+C) and SIGTERM gracefully
+    register_shutdown_handler(shutdown.clone());
+
+    // Clean up any orphaned POSIX SHM regions from previous unclean shutdowns
+    if config.shm_enabled {
+        cleanup_stale_shm(config.num_workers);
+    }
 
     // Create per-worker crossbeam dispatch channels
     let (senders, receivers) = create_dispatch_channels(config.num_workers);
@@ -136,7 +140,11 @@ fn main() {
         let _ = handle.join();
     }
 
-    println!("🛑 KacheDB server stopped.");
+    if config.shm_enabled {
+        cleanup_stale_shm(config.num_workers);
+    }
+
+    println!("🛑 KacheDB server stopped gracefully.");
 }
 
 struct SimpleLogger;
@@ -163,16 +171,58 @@ fn simple_logger() -> Result<(), ()> {
     Ok(())
 }
 
-fn ctrlc_handler(shutdown: Arc<AtomicBool>) {
-    // Simple shutdown handler
+static GLOBAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn sig_handler(_sig: libc::c_int) {
+    GLOBAL_SHUTDOWN.store(true, Ordering::SeqCst);
+}
+
+fn install_signal_handlers() {
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = sig_handler as *const () as usize;
+        sa.sa_flags = libc::SA_RESTART;
+        libc::sigemptyset(&mut sa.sa_mask);
+
+        libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut());
+        libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
+    }
+}
+
+fn register_shutdown_handler(shutdown: Arc<AtomicBool>) {
+    install_signal_handlers();
     let s = shutdown.clone();
-    std::thread::spawn(move || {
-        // Wait on stdin or sleep loop as fallback for signal trapping
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            if s.load(Ordering::Relaxed) {
-                break;
+    thread::Builder::new()
+        .name("kachedb-signal-watcher".to_string())
+        .spawn(move || {
+            while !s.load(Ordering::Relaxed) {
+                if GLOBAL_SHUTDOWN.load(Ordering::Relaxed) {
+                    log::info!(
+                        "Received shutdown signal (SIGINT/SIGTERM). Initiating graceful shutdown..."
+                    );
+                    s.store(true, Ordering::SeqCst);
+                    break;
+                }
+                thread::sleep(std::time::Duration::from_millis(50));
+            }
+        })
+        .expect("failed to spawn signal watcher thread");
+}
+
+fn cleanup_stale_shm(num_workers: usize) {
+    for core_id in 0..num_workers {
+        let shm_name = format!("kachedb_{core_id}");
+        cfg_if::cfg_if! {
+            if #[cfg(target_os = "linux")] {
+                let path = format!("/dev/shm/{shm_name}");
+                let _ = std::fs::remove_file(&path);
+            } else {
+                use std::ffi::CString;
+                let full_name = format!("/{shm_name}");
+                if let Ok(c) = CString::new(full_name) {
+                    unsafe { libc::shm_unlink(c.as_ptr()) };
+                }
             }
         }
-    });
+    }
 }

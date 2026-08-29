@@ -161,6 +161,7 @@ fn parse_array(src: &[u8]) -> Result<ParsedArray<'_>, RespError> {
 
 // ─── Fast Zero-Alloc Integer Formatter ────────────────────────────────────────
 
+#[inline(always)]
 fn write_int(buf: &mut Vec<u8>, mut n: i64) {
     if n == 0 {
         buf.push(b'0');
@@ -187,6 +188,7 @@ fn write_int(buf: &mut Vec<u8>, mut n: i64) {
     }
 }
 
+#[inline(always)]
 fn write_usize(buf: &mut Vec<u8>, mut n: usize) {
     if n == 0 {
         buf.push(b'0');
@@ -210,48 +212,54 @@ fn write_usize(buf: &mut Vec<u8>, mut n: usize) {
 // ─── Zero-Allocation Encoders ─────────────────────────────────────────────────
 
 /// Serializes a simple string (`+<str>\r\n`) into the output buffer.
-#[inline]
+#[inline(always)]
 pub fn encode_simple_string(buf: &mut Vec<u8>, s: &str) {
+    buf.reserve(s.len() + 3);
     buf.push(b'+');
     buf.extend_from_slice(s.as_bytes());
     buf.extend_from_slice(b"\r\n");
 }
 
 /// Serializes an error string (`-<err>\r\n`) into the output buffer.
-#[inline]
+#[inline(always)]
 pub fn encode_error(buf: &mut Vec<u8>, err: &str) {
+    buf.reserve(err.len() + 3);
     buf.push(b'-');
     buf.extend_from_slice(err.as_bytes());
     buf.extend_from_slice(b"\r\n");
 }
 
 /// Serializes an integer (`:<int>\r\n`) into the output buffer.
-#[inline]
+#[inline(always)]
 pub fn encode_integer(buf: &mut Vec<u8>, val: i64) {
+    buf.reserve(24);
     buf.push(b':');
     write_int(buf, val);
     buf.extend_from_slice(b"\r\n");
 }
 
 /// Serializes a bulk string (`$<len>\r\n<data>\r\n`) into the output buffer.
-#[inline]
+#[inline(always)]
 pub fn encode_bulk_string(buf: &mut Vec<u8>, data: &[u8]) {
+    let len = data.len();
+    buf.reserve(len + 16);
     buf.push(b'$');
-    write_usize(buf, data.len());
+    write_usize(buf, len);
     buf.extend_from_slice(b"\r\n");
     buf.extend_from_slice(data);
     buf.extend_from_slice(b"\r\n");
 }
 
 /// Serializes a RESP null response (`$-1\r\n`).
-#[inline]
+#[inline(always)]
 pub fn encode_null(buf: &mut Vec<u8>) {
     buf.extend_from_slice(b"$-1\r\n");
 }
 
 /// Serializes an array header (`*<count>\r\n`).
-#[inline]
+#[inline(always)]
 pub fn encode_array_header(buf: &mut Vec<u8>, count: usize) {
+    buf.reserve(16);
     buf.push(b'*');
     write_usize(buf, count);
     buf.extend_from_slice(b"\r\n");

@@ -21,7 +21,7 @@ use mio::{Events, Interest, Poll, Token};
 use kachedb_core::{HashedTimingWheel, SlabPool, pin_current_thread_to_core};
 use kachedb_hash::ShardedSwissTable;
 
-use crate::connection::Connection;
+use crate::connection::{Connection, DEFAULT_VECTORS};
 use crate::error::NetError;
 
 const SERVER_TOKEN: Token = Token(0);
@@ -209,6 +209,8 @@ impl WorkerThread {
         let mut events = Events::with_capacity(EVENTS_CAPACITY);
         let mut connections: HashMap<Token, (TcpStream, Connection)> = HashMap::new();
         let mut next_token = 1usize;
+        let mut last_tick_sec = 0u32;
+        let mut expired_entries = Vec::with_capacity(64);
 
         while !shutdown.load(Ordering::Relaxed) {
             // Drain all pending connections from the accept-dispatch channel
@@ -229,10 +231,18 @@ impl WorkerThread {
                     "Worker [{core}]: registered dispatched connection {token:?}",
                     core = self.core_id
                 );
-                connections.insert(token, (stream, Connection::new()));
+                let mut conn = Connection::new();
+                conn.set_current_sec(last_tick_sec);
+                connections.insert(token, (stream, conn));
             }
 
-            match poll.poll(&mut events, Some(Duration::from_millis(10))) {
+            let poll_timeout = if connections.is_empty() {
+                Some(Duration::from_millis(1))
+            } else {
+                Some(Duration::from_millis(5))
+            };
+
+            match poll.poll(&mut events, poll_timeout) {
                 Ok(_) => {}
                 Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(NetError::Io(e)),
@@ -240,15 +250,31 @@ impl WorkerThread {
 
             self.process_events(&mut events, &mut connections, &mut poll)?;
 
-            // Idle tick: advance timing wheel and pool arena timestamps
+            // Idle tick: advance timing wheel and pool arena timestamps once per second
             let now_sec = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as u32;
-            self.pool.tick_second(now_sec);
-            self.timing_wheel.advance_to(now_sec, &mut self.pool);
-            for (_, conn) in connections.values_mut() {
-                conn.set_current_sec(now_sec);
+
+            if now_sec != last_tick_sec {
+                last_tick_sec = now_sec;
+                self.pool.tick_second(now_sec);
+
+                expired_entries.clear();
+                self.timing_wheel
+                    .advance_expired_entries(now_sec, &mut expired_entries);
+                for entry in &expired_entries {
+                    if let Some(removed) = self
+                        .table
+                        .remove_if_matching(entry.key_hash, entry.slab_block_id)
+                    {
+                        let _ = self.pool.deallocate(removed.slab_block_id);
+                    }
+                }
+
+                for (_, conn) in connections.values_mut() {
+                    conn.set_current_sec(now_sec);
+                }
             }
         }
 
@@ -274,6 +300,8 @@ impl WorkerThread {
 
         let mut connections: HashMap<Token, (TcpStream, Connection)> = HashMap::new();
         let mut next_token = 1usize;
+        let mut last_tick_sec = 0u32;
+        let mut expired_entries = Vec::with_capacity(64);
 
         while !shutdown.load(Ordering::Relaxed) {
             match poll.poll(&mut events, Some(Duration::from_millis(100))) {
@@ -307,7 +335,9 @@ impl WorkerThread {
                                     continue;
                                 }
 
-                                connections.insert(token, (stream, Connection::new()));
+                                let mut conn = Connection::new();
+                                conn.set_current_sec(last_tick_sec);
+                                connections.insert(token, (stream, conn));
                             }
                             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                             Err(e) => {
@@ -324,15 +354,31 @@ impl WorkerThread {
 
             self.process_events(&mut events, &mut connections, &mut poll)?;
 
-            // Idle tick: advance timing wheel and pool arena timestamps
+            // Idle tick: advance timing wheel and pool arena timestamps once per second
             let now_sec = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as u32;
-            self.pool.tick_second(now_sec);
-            self.timing_wheel.advance_to(now_sec, &mut self.pool);
-            for (_, conn) in connections.values_mut() {
-                conn.set_current_sec(now_sec);
+
+            if now_sec != last_tick_sec {
+                last_tick_sec = now_sec;
+                self.pool.tick_second(now_sec);
+
+                expired_entries.clear();
+                self.timing_wheel
+                    .advance_expired_entries(now_sec, &mut expired_entries);
+                for entry in &expired_entries {
+                    if let Some(removed) = self
+                        .table
+                        .remove_if_matching(entry.key_hash, entry.slab_block_id)
+                    {
+                        let _ = self.pool.deallocate(removed.slab_block_id);
+                    }
+                }
+
+                for (_, conn) in connections.values_mut() {
+                    conn.set_current_sec(now_sec);
+                }
             }
         }
 
@@ -360,14 +406,19 @@ impl WorkerThread {
 
             if let Some((stream, conn)) = connections.get_mut(&token) {
                 if event.is_readable() {
-                    loop {
-                        match conn.read_from(stream) {
-                            Ok(n) if n > 0 => {
-                                match conn.process_incoming(&self.table, &mut self.pool) {
+                    let read_res = conn.read_from(stream);
+                    match read_res {
+                        Ok(_) => {
+                            if conn.has_unprocessed_input() {
+                                match conn.process_incoming_with_wheel(
+                                    &self.table,
+                                    &mut self.pool,
+                                    &DEFAULT_VECTORS,
+                                    Some(&mut self.timing_wheel),
+                                ) {
                                     Ok(keep_alive) => {
                                         if !keep_alive {
                                             should_remove = true;
-                                            break;
                                         }
                                     }
                                     Err(e) => {
@@ -376,28 +427,29 @@ impl WorkerThread {
                                             core = self.core_id
                                         );
                                         should_remove = true;
-                                        break;
                                     }
                                 }
                             }
-                            Ok(_) => break, // WouldBlock or buffer drained
-                            Err(NetError::ConnectionClosed) => {
-                                should_remove = true;
-                                break;
-                            }
-                            Err(NetError::Io(ref e))
-                                if e.kind() == std::io::ErrorKind::WouldBlock =>
-                            {
-                                break;
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "Worker [{core}]: read error on {token:?}: {e}",
-                                    core = self.core_id
+                        }
+                        Err(NetError::ConnectionClosed) => {
+                            should_remove = true;
+                        }
+                        Err(NetError::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if conn.has_unprocessed_input() {
+                                let _ = conn.process_incoming_with_wheel(
+                                    &self.table,
+                                    &mut self.pool,
+                                    &DEFAULT_VECTORS,
+                                    Some(&mut self.timing_wheel),
                                 );
-                                should_remove = true;
-                                break;
                             }
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "Worker [{core}]: read error on {token:?}: {e}",
+                                core = self.core_id
+                            );
+                            should_remove = true;
                         }
                     }
                 }
@@ -487,6 +539,289 @@ mod tests {
         client.write_all(b"*1\r\n$4\r\nQUIT\r\n").unwrap();
         let n = client.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"+OK\r\n");
+
+        // Shut down worker
+        shutdown.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn worker_handles_expire_ttl_persist_over_tcp() {
+        let bind_addr: SocketAddr = "127.0.0.1:16380".parse().unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_worker = shutdown.clone();
+
+        let mut worker = WorkerThread::new(1, bind_addr).unwrap();
+
+        let handle = thread::spawn(move || {
+            worker.run(shutdown_worker).unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(50));
+
+        let mut client = StdTcpStream::connect(bind_addr).expect("connect to worker");
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+
+        let mut buf = [0u8; 128];
+
+        // 1. SET session token123
+        client
+            .write_all(b"*3\r\n$3\r\nSET\r\n$7\r\nsession\r\n$8\r\ntoken123\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"+OK\r\n");
+
+        // 2. TTL session -> -1
+        client
+            .write_all(b"*2\r\n$3\r\nTTL\r\n$7\r\nsession\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b":-1\r\n");
+
+        // 3. EXPIRE session 300 -> :1
+        client
+            .write_all(b"*3\r\n$6\r\nEXPIRE\r\n$7\r\nsession\r\n$3\r\n300\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b":1\r\n");
+
+        // 4. TTL session -> should be positive
+        client
+            .write_all(b"*2\r\n$3\r\nTTL\r\n$7\r\nsession\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert!(n > 0 && buf[0] == b':');
+
+        // 5. PERSIST session -> :1
+        client
+            .write_all(b"*2\r\n$7\r\nPERSIST\r\n$7\r\nsession\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b":1\r\n");
+
+        // 6. TTL session -> -1
+        client
+            .write_all(b"*2\r\n$3\r\nTTL\r\n$7\r\nsession\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b":-1\r\n");
+
+        // Shut down worker
+        shutdown.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn worker_actively_reclaims_expired_keys_via_timing_wheel() {
+        let bind_addr: SocketAddr = "127.0.0.1:16382".parse().unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_worker = shutdown.clone();
+
+        let table = Arc::new(ShardedSwissTable::new());
+        let table_clone = Arc::clone(&table);
+
+        let mut worker =
+            WorkerThread::with_shared_table(2, bind_addr, DEFAULT_POOL_CAPACITY, table_clone)
+                .unwrap();
+
+        let handle = thread::spawn(move || {
+            worker.run(shutdown_worker).unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(50));
+
+        let mut client = StdTcpStream::connect(bind_addr).expect("connect to worker");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+
+        let mut buf = [0u8; 128];
+
+        // 1. SET temp_key ephemeral EX 1
+        client
+            .write_all(
+                b"*5\r\n$3\r\nSET\r\n$8\r\ntemp_key\r\n$9\r\nephemeral\r\n$2\r\nEX\r\n$1\r\n1\r\n",
+            )
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"+OK\r\n");
+
+        // Verify table has 1 active key
+        assert_eq!(table.len(), 1);
+
+        // 2. Wait 1.3 seconds for TimingWheel event loop tick to actively reclaim
+        thread::sleep(Duration::from_millis(1300));
+
+        // 3. Verify key was removed by TimingWheel background tick without passive lookup
+        assert_eq!(table.len(), 0);
+
+        // 4. GET temp_key -> returns null ($-1\r\n)
+        client
+            .write_all(b"*2\r\n$3\r\nGET\r\n$8\r\ntemp_key\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"$-1\r\n");
+
+        // Shut down worker
+        shutdown.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn worker_handles_extended_primitives_over_tcp() {
+        let bind_addr: SocketAddr = "127.0.0.1:16383".parse().unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_worker = shutdown.clone();
+
+        let table = Arc::new(ShardedSwissTable::new());
+        let table_clone = Arc::clone(&table);
+
+        let mut worker =
+            WorkerThread::with_shared_table(3, bind_addr, DEFAULT_POOL_CAPACITY, table_clone)
+                .unwrap();
+
+        let handle = thread::spawn(move || {
+            worker.run(shutdown_worker).unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(50));
+
+        let mut client = StdTcpStream::connect(bind_addr).expect("connect to worker");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+
+        let mut buf = [0u8; 128];
+
+        // 1. MSET user:1 Alice user:2 Bob -> +OK
+        client
+            .write_all(
+                b"*5\r\n$4\r\nMSET\r\n$6\r\nuser:1\r\n$5\r\nAlice\r\n$6\r\nuser:2\r\n$3\r\nBob\r\n",
+            )
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"+OK\r\n");
+
+        // 2. STRLEN user:1 -> :5
+        client
+            .write_all(b"*2\r\n$6\r\nSTRLEN\r\n$6\r\nuser:1\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b":5\r\n");
+
+        // 3. APPEND user:1 _Smith -> :11
+        client
+            .write_all(b"*3\r\n$6\r\nAPPEND\r\n$6\r\nuser:1\r\n$6\r\n_Smith\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b":11\r\n");
+
+        // 4. GET user:1 -> $11\r\nAlice_Smith\r\n
+        client
+            .write_all(b"*2\r\n$3\r\nGET\r\n$6\r\nuser:1\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"$11\r\nAlice_Smith\r\n");
+
+        // 5. INCR hit_count -> :1
+        client
+            .write_all(b"*2\r\n$4\r\nINCR\r\n$9\r\nhit_count\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b":1\r\n");
+
+        // 6. INCRBY hit_count 99 -> :100
+        client
+            .write_all(b"*3\r\n$6\r\nINCRBY\r\n$9\r\nhit_count\r\n$2\r\n99\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b":100\r\n");
+
+        // 7. DECR hit_count -> :99
+        client
+            .write_all(b"*2\r\n$4\r\nDECR\r\n$9\r\nhit_count\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b":99\r\n");
+
+        // 8. DECRBY hit_count 50 -> :49
+        client
+            .write_all(b"*3\r\n$6\r\nDECRBY\r\n$9\r\nhit_count\r\n$2\r\n50\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b":49\r\n");
+
+        // Shut down worker
+        shutdown.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn worker_handles_hello_client_and_info_over_tcp() {
+        let bind_addr: SocketAddr = "127.0.0.1:16384".parse().unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_worker = shutdown.clone();
+
+        let table = Arc::new(ShardedSwissTable::new());
+        let table_clone = Arc::clone(&table);
+
+        let mut worker =
+            WorkerThread::with_shared_table(4, bind_addr, DEFAULT_POOL_CAPACITY, table_clone)
+                .unwrap();
+
+        let handle = thread::spawn(move || {
+            worker.run(shutdown_worker).unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(50));
+
+        let mut client = StdTcpStream::connect(bind_addr).expect("connect to worker");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+
+        let mut buf = [0u8; 1024];
+
+        // 1. HELLO 3 SETNAME my-driver
+        client
+            .write_all(b"*4\r\n$5\r\nHELLO\r\n$1\r\n3\r\n$7\r\nSETNAME\r\n$9\r\nmy-driver\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        let resp = std::str::from_utf8(&buf[..n]).unwrap();
+        assert!(resp.starts_with("*14\r\n"));
+        assert!(resp.contains("kachedb"));
+        assert!(resp.contains("standalone"));
+
+        // 2. CLIENT GETNAME -> $9\r\nmy-driver\r\n
+        client
+            .write_all(b"*2\r\n$6\r\nCLIENT\r\n$7\r\nGETNAME\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"$9\r\nmy-driver\r\n");
+
+        // 3. CLIENT SETNAME new-worker -> +OK\r\n
+        client
+            .write_all(b"*3\r\n$6\r\nCLIENT\r\n$7\r\nSETNAME\r\n$10\r\nnew-worker\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"+OK\r\n");
+
+        // 4. CLIENT GETNAME -> $10\r\nnew-worker\r\n
+        client
+            .write_all(b"*2\r\n$6\r\nCLIENT\r\n$7\r\nGETNAME\r\n")
+            .unwrap();
+        let n = client.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"$10\r\nnew-worker\r\n");
+
+        // 5. INFO -> contains "# Server" and "kachedb_version:0.1.0"
+        client.write_all(b"*1\r\n$4\r\nINFO\r\n").unwrap();
+        let n = client.read(&mut buf).unwrap();
+        let info_resp = std::str::from_utf8(&buf[..n]).unwrap();
+        assert!(info_resp.contains("# Server"));
+        assert!(info_resp.contains("kachedb_version:0.1.0"));
+        assert!(info_resp.contains("# Memory"));
 
         // Shut down worker
         shutdown.store(true, Ordering::Relaxed);

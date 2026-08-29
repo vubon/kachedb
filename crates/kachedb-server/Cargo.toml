@@ -21,3 +21,4 @@ kachedb-vector       = { path = "../kachedb-vector" }
 log                  = { workspace = true }
 thiserror            = { workspace = true }
 cfg-if               = { workspace = true }
+libc                 = { workspace = true }
