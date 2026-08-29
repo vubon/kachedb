@@ -5,6 +5,24 @@ All notable changes to **KacheDB** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.1.0-beta.1] — 2026-08-30
+
+### ⏱️ Full Redis TTL Lifecycle & Active Timing Wheel Expiry Engine
+- **RESP Key Expiration & TTL Lifecycle Primitives (`crates/kachedb-proto-resp` & `crates/kachedb-hash`):**
+  - Implemented standard RESP2/RESP3 commands: `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, and `PERSIST`.
+  - In-place TTL metadata updates in 64-byte `TableEntry` with zero heap reallocations and no Megaslab slot moves.
+- **Active Background Timing Wheel Memory Reclamation (`crates/kachedb-core` & `crates/kachedb-net`):**
+  - Integrated the hierarchical $\mathcal{O}(1)$ 3,600-bucket `HashedTimingWheel` directly into the worker event loop tick.
+  - Active 1-second interval eviction of expired keys with atomic removal from the `ShardedSwissTable` and immediate slot deallocation back to the `SlabPool` free-list.
+- **Extended Redis Commands (`crates/kachedb-proto-resp` & `crates/kachedb-net`):**
+  - Added zero-allocation implementations of `MSET`, `INCR`, `DECR`, `INCRBY`, `DECRBY`, `APPEND`, and `STRLEN`.
+- **Observability & Modern Client Introspection:**
+  - Implemented `INFO` (`server`, `memory`, `stats`, `keyspace`, `vectorengine`), `COMMAND` / `COMMAND DOCS`, `HELLO 2/3`, and `CLIENT SETNAME/GETNAME/ID/LIST`.
+- **Multi-Architecture Container Release:**
+  - Configured multi-arch `linux/amd64` and `linux/arm64` container builds publishing to GitHub Container Registry (`ghcr.io/vubon/kachedb`).
+
+---
+
 ## [v0.1.0-alpha.4] — 2026-08-28
 
 ### 🧠 In-Memory SIMD Vector Search & Semantic Cache Engine
