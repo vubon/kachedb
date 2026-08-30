@@ -203,6 +203,21 @@ with KacheClient(host="127.0.0.1", port=6379) as client:
 
 ---
 
+## 📚 Documentation & Architecture Guides
+
+Complete documentation, command references, and integration guides are available in the [`docs/`](docs/README.md) directory:
+
+* 🚀 [**Quickstart Guide**](docs/getting-started/quickstart.md) & [**kachedb-cli Manual**](docs/getting-started/kachedb-cli.md)
+* ⚙️ [**Server Configuration & Tuning**](docs/getting-started/configuration.md)
+* 🔑 [**Core Key-Value Command Reference**](docs/commands/core-kv.md)
+* ⏱️ [**TTL & Key Expiration Lifecycle**](docs/commands/ttl-lifecycle.md)
+* 🧠 [**SIMD Vector Search Commands**](docs/commands/vector-search.md)
+* 📊 [**Server Observability & Introspection**](docs/commands/server-introspection.md)
+* 🏛️ [**System Architecture Overview**](docs/architecture/overview.md)
+* 🤖 [**vLLM**](docs/guides/vllm-integration.md), [**SGLang**](docs/guides/sglang-integration.md), and [**Semantic Caching**](docs/guides/semantic-caching.md) Guides
+
+---
+
 ## 🧪 Reproducing Benchmarks
 
 To reproduce our performance benchmarks in an isolated Linux environment:
