@@ -70,7 +70,7 @@ fn parse_args() -> BenchConfig {
                 cfg.clients = args[i + 1].parse().unwrap_or(50);
                 i += 2;
             }
-            "--pipeline" if i + 1 < args.len() => {
+            "-P" | "--pipeline" if i + 1 < args.len() => {
                 cfg.pipeline = args[i + 1].parse().unwrap_or(16);
                 i += 2;
             }
@@ -82,7 +82,7 @@ fn parse_args() -> BenchConfig {
                 cfg.value_size = args[i + 1].parse().unwrap_or(64);
                 i += 2;
             }
-            "--command" if i + 1 < args.len() => {
+            "-t" | "--command" if i + 1 < args.len() => {
                 cfg.command = match args[i + 1].to_uppercase().as_str() {
                     "SET" => BenchCommand::Set,
                     "GET" => BenchCommand::Get,
@@ -224,20 +224,26 @@ fn run_worker(
     let mut read_buf = vec![0u8; 256 * 1024];
     let mut completed = 0usize;
 
+    // Pre-build frames for pipeline batch to avoid allocation in hot loop
+    let batch_frames: Vec<Vec<u8>> = (0..cfg.pipeline.max(1))
+        .map(|j| {
+            let key = format!("{}{}", key_base, j % 10_000);
+            match cfg.command {
+                BenchCommand::Ping => build_ping_frame(),
+                BenchCommand::Set => build_set_frame(key.as_bytes(), &value),
+                BenchCommand::Get => build_get_frame(key.as_bytes()),
+            }
+        })
+        .collect();
+
     while completed < requests_per_client {
         let batch_size = cfg.pipeline.min(requests_per_client - completed);
 
         // Build and send pipeline batch
         let send_start = Instant::now();
         let mut send_buf = Vec::with_capacity(batch_size * 64);
-        for j in 0..batch_size {
-            let key = format!("{}{}", key_base, (completed + j) % 10_000);
-            let frame = match cfg.command {
-                BenchCommand::Ping => build_ping_frame(),
-                BenchCommand::Set => build_set_frame(key.as_bytes(), &value),
-                BenchCommand::Get => build_get_frame(key.as_bytes()),
-            };
-            send_buf.extend_from_slice(&frame);
+        for frame in batch_frames.iter().take(batch_size) {
+            send_buf.extend_from_slice(frame);
         }
 
         if stream.write_all(&send_buf).is_err() {
@@ -246,7 +252,7 @@ fn run_worker(
 
         // Drain responses for the batch
         let mut responses_received = 0;
-        let mut carry = Vec::new();
+        let mut carry = Vec::with_capacity(batch_size * 64);
 
         while responses_received < batch_size {
             let n = match stream.read(&mut read_buf) {

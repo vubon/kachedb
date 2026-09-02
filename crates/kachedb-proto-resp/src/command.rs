@@ -4,8 +4,18 @@ use crate::error::RespError;
 use crate::frame::Frame;
 use smallvec::SmallVec;
 
+/// A single vector item in a `VADD_BATCH` command.
+#[derive(Debug, PartialEq, Clone)]
+pub struct BatchVectorItem<'a> {
+    pub id: &'a [u8],
+    pub vector_bytes: &'a [u8],
+    pub payload: Option<&'a [u8]>,
+    pub ttl_sec: Option<u32>,
+}
+
 /// Strongly typed Redis commands parsed without heap allocation.
 #[derive(Debug, PartialEq, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum Command<'a> {
     /// `PING [message]`
     Ping { message: Option<&'a [u8]> },
@@ -36,6 +46,18 @@ pub enum Command<'a> {
     VSearch {
         index: &'a [u8],
         query_bytes: &'a [u8],
+        top_k: usize,
+        threshold: f32,
+    },
+    /// `VADD_BATCH <index> <id1> <vec1_bytes> <payload1> <id2> <vec2_bytes> <payload2> ...`
+    VAddBatch {
+        index: &'a [u8],
+        items: SmallVec<[BatchVectorItem<'a>; 8]>,
+    },
+    /// `VSEARCH_BATCH <index> <query1_bytes> <query2_bytes> ... [TOPK <k>] [THRESHOLD <min_similarity>]`
+    VSearchBatch {
+        index: &'a [u8],
+        queries: SmallVec<[&'a [u8]; 8]>,
         top_k: usize,
         threshold: f32,
     },
@@ -396,6 +418,78 @@ impl<'a> Command<'a> {
             Ok(Command::VSearch {
                 index,
                 query_bytes,
+                top_k,
+                threshold,
+            })
+        } else if cmd_name.eq_ignore_ascii_case(b"VADD_BATCH") {
+            if args.len() < 5 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "VADD_BATCH".into(),
+                });
+            }
+            let index = args[1];
+            let mut items = SmallVec::new();
+            let mut i = 2;
+            while i + 2 < args.len() {
+                let id = args[i];
+                let vector_bytes = args[i + 1];
+                let payload_raw = args[i + 2];
+                let payload =
+                    if payload_raw.is_empty() || payload_raw == b"-" || payload_raw == b"nil" {
+                        None
+                    } else {
+                        Some(payload_raw)
+                    };
+                i += 3;
+                let mut ttl_sec = None;
+                if i + 1 < args.len() && args[i].eq_ignore_ascii_case(b"EX") {
+                    ttl_sec = std::str::from_utf8(args[i + 1])
+                        .ok()
+                        .and_then(|s| s.parse::<u32>().ok());
+                    i += 2;
+                }
+                items.push(BatchVectorItem {
+                    id,
+                    vector_bytes,
+                    payload,
+                    ttl_sec,
+                });
+            }
+            Ok(Command::VAddBatch { index, items })
+        } else if cmd_name.eq_ignore_ascii_case(b"VSEARCH_BATCH") {
+            if args.len() < 3 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "VSEARCH_BATCH".into(),
+                });
+            }
+            let index = args[1];
+            let mut queries = SmallVec::new();
+            let mut top_k = 1usize;
+            let mut threshold = 0.0f32;
+            let mut i = 2;
+            while i < args.len() {
+                let arg = args[i];
+                if arg.eq_ignore_ascii_case(b"TOPK") && i + 1 < args.len() {
+                    top_k = std::str::from_utf8(args[i + 1])
+                        .unwrap_or("")
+                        .parse::<usize>()
+                        .unwrap_or(1)
+                        .max(1);
+                    i += 2;
+                } else if arg.eq_ignore_ascii_case(b"THRESHOLD") && i + 1 < args.len() {
+                    threshold = std::str::from_utf8(args[i + 1])
+                        .unwrap_or("")
+                        .parse::<f32>()
+                        .unwrap_or(0.0);
+                    i += 2;
+                } else {
+                    queries.push(arg);
+                    i += 1;
+                }
+            }
+            Ok(Command::VSearchBatch {
+                index,
+                queries,
                 top_k,
                 threshold,
             })
@@ -846,6 +940,96 @@ impl<'a> Command<'a> {
                     Ok(Command::VSearch {
                         index,
                         query_bytes,
+                        top_k,
+                        threshold,
+                    })
+                } else if cmd_name.eq_ignore_ascii_case(b"VADD_BATCH") {
+                    if args.len() < 5 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "VADD_BATCH".into(),
+                        });
+                    }
+                    let index = extract_required_bytes(&args[1], "VADD_BATCH")?;
+                    let mut items = SmallVec::new();
+                    let mut i = 2;
+                    while i + 2 < args.len() {
+                        let id = extract_required_bytes(&args[i], "VADD_BATCH")?;
+                        let vector_bytes = extract_required_bytes(&args[i + 1], "VADD_BATCH")?;
+                        let payload_raw = extract_required_bytes(&args[i + 2], "VADD_BATCH")?;
+                        let payload = if payload_raw.is_empty()
+                            || payload_raw == b"-"
+                            || payload_raw == b"nil"
+                        {
+                            None
+                        } else {
+                            Some(payload_raw)
+                        };
+                        i += 3;
+                        let mut ttl_sec = None;
+                        if i + 1 < args.len()
+                            && let Ok(opt) = extract_required_bytes(&args[i], "VADD_BATCH")
+                            && opt.eq_ignore_ascii_case(b"EX")
+                            && let Ok(ttl_bytes) =
+                                extract_required_bytes(&args[i + 1], "VADD_BATCH")
+                        {
+                            ttl_sec = std::str::from_utf8(ttl_bytes)
+                                .ok()
+                                .and_then(|s| s.parse::<u32>().ok());
+                            i += 2;
+                        }
+                        items.push(BatchVectorItem {
+                            id,
+                            vector_bytes,
+                            payload,
+                            ttl_sec,
+                        });
+                    }
+                    Ok(Command::VAddBatch { index, items })
+                } else if cmd_name.eq_ignore_ascii_case(b"VSEARCH_BATCH") {
+                    if args.len() < 3 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "VSEARCH_BATCH".into(),
+                        });
+                    }
+                    let index = extract_required_bytes(&args[1], "VSEARCH_BATCH")?;
+                    let mut queries = SmallVec::new();
+                    let mut top_k = 1usize;
+                    let mut threshold = 0.0f32;
+                    let mut i = 2;
+                    while i < args.len() {
+                        if let Ok(arg) = extract_required_bytes(&args[i], "VSEARCH_BATCH") {
+                            if arg.eq_ignore_ascii_case(b"TOPK") && i + 1 < args.len() {
+                                if let Ok(topk_bytes) =
+                                    extract_required_bytes(&args[i + 1], "VSEARCH_BATCH")
+                                {
+                                    top_k = std::str::from_utf8(topk_bytes)
+                                        .unwrap_or("")
+                                        .parse::<usize>()
+                                        .unwrap_or(1)
+                                        .max(1);
+                                }
+                                i += 2;
+                                continue;
+                            } else if arg.eq_ignore_ascii_case(b"THRESHOLD") && i + 1 < args.len() {
+                                if let Ok(th_bytes) =
+                                    extract_required_bytes(&args[i + 1], "VSEARCH_BATCH")
+                                {
+                                    threshold = std::str::from_utf8(th_bytes)
+                                        .unwrap_or("")
+                                        .parse::<f32>()
+                                        .unwrap_or(0.0);
+                                }
+                                i += 2;
+                                continue;
+                            } else {
+                                queries.push(arg);
+                            }
+                        }
+                        i += 1;
+                    }
+                    Ok(Command::VSearchBatch {
+                        index,
+                        queries,
                         top_k,
                         threshold,
                     })
@@ -1492,5 +1676,47 @@ mod tests {
                 section: Some(b"server")
             }
         );
+    }
+
+    #[test]
+    fn parse_vadd_batch_and_vsearch_batch() {
+        let (batch_add, _) = parse_command(
+            b"*8\r\n$10\r\nVADD_BATCH\r\n$4\r\ndocs\r\n$3\r\nid1\r\n$8\r\n\x00\x00\x80?\x00\x00\x00@\r\n$5\r\ntext1\r\n$3\r\nid2\r\n$8\r\n\x00\x00\x00@\x00\x00\x80?\r\n$5\r\ntext2\r\n"
+        )
+        .unwrap()
+        .unwrap();
+
+        match batch_add {
+            Command::VAddBatch { index, items } => {
+                assert_eq!(index, b"docs");
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].id, b"id1");
+                assert_eq!(items[0].payload, Some(b"text1".as_slice()));
+                assert_eq!(items[1].id, b"id2");
+                assert_eq!(items[1].payload, Some(b"text2".as_slice()));
+            }
+            _ => panic!("Expected VAddBatch"),
+        }
+
+        let (batch_search, _) = parse_command(
+            b"*6\r\n$13\r\nVSEARCH_BATCH\r\n$4\r\ndocs\r\n$8\r\n\x00\x00\x80?\x00\x00\x00@\r\n$8\r\n\x00\x00\x00@\x00\x00\x80?\r\n$4\r\nTOPK\r\n$1\r\n5\r\n"
+        )
+        .unwrap()
+        .unwrap();
+
+        match batch_search {
+            Command::VSearchBatch {
+                index,
+                queries,
+                top_k,
+                threshold,
+            } => {
+                assert_eq!(index, b"docs");
+                assert_eq!(queries.len(), 2);
+                assert_eq!(top_k, 5);
+                assert_eq!(threshold, 0.0);
+            }
+            _ => panic!("Expected VSearchBatch"),
+        }
     }
 }

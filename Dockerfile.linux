@@ -1,5 +1,10 @@
+# ─── Dockerfile.linux ────────────────────────────────────────────────────────
+# Standalone Linux image for manual testing and deployment.
+# For the structured benchmark suite use docker/Dockerfile + docker-compose.benchmark.yml instead.
+# ─────────────────────────────────────────────────────────────────────────────
+
 # ─── Stage 1: Build ──────────────────────────────────────────────────────────
-FROM rust:1.87-slim-bookworm AS builder
+FROM rust:1.97-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
@@ -9,8 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY . .
 
-# Build release binaries targeting Linux (io_uring engine auto-enabled)
-RUN cargo build --release -p kachedb-server -p kachedb-bench 2>&1
+# Build all release binaries targeting Linux (io_uring engine auto-enabled on Linux)
+RUN cargo build --release \
+    -p kachedb-server \
+    -p kachedb-cli \
+    -p kachedb-bench \
+    2>&1
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -20,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/kachedb-server /usr/local/bin/kachedb-server
+COPY --from=builder /build/target/release/kachedb-cli    /usr/local/bin/kachedb-cli
 COPY --from=builder /build/target/release/kachedb-bench  /usr/local/bin/kachedb-bench
 
 # KacheDB default port

@@ -438,6 +438,77 @@ impl Connection {
                     encode_array_header(write_buf, 0);
                 }
             }
+            Command::VAddBatch { index, items } => {
+                let vec_idx = vectors.get_or_create(index);
+                let mut inserted_count = 0i64;
+                for item in items {
+                    if item.vector_bytes.len() % 4 == 0 {
+                        #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
+                        let floats: Vec<f32> = item
+                            .vector_bytes
+                            .chunks_exact(4)
+                            .map(|chunk| {
+                                f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+                            })
+                            .collect();
+
+                        if vec_idx
+                            .insert(item.id, &floats, item.payload, item.ttl_sec, now_sec)
+                            .is_ok()
+                        {
+                            inserted_count += 1;
+                        }
+                    }
+                }
+                encode_integer(write_buf, inserted_count);
+            }
+            Command::VSearchBatch {
+                index,
+                queries,
+                top_k,
+                threshold,
+            } => {
+                encode_array_header(write_buf, queries.len());
+                if let Some(vec_idx) = vectors.get(index) {
+                    for q_bytes in queries {
+                        if q_bytes.len() % 4 != 0 {
+                            encode_array_header(write_buf, 0);
+                            continue;
+                        }
+                        #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
+                        let query_floats: Vec<f32> = q_bytes
+                            .chunks_exact(4)
+                            .map(|chunk| {
+                                f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+                            })
+                            .collect();
+
+                        match vec_idx.search(&query_floats, top_k, threshold, now_sec) {
+                            Ok(results) => {
+                                encode_array_header(write_buf, results.len());
+                                for r in results {
+                                    encode_array_header(write_buf, 3);
+                                    encode_bulk_string(write_buf, &r.key);
+                                    let score_str = format!("{:.6}", r.similarity);
+                                    encode_bulk_string(write_buf, score_str.as_bytes());
+                                    if let Some(ref p) = r.payload {
+                                        encode_bulk_string(write_buf, p);
+                                    } else {
+                                        encode_null(write_buf);
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                encode_array_header(write_buf, 0);
+                            }
+                        }
+                    }
+                } else {
+                    for _ in 0..queries.len() {
+                        encode_array_header(write_buf, 0);
+                    }
+                }
+            }
             Command::VDel { index, id } => {
                 if let Some(vec_idx) = vectors.get(index) {
                     let deleted = vec_idx.delete(id);
@@ -1286,6 +1357,83 @@ mod tests {
         )
         .unwrap();
         assert_eq!(conn.write_buf, b":1\r\n");
+    }
+
+    #[test]
+    fn execute_batch_vector_commands_flow() {
+        let mut conn = Connection::new();
+        let table = ShardedSwissTable::new();
+        let mut pool = SlabPool::new(0, 16 * 1024 * 1024).unwrap();
+        let vectors = VectorIndexRegistry::new();
+
+        // 1. VADD_BATCH articles with 2 items
+        let v1 = vec![1.0f32, 0.0f32, 0.0f32, 0.0f32];
+        let mut v1_bytes = Vec::new();
+        for f in &v1 {
+            v1_bytes.extend_from_slice(&f.to_ne_bytes());
+        }
+
+        let v2 = vec![0.0f32, 1.0f32, 0.0f32, 0.0f32];
+        let mut v2_bytes = Vec::new();
+        for f in &v2 {
+            v2_bytes.extend_from_slice(&f.to_ne_bytes());
+        }
+
+        let mut items = smallvec::SmallVec::new();
+        items.push(kachedb_proto_resp::command::BatchVectorItem {
+            id: b"art1",
+            vector_bytes: &v1_bytes,
+            payload: Some(b"Rust Vector Engine"),
+            ttl_sec: None,
+        });
+        items.push(kachedb_proto_resp::command::BatchVectorItem {
+            id: b"art2",
+            vector_bytes: &v2_bytes,
+            payload: Some(b"Python DMA Client"),
+            ttl_sec: None,
+        });
+
+        Connection::execute_command_with_vectors(
+            Command::VAddBatch {
+                index: b"articles",
+                items,
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &vectors,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b":2\r\n");
+        conn.write_buf.clear();
+
+        // 2. VSEARCH_BATCH articles with 2 queries
+        let mut queries = smallvec::SmallVec::new();
+        queries.push(&v1_bytes[..]);
+        queries.push(&v2_bytes[..]);
+
+        Connection::execute_command_with_vectors(
+            Command::VSearchBatch {
+                index: b"articles",
+                queries,
+                top_k: 1,
+                threshold: 0.8,
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &vectors,
+        )
+        .unwrap();
+
+        let resp_str = String::from_utf8_lossy(&conn.write_buf);
+        assert!(resp_str.starts_with("*2\r\n"));
+        assert!(resp_str.contains("art1"));
+        assert!(resp_str.contains("Rust Vector Engine"));
+        assert!(resp_str.contains("art2"));
+        assert!(resp_str.contains("Python DMA Client"));
     }
 
     #[test]
