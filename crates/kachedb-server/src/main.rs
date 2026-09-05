@@ -1,5 +1,8 @@
 //! `kachedb-server` — Multi-core daemon entry point.
 
+mod aof;
+mod aof_recovery;
+mod aof_rewrite;
 mod config;
 
 use std::sync::Arc;
@@ -51,6 +54,60 @@ fn main() {
     println!("   └─ I/O Engine:         epoll + TCP_NODELAY (Linux)");
     #[cfg(not(target_os = "linux"))]
     println!("   └─ I/O Engine:         mio/kqueue (macOS/BSD)");
+
+    // Configure AUTH requirepass
+    if let Some(ref pass) = config.requirepass {
+        kachedb_net::set_requirepass(Some(pass.clone()));
+    }
+
+    // Configure TLS 1.3
+    let tls_config = match (&config.tls_cert_path, &config.tls_key_path) {
+        (Some(cert_path), Some(key_path)) => {
+            match kachedb_net::load_server_config(
+                cert_path,
+                key_path,
+                config.tls_ca_path.as_deref(),
+            ) {
+                Ok(cfg) => {
+                    log::info!("TLS 1.3 server encryption active");
+                    Some(cfg)
+                }
+                Err(e) => {
+                    log::error!("Failed to initialize TLS: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        _ => None,
+    };
+
+    println!(
+        "   └─ AOF Persistence:    {}",
+        if config.aof_enabled {
+            format!(
+                "Enabled ({:?}, policy: {:?})",
+                config.aof_path, config.appendfsync
+            )
+        } else {
+            "Disabled".to_string()
+        }
+    );
+    println!(
+        "   └─ TLS 1.3 / mTLS:     {}",
+        if tls_config.is_some() {
+            "Enabled"
+        } else {
+            "Disabled"
+        }
+    );
+    println!(
+        "   └─ AUTH Security:      {}",
+        if config.requirepass.is_some() {
+            "Protected (requirepass configured)"
+        } else {
+            "Open (no password)"
+        }
+    );
     println!();
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -64,6 +121,41 @@ fn main() {
         cleanup_stale_shm(config.num_workers);
     }
 
+    // If AOF is enabled, replay existing mutations to restore in-memory state
+    let mut initial_pool =
+        kachedb_core::SlabPool::new(0, config.pool_mb_per_core * 1024 * 1024).ok();
+    if config.aof_enabled {
+        let aof_path = &config.aof_path;
+        if aof_path.exists()
+            && let Some(ref mut pool) = initial_pool
+        {
+            match aof_recovery::replay(aof_path, &shared_table, pool, &kachedb_net::DEFAULT_VECTORS)
+            {
+                Ok(count) => println!(
+                    "📦 Replayed {count} AOF frames successfully from {:?}",
+                    config.aof_path
+                ),
+                Err(e) => eprintln!("⚠️ AOF recovery error: {e}"),
+            }
+        }
+    }
+
+    // Launch background AOF writer thread
+    let _aof_writer = if config.aof_enabled {
+        match aof::AofWriter::start(&config.aof_path, config.appendfsync) {
+            Ok(writer) => {
+                kachedb_net::set_aof_channel(writer.channel());
+                Some(writer)
+            }
+            Err(e) => {
+                eprintln!("⚠️ Failed to initialize AOF writer: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Create per-worker crossbeam dispatch channels
     let (senders, receivers) = create_dispatch_channels(config.num_workers);
 
@@ -75,6 +167,12 @@ fn main() {
         let shm_enabled = config.shm_enabled;
         let worker_table = shared_table.clone();
         let pool_bytes = config.pool_mb_per_core * 1024 * 1024;
+        let worker_pool = if core_id == 0 {
+            initial_pool.take()
+        } else {
+            None
+        };
+        let worker_tls = tls_config.clone();
 
         let handle = thread::Builder::new()
             .name(format!("kachedb-worker-{}", core_id))
@@ -98,16 +196,26 @@ fn main() {
                     None
                 };
 
-                let mut worker = match kachedb_net::WorkerThread::with_channel(
-                    core_id as u16,
-                    pool_bytes,
-                    worker_table,
-                    receiver,
-                ) {
-                    Ok(w) => w,
-                    Err(e) => {
-                        log::error!("Worker [{core_id}]: failed to initialize: {e}");
-                        return;
+                let mut worker = if let Some(pool) = worker_pool {
+                    kachedb_net::WorkerThread::with_channel_and_pool(
+                        core_id as u16,
+                        pool,
+                        worker_table,
+                        receiver,
+                    )
+                    .with_tls(worker_tls)
+                } else {
+                    match kachedb_net::WorkerThread::with_channel(
+                        core_id as u16,
+                        pool_bytes,
+                        worker_table,
+                        receiver,
+                    ) {
+                        Ok(w) => w.with_tls(worker_tls),
+                        Err(e) => {
+                            log::error!("Worker [{core_id}]: failed to initialize: {e}");
+                            return;
+                        }
                     }
                 };
                 if let Err(e) = worker.run(shutdown_worker) {

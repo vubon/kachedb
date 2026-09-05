@@ -107,6 +107,27 @@ pub enum Command<'a> {
     Info { section: Option<&'a [u8]> },
     /// `COMMAND ...` (client capability discovery)
     CommandDoc,
+    /// `VINDEX CREATE <name> DIM <dim> [M <m>] [EF_CONSTRUCTION <ef_c>] [EF_SEARCH <ef_s>] [METRIC <COSINE|L2|IP>] [QUANTIZATION <NONE|SQ8>]`
+    VIndexCreate {
+        name: &'a [u8],
+        dim: usize,
+        m: Option<usize>,
+        ef_construction: Option<usize>,
+        ef_search: Option<usize>,
+        metric: Option<&'a [u8]>,
+        quantization: Option<&'a [u8]>,
+    },
+    /// `VINDEX DROP <name>`
+    VIndexDrop { name: &'a [u8] },
+    /// `VINDEX INFO <name>`
+    VIndexInfo { name: &'a [u8] },
+    /// `BGREWRITEAOF`
+    BgRewriteAof,
+    /// `AUTH [username] <password>`
+    Auth {
+        username: Option<&'a [u8]>,
+        password: &'a [u8],
+    },
     /// `QUIT`
     Quit,
     /// Unrecognized command
@@ -510,6 +531,109 @@ impl<'a> Command<'a> {
                 });
             }
             Ok(Command::VStats { index: args[1] })
+        } else if cmd_name.eq_ignore_ascii_case(b"VINDEX") {
+            if args.len() < 2 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "VINDEX".into(),
+                });
+            }
+            let sub = args[1];
+            if sub.eq_ignore_ascii_case(b"CREATE") {
+                if args.len() < 4 {
+                    return Err(RespError::WrongArgumentCount {
+                        command: "VINDEX CREATE".into(),
+                    });
+                }
+                let name = args[2];
+                let mut dim = None;
+                let mut m = None;
+                let mut ef_construction = None;
+                let mut ef_search = None;
+                let mut metric = None;
+                let mut quantization = None;
+                let mut i = 3;
+                while i < args.len() {
+                    let opt = args[i];
+                    if opt.eq_ignore_ascii_case(b"DIM") && i + 1 < args.len() {
+                        dim = std::str::from_utf8(args[i + 1])
+                            .ok()
+                            .and_then(|s| s.parse::<usize>().ok());
+                        i += 2;
+                    } else if opt.eq_ignore_ascii_case(b"M") && i + 1 < args.len() {
+                        m = std::str::from_utf8(args[i + 1])
+                            .ok()
+                            .and_then(|s| s.parse::<usize>().ok());
+                        i += 2;
+                    } else if opt.eq_ignore_ascii_case(b"EF_CONSTRUCTION") && i + 1 < args.len() {
+                        ef_construction = std::str::from_utf8(args[i + 1])
+                            .ok()
+                            .and_then(|s| s.parse::<usize>().ok());
+                        i += 2;
+                    } else if opt.eq_ignore_ascii_case(b"EF_SEARCH") && i + 1 < args.len() {
+                        ef_search = std::str::from_utf8(args[i + 1])
+                            .ok()
+                            .and_then(|s| s.parse::<usize>().ok());
+                        i += 2;
+                    } else if opt.eq_ignore_ascii_case(b"METRIC") && i + 1 < args.len() {
+                        metric = Some(args[i + 1]);
+                        i += 2;
+                    } else if (opt.eq_ignore_ascii_case(b"QUANTIZATION")
+                        || opt.eq_ignore_ascii_case(b"QUANT"))
+                        && i + 1 < args.len()
+                    {
+                        quantization = Some(args[i + 1]);
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                let dim = dim.ok_or_else(|| RespError::WrongArgumentCount {
+                    command: "VINDEX CREATE requires DIM <dimension>".into(),
+                })?;
+                Ok(Command::VIndexCreate {
+                    name,
+                    dim,
+                    m,
+                    ef_construction,
+                    ef_search,
+                    metric,
+                    quantization,
+                })
+            } else if sub.eq_ignore_ascii_case(b"DROP") {
+                if args.len() != 3 {
+                    return Err(RespError::WrongArgumentCount {
+                        command: "VINDEX DROP".into(),
+                    });
+                }
+                Ok(Command::VIndexDrop { name: args[2] })
+            } else if sub.eq_ignore_ascii_case(b"INFO") {
+                if args.len() != 3 {
+                    return Err(RespError::WrongArgumentCount {
+                        command: "VINDEX INFO".into(),
+                    });
+                }
+                Ok(Command::VIndexInfo { name: args[2] })
+            } else {
+                Ok(Command::Unknown { name: cmd_name })
+            }
+        } else if cmd_name.eq_ignore_ascii_case(b"BGREWRITEAOF") {
+            Ok(Command::BgRewriteAof)
+        } else if cmd_name.eq_ignore_ascii_case(b"AUTH") {
+            if args.len() == 2 {
+                Ok(Command::Auth {
+                    username: None,
+                    password: args[1],
+                })
+            } else if args.len() >= 3 {
+                Ok(Command::Auth {
+                    username: Some(args[1]),
+                    password: args[2],
+                })
+            } else {
+                Err(RespError::WrongArgumentCount {
+                    command: "AUTH".into(),
+                })
+            }
         } else if cmd_name.eq_ignore_ascii_case(b"EXPIRE") {
             if args.len() != 3 {
                 return Err(RespError::WrongArgumentCount {
@@ -1050,6 +1174,140 @@ impl<'a> Command<'a> {
                     }
                     let index = extract_required_bytes(&args[1], "VSTATS")?;
                     Ok(Command::VStats { index })
+                } else if cmd_name.eq_ignore_ascii_case(b"VINDEX") {
+                    if args.len() < 2 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "VINDEX".into(),
+                        });
+                    }
+                    let sub = extract_required_bytes(&args[1], "VINDEX")?;
+                    if sub.eq_ignore_ascii_case(b"CREATE") {
+                        if args.len() < 4 {
+                            return Err(RespError::WrongArgumentCount {
+                                command: "VINDEX CREATE".into(),
+                            });
+                        }
+                        let name = extract_required_bytes(&args[2], "VINDEX CREATE")?;
+                        let mut dim = None;
+                        let mut m = None;
+                        let mut ef_construction = None;
+                        let mut ef_search = None;
+                        let mut metric = None;
+                        let mut quantization = None;
+                        let mut i = 3;
+                        while i < args.len() {
+                            if let Ok(opt) = extract_required_bytes(&args[i], "VINDEX CREATE") {
+                                if opt.eq_ignore_ascii_case(b"DIM") && i + 1 < args.len() {
+                                    if let Ok(b) =
+                                        extract_required_bytes(&args[i + 1], "VINDEX CREATE")
+                                    {
+                                        dim = std::str::from_utf8(b)
+                                            .ok()
+                                            .and_then(|s| s.parse::<usize>().ok());
+                                    }
+                                    i += 2;
+                                } else if opt.eq_ignore_ascii_case(b"M") && i + 1 < args.len() {
+                                    if let Ok(b) =
+                                        extract_required_bytes(&args[i + 1], "VINDEX CREATE")
+                                    {
+                                        m = std::str::from_utf8(b)
+                                            .ok()
+                                            .and_then(|s| s.parse::<usize>().ok());
+                                    }
+                                    i += 2;
+                                } else if opt.eq_ignore_ascii_case(b"EF_CONSTRUCTION")
+                                    && i + 1 < args.len()
+                                {
+                                    if let Ok(b) =
+                                        extract_required_bytes(&args[i + 1], "VINDEX CREATE")
+                                    {
+                                        ef_construction = std::str::from_utf8(b)
+                                            .ok()
+                                            .and_then(|s| s.parse::<usize>().ok());
+                                    }
+                                    i += 2;
+                                } else if opt.eq_ignore_ascii_case(b"EF_SEARCH")
+                                    && i + 1 < args.len()
+                                {
+                                    if let Ok(b) =
+                                        extract_required_bytes(&args[i + 1], "VINDEX CREATE")
+                                    {
+                                        ef_search = std::str::from_utf8(b)
+                                            .ok()
+                                            .and_then(|s| s.parse::<usize>().ok());
+                                    }
+                                    i += 2;
+                                } else if opt.eq_ignore_ascii_case(b"METRIC") && i + 1 < args.len()
+                                {
+                                    metric =
+                                        extract_required_bytes(&args[i + 1], "VINDEX CREATE").ok();
+                                    i += 2;
+                                } else if (opt.eq_ignore_ascii_case(b"QUANTIZATION")
+                                    || opt.eq_ignore_ascii_case(b"QUANT"))
+                                    && i + 1 < args.len()
+                                {
+                                    quantization =
+                                        extract_required_bytes(&args[i + 1], "VINDEX CREATE").ok();
+                                    i += 2;
+                                } else {
+                                    i += 1;
+                                }
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        let dim = dim.ok_or_else(|| RespError::WrongArgumentCount {
+                            command: "VINDEX CREATE requires DIM <dimension>".into(),
+                        })?;
+                        Ok(Command::VIndexCreate {
+                            name,
+                            dim,
+                            m,
+                            ef_construction,
+                            ef_search,
+                            metric,
+                            quantization,
+                        })
+                    } else if sub.eq_ignore_ascii_case(b"DROP") {
+                        if args.len() != 3 {
+                            return Err(RespError::WrongArgumentCount {
+                                command: "VINDEX DROP".into(),
+                            });
+                        }
+                        let name = extract_required_bytes(&args[2], "VINDEX DROP")?;
+                        Ok(Command::VIndexDrop { name })
+                    } else if sub.eq_ignore_ascii_case(b"INFO") {
+                        if args.len() != 3 {
+                            return Err(RespError::WrongArgumentCount {
+                                command: "VINDEX INFO".into(),
+                            });
+                        }
+                        let name = extract_required_bytes(&args[2], "VINDEX INFO")?;
+                        Ok(Command::VIndexInfo { name })
+                    } else {
+                        Ok(Command::Unknown { name: cmd_name })
+                    }
+                } else if cmd_name.eq_ignore_ascii_case(b"BGREWRITEAOF") {
+                    Ok(Command::BgRewriteAof)
+                } else if cmd_name.eq_ignore_ascii_case(b"AUTH") {
+                    if args.len() == 2 {
+                        let password = extract_required_bytes(&args[1], "AUTH")?;
+                        Ok(Command::Auth {
+                            username: None,
+                            password,
+                        })
+                    } else if args.len() >= 3 {
+                        let username = extract_required_bytes(&args[1], "AUTH")?;
+                        let password = extract_required_bytes(&args[2], "AUTH")?;
+                        Ok(Command::Auth {
+                            username: Some(username),
+                            password,
+                        })
+                    } else {
+                        Err(RespError::WrongArgumentCount {
+                            command: "AUTH".into(),
+                        })
+                    }
                 } else if cmd_name.eq_ignore_ascii_case(b"EXPIRE") {
                     if args.len() != 3 {
                         return Err(RespError::WrongArgumentCount {

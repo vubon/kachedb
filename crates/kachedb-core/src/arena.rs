@@ -289,6 +289,32 @@ impl MegaslabArena {
         self.header().allocated_slots.load(Ordering::Relaxed) == 0
     }
 
+    /// Returns `true` if this arena has zero live allocations and can be reclaimed.
+    #[inline]
+    pub fn is_reclaimable(&self) -> bool {
+        self.is_empty()
+    }
+
+    /// Advises the OS kernel that the physical memory for this arena is no longer needed.
+    ///
+    /// On Linux, calls `madvise(MADV_DONTNEED)` so the kernel can reclaim physical pages.
+    /// On other platforms (e.g. macOS), this is compiled as a safe no-op.
+    pub fn madvise_dontneed(&self) {
+        cfg_if::cfg_if! {
+            if #[cfg(target_os = "linux")] {
+                unsafe {
+                    libc::madvise(
+                        self.base.as_ptr() as *mut libc::c_void,
+                        MEGASLAB_BYTES,
+                        libc::MADV_DONTNEED,
+                    );
+                }
+            } else {
+                // No-op hint on non-Linux platforms (e.g. macOS)
+            }
+        }
+    }
+
     /// Number of slots currently allocated.
     #[inline]
     pub fn allocated(&self) -> u32 {

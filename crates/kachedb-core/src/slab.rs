@@ -20,6 +20,9 @@ pub const CACHE_LINE_BYTES: usize = 64;
 /// Size of one Megaslab in bytes (2 MiB — matches Linux Transparent Huge Pages).
 pub const MEGASLAB_BYTES: usize = 2 * 1024 * 1024;
 
+/// Adaptive chunk allocation unit in bytes (4 MiB).
+pub const CHUNK_BYTES: usize = 4 * 1024 * 1024;
+
 /// Byte size consumed by `MegaslabHeader` at the base of every slab chunk.
 pub const MEGASLAB_HEADER_BYTES: usize = CACHE_LINE_BYTES;
 

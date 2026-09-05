@@ -277,6 +277,7 @@ impl VectorIndex {
 #[derive(Default)]
 pub struct VectorIndexRegistry {
     indexes: RwLock<AHashMap<Vec<u8>, Arc<VectorIndex>>>,
+    hnsw_indexes: RwLock<AHashMap<Vec<u8>, Arc<crate::hnsw::HnswIndex>>>,
 }
 
 impl VectorIndexRegistry {
@@ -284,6 +285,7 @@ impl VectorIndexRegistry {
     pub fn new() -> Self {
         Self {
             indexes: RwLock::new(AHashMap::new()),
+            hnsw_indexes: RwLock::new(AHashMap::new()),
         }
     }
 
@@ -313,6 +315,73 @@ impl VectorIndexRegistry {
     /// Deletes a named index.
     pub fn delete_index(&self, name: &[u8]) -> bool {
         self.indexes.write().remove(name).is_some()
+    }
+
+    /// Creates or registers an HNSW vector index with custom parameters.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_hnsw(
+        &self,
+        name: &[u8],
+        dim: usize,
+        m: usize,
+        ef_construction: usize,
+        ef_search: usize,
+        metric: crate::hnsw::VectorMetric,
+        quantization: crate::quantizer::QuantizationMode,
+    ) -> Arc<crate::hnsw::HnswIndex> {
+        let name_str = String::from_utf8_lossy(name).to_string();
+        let idx = Arc::new(crate::hnsw::HnswIndex::with_params(
+            name_str,
+            dim,
+            m,
+            ef_construction,
+            ef_search,
+            metric,
+            quantization,
+        ));
+        self.hnsw_indexes
+            .write()
+            .insert(name.to_vec(), Arc::clone(&idx));
+        idx
+    }
+
+    /// Retrieves an existing HNSW index by name if present.
+    pub fn get_hnsw(&self, name: &[u8]) -> Option<Arc<crate::hnsw::HnswIndex>> {
+        self.hnsw_indexes.read().get(name).cloned()
+    }
+
+    /// Deletes a named HNSW index.
+    pub fn drop_hnsw(&self, name: &[u8]) -> bool {
+        self.hnsw_indexes.write().remove(name).is_some()
+    }
+
+    /// Returns true if a named HNSW index exists.
+    pub fn has_hnsw(&self, name: &[u8]) -> bool {
+        self.hnsw_indexes.read().contains_key(name)
+    }
+
+    /// Returns aggregated statistics across all registered flat and HNSW vector indexes:
+    /// `(active_indices, total_vectors, total_memory_bytes)`.
+    pub fn overall_stats(&self, now_sec: u32) -> (usize, usize, usize) {
+        let mut active_indices = 0;
+        let mut total_vectors = 0;
+        let mut total_memory_bytes = 0;
+
+        for idx in self.indexes.read().values() {
+            active_indices += 1;
+            let s = idx.stats(now_sec);
+            total_vectors += s.total_vectors;
+            total_memory_bytes += s.memory_bytes;
+        }
+
+        for idx in self.hnsw_indexes.read().values() {
+            active_indices += 1;
+            let s = idx.stats(now_sec);
+            total_vectors += s.total_vectors;
+            total_memory_bytes += s.memory_bytes;
+        }
+
+        (active_indices, total_vectors, total_memory_bytes)
     }
 }
 

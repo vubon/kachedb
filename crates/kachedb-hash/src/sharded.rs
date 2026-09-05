@@ -114,6 +114,12 @@ impl ShardedSwissTable {
             .flatten()
     }
 
+    /// Inserts or updates a key entry without TTL.
+    #[inline(always)]
+    pub fn insert(&self, hash: u64, block_id: SlabBlockId, value_len: u32) -> Option<SlabBlockId> {
+        self.insert_with_ttl(hash, block_id, value_len, 0)
+    }
+
     /// Removes an entry by its 64-bit hash.
     ///
     /// Returns the removed `TableEntry` if found.
@@ -171,6 +177,20 @@ impl ShardedSwissTable {
     /// Returns `true` if all shards are empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Returns the number of shards in this sharded table.
+    pub fn shard_count(&self) -> usize {
+        self.shards.len()
+    }
+
+    /// Returns a snapshot of all live entries in the specified shard.
+    pub fn snapshot_shard(&self, shard_idx: usize) -> Vec<(u64, TableEntry)> {
+        if shard_idx < self.shards.len() {
+            self.shards[shard_idx].table.read().live_entries()
+        } else {
+            Vec::new()
+        }
     }
 }
 

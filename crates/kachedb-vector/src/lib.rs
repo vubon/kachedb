@@ -6,13 +6,17 @@
 //! - **VectorIndexRegistry**: Multi-tenant named vector index registry.
 
 pub mod error;
+pub mod hnsw;
 pub mod index;
+pub mod quantizer;
 pub mod simd;
 
 pub use error::VectorError;
+pub use hnsw::{HnswIndex, VectorMetric};
 pub use index::{
     VectorEntry, VectorIndex, VectorIndexRegistry, VectorIndexStats, VectorSearchResult,
 };
+pub use quantizer::{QuantizationMode, Sq8Quantizer};
 pub use simd::{
     cosine_similarity, cosine_similarity_normalized, dot_product, dot_product_scalar,
     l2_distance_squared, l2_norm, l2_normalize,

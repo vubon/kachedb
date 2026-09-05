@@ -22,3 +22,8 @@ log                  = { workspace = true }
 thiserror            = { workspace = true }
 cfg-if               = { workspace = true }
 libc                 = { workspace = true }
+crc32fast            = { workspace = true }
+crossbeam-channel    = { workspace = true }
+rustls               = { workspace = true }
+rustls-pki-types     = { workspace = true }
+rustls-pemfile       = { workspace = true }

@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use kachedb_core::{HashedTimingWheel, SlabClassType, SlabPool, resolve_slot_ptr};
 use kachedb_hash::{ShardedSwissTable, hash_key};
@@ -12,22 +12,24 @@ use kachedb_proto_resp::{
 };
 use kachedb_vector::VectorIndexRegistry;
 
+use crate::aof_encode::{AofOp, emit_aof};
 use crate::error::NetError;
 
-pub(crate) static DEFAULT_VECTORS: LazyLock<VectorIndexRegistry> =
-    LazyLock::new(VectorIndexRegistry::new);
+pub static DEFAULT_VECTORS: LazyLock<VectorIndexRegistry> = LazyLock::new(VectorIndexRegistry::new);
 
 /// Default buffer capacity for incoming connection stream (64 KB).
 const READ_BUF_SIZE: usize = 64 * 1024;
 /// Initial write buffer capacity.
 const WRITE_BUF_SIZE: usize = 64 * 1024;
 
-/// Client-specific connection metadata (e.g. protocol version and connection name).
+/// Client-specific connection metadata (e.g. protocol version, connection name, auth status).
 #[derive(Debug, Clone)]
 pub struct ClientState {
     pub name: Option<Vec<u8>>,
     pub client_id: u64,
     pub proto_version: u8,
+    pub authenticated: bool,
+    pub requirepass: Option<Arc<Vec<u8>>>,
 }
 
 impl Default for ClientState {
@@ -36,8 +38,36 @@ impl Default for ClientState {
             name: None,
             client_id: 1,
             proto_version: 2,
+            authenticated: true,
+            requirepass: None,
         }
     }
+}
+
+impl ClientState {
+    pub fn with_password(password: Option<Arc<Vec<u8>>>) -> Self {
+        let authenticated = password.is_none();
+        Self {
+            name: None,
+            client_id: 1,
+            proto_version: 2,
+            authenticated,
+            requirepass: password,
+        }
+    }
+}
+
+static REQUIREPASS: std::sync::RwLock<Option<Vec<u8>>> = std::sync::RwLock::new(None);
+
+/// Sets the server-wide authentication password.
+pub fn set_requirepass(password: Option<String>) {
+    let mut lock = REQUIREPASS.write().unwrap();
+    *lock = password.map(|s| s.into_bytes());
+}
+
+/// Returns the server-wide authentication password if configured.
+pub fn get_requirepass() -> Option<Vec<u8>> {
+    REQUIREPASS.read().unwrap().clone()
 }
 
 /// Connection state machine managing the read buffer, parsing incoming commands,
@@ -75,7 +105,7 @@ impl Connection {
             write_buf: Vec::with_capacity(WRITE_BUF_SIZE),
             write_pos: 0,
             current_sec: now_sec,
-            client_state: ClientState::default(),
+            client_state: ClientState::with_password(get_requirepass().map(Arc::new)),
         }
     }
 
@@ -238,6 +268,41 @@ impl Connection {
         mut timing_wheel: Option<&mut HashedTimingWheel>,
         mut client_state: Option<&mut ClientState>,
     ) -> Result<bool, NetError> {
+        let pass_configured = client_state.as_ref().and_then(|cs| cs.requirepass.clone());
+        let is_authed = match (&pass_configured, client_state.as_ref()) {
+            (Some(_), Some(cs)) => cs.authenticated,
+            (Some(_), None) => false,
+            (None, _) => true,
+        };
+
+        if !is_authed {
+            match cmd {
+                Command::Auth { password, .. } => {
+                    if let Some(ref expected) = pass_configured {
+                        if password == expected.as_slice() {
+                            if let Some(ref mut cs) = client_state {
+                                cs.authenticated = true;
+                            }
+                            encode_simple_string(write_buf, "OK");
+                        } else {
+                            encode_error(write_buf, "ERR invalid password");
+                        }
+                    } else {
+                        encode_error(write_buf, "ERR Client sent AUTH, but no password is set");
+                    }
+                    return Ok(true);
+                }
+                Command::Quit => {
+                    encode_simple_string(write_buf, "OK");
+                    return Ok(false);
+                }
+                _ => {
+                    encode_error(write_buf, "NOAUTH Authentication required.");
+                    return Ok(true);
+                }
+            }
+        }
+
         match cmd {
             Command::Ping { message } => match message {
                 Some(msg) => encode_bulk_string(write_buf, msg),
@@ -310,6 +375,7 @@ impl Connection {
                             }
                         }
 
+                        emit_aof(AofOp::Set, key, value, now_sec);
                         encode_simple_string(write_buf, "OK");
                     }
                     None => {
@@ -342,6 +408,7 @@ impl Connection {
                     let h = hash_key(key);
                     if let Some(entry) = table.remove(h) {
                         let _ = pool.deallocate(entry.slab_block_id);
+                        emit_aof(AofOp::Del, key, &[], now_sec);
                         deleted += 1;
                     }
                 }
@@ -384,14 +451,43 @@ impl Connection {
                     .map(|chunk| f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
 
-                let vec_idx = vectors.get_or_create(index);
-                match vec_idx.insert(id, &floats, payload, ttl_sec, now_sec) {
-                    Ok(()) => {
-                        encode_integer(write_buf, 1);
+                let inserted_ok = if let Some(hnsw) = vectors.get_hnsw(index) {
+                    match hnsw.insert(id, &floats, payload, ttl_sec, now_sec) {
+                        Ok(()) => {
+                            encode_integer(write_buf, 1);
+                            true
+                        }
+                        Err(e) => {
+                            encode_error(write_buf, &format!("ERR {e}"));
+                            false
+                        }
                     }
-                    Err(e) => {
-                        encode_error(write_buf, &format!("ERR {e}"));
+                } else {
+                    let vec_idx = vectors.get_or_create(index);
+                    match vec_idx.insert(id, &floats, payload, ttl_sec, now_sec) {
+                        Ok(()) => {
+                            encode_integer(write_buf, 1);
+                            true
+                        }
+                        Err(e) => {
+                            encode_error(write_buf, &format!("ERR {e}"));
+                            false
+                        }
                     }
+                };
+
+                if inserted_ok {
+                    let mut val =
+                        Vec::with_capacity(4 + vector_bytes.len() + payload.map_or(0, |p| p.len()));
+                    val.extend_from_slice(&(dim as u32).to_le_bytes());
+                    val.extend_from_slice(vector_bytes);
+                    if let Some(p) = payload {
+                        val.extend_from_slice(p);
+                    }
+                    let mut k = index.to_vec();
+                    k.push(0);
+                    k.extend_from_slice(id);
+                    emit_aof(AofOp::VAdd, &k, &val, now_sec);
                 }
             }
             Command::VSearch {
@@ -414,7 +510,27 @@ impl Connection {
                     .map(|chunk| f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
 
-                if let Some(vec_idx) = vectors.get(index) {
+                if let Some(hnsw) = vectors.get_hnsw(index) {
+                    match hnsw.search(&query_floats, top_k, None, threshold, now_sec) {
+                        Ok(results) => {
+                            encode_array_header(write_buf, results.len());
+                            for r in results {
+                                encode_array_header(write_buf, 3);
+                                encode_bulk_string(write_buf, &r.key);
+                                let score_str = format!("{:.6}", r.similarity);
+                                encode_bulk_string(write_buf, score_str.as_bytes());
+                                if let Some(ref p) = r.payload {
+                                    encode_bulk_string(write_buf, p);
+                                } else {
+                                    encode_null(write_buf);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            encode_error(write_buf, &format!("ERR {e}"));
+                        }
+                    }
+                } else if let Some(vec_idx) = vectors.get(index) {
                     match vec_idx.search(&query_floats, top_k, threshold, now_sec) {
                         Ok(results) => {
                             encode_array_header(write_buf, results.len());
@@ -439,24 +555,46 @@ impl Connection {
                 }
             }
             Command::VAddBatch { index, items } => {
-                let vec_idx = vectors.get_or_create(index);
                 let mut inserted_count = 0i64;
-                for item in items {
-                    if item.vector_bytes.len() % 4 == 0 {
-                        #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
-                        let floats: Vec<f32> = item
-                            .vector_bytes
-                            .chunks_exact(4)
-                            .map(|chunk| {
-                                f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
-                            })
-                            .collect();
+                if let Some(hnsw) = vectors.get_hnsw(index) {
+                    for item in items {
+                        if item.vector_bytes.len() % 4 == 0 {
+                            #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
+                            let floats: Vec<f32> = item
+                                .vector_bytes
+                                .chunks_exact(4)
+                                .map(|chunk| {
+                                    f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+                                })
+                                .collect();
 
-                        if vec_idx
-                            .insert(item.id, &floats, item.payload, item.ttl_sec, now_sec)
-                            .is_ok()
-                        {
-                            inserted_count += 1;
+                            if hnsw
+                                .insert(item.id, &floats, item.payload, item.ttl_sec, now_sec)
+                                .is_ok()
+                            {
+                                inserted_count += 1;
+                            }
+                        }
+                    }
+                } else {
+                    let vec_idx = vectors.get_or_create(index);
+                    for item in items {
+                        if item.vector_bytes.len() % 4 == 0 {
+                            #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
+                            let floats: Vec<f32> = item
+                                .vector_bytes
+                                .chunks_exact(4)
+                                .map(|chunk| {
+                                    f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+                                })
+                                .collect();
+
+                            if vec_idx
+                                .insert(item.id, &floats, item.payload, item.ttl_sec, now_sec)
+                                .is_ok()
+                            {
+                                inserted_count += 1;
+                            }
                         }
                     }
                 }
@@ -469,7 +607,41 @@ impl Connection {
                 threshold,
             } => {
                 encode_array_header(write_buf, queries.len());
-                if let Some(vec_idx) = vectors.get(index) {
+                if let Some(hnsw) = vectors.get_hnsw(index) {
+                    for q_bytes in queries {
+                        if q_bytes.len() % 4 != 0 {
+                            encode_array_header(write_buf, 0);
+                            continue;
+                        }
+                        #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
+                        let query_floats: Vec<f32> = q_bytes
+                            .chunks_exact(4)
+                            .map(|chunk| {
+                                f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+                            })
+                            .collect();
+
+                        match hnsw.search(&query_floats, top_k, None, threshold, now_sec) {
+                            Ok(results) => {
+                                encode_array_header(write_buf, results.len());
+                                for r in results {
+                                    encode_array_header(write_buf, 3);
+                                    encode_bulk_string(write_buf, &r.key);
+                                    let score_str = format!("{:.6}", r.similarity);
+                                    encode_bulk_string(write_buf, score_str.as_bytes());
+                                    if let Some(ref p) = r.payload {
+                                        encode_bulk_string(write_buf, p);
+                                    } else {
+                                        encode_null(write_buf);
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                encode_array_header(write_buf, 0);
+                            }
+                        }
+                    }
+                } else if let Some(vec_idx) = vectors.get(index) {
                     for q_bytes in queries {
                         if q_bytes.len() % 4 != 0 {
                             encode_array_header(write_buf, 0);
@@ -510,15 +682,28 @@ impl Connection {
                 }
             }
             Command::VDel { index, id } => {
-                if let Some(vec_idx) = vectors.get(index) {
-                    let deleted = vec_idx.delete(id);
-                    encode_integer(write_buf, if deleted { 1 } else { 0 });
+                let deleted = if let Some(hnsw) = vectors.get_hnsw(index) {
+                    hnsw.delete(id)
+                } else if let Some(vec_idx) = vectors.get(index) {
+                    vec_idx.delete(id)
                 } else {
-                    encode_integer(write_buf, 0);
-                }
+                    false
+                };
+                encode_integer(write_buf, if deleted { 1 } else { 0 });
             }
             Command::VStats { index } => {
-                if let Some(vec_idx) = vectors.get(index) {
+                if let Some(hnsw) = vectors.get_hnsw(index) {
+                    let stats = hnsw.stats(now_sec);
+                    encode_array_header(write_buf, 8);
+                    encode_bulk_string(write_buf, b"dimension");
+                    encode_integer(write_buf, stats.dimension as i64);
+                    encode_bulk_string(write_buf, b"total_vectors");
+                    encode_integer(write_buf, stats.total_vectors as i64);
+                    encode_bulk_string(write_buf, b"active_vectors");
+                    encode_integer(write_buf, stats.active_vectors as i64);
+                    encode_bulk_string(write_buf, b"memory_bytes");
+                    encode_integer(write_buf, stats.memory_bytes as i64);
+                } else if let Some(vec_idx) = vectors.get(index) {
                     let stats = vec_idx.stats(now_sec);
                     encode_array_header(write_buf, 8);
                     encode_bulk_string(write_buf, b"dimension");
@@ -538,6 +723,7 @@ impl Connection {
                 if seconds <= 0 {
                     if let Some(entry) = table.remove(h) {
                         let _ = pool.deallocate(entry.slab_block_id);
+                        emit_aof(AofOp::Del, key, &[], now_sec);
                         encode_integer(write_buf, 1);
                     } else {
                         encode_integer(write_buf, 0);
@@ -550,6 +736,12 @@ impl Connection {
                     };
                     let ok = table.update_ttl(h, expire_at_secs, now_sec);
                     if ok {
+                        emit_aof(
+                            AofOp::Expire,
+                            key,
+                            expire_at_secs.to_string().as_bytes(),
+                            now_sec,
+                        );
                         if let Some(entry) = table.lookup_checked(h, now_sec) {
                             if let Some(ref mut wheel) = timing_wheel {
                                 wheel.schedule(h, entry.slab_block_id, expire_at_secs);
@@ -564,6 +756,7 @@ impl Connection {
                 if milliseconds <= 0 {
                     if let Some(entry) = table.remove(h) {
                         let _ = pool.deallocate(entry.slab_block_id);
+                        emit_aof(AofOp::Del, key, &[], now_sec);
                         encode_integer(write_buf, 1);
                     } else {
                         encode_integer(write_buf, 0);
@@ -577,6 +770,12 @@ impl Connection {
                     };
                     let ok = table.update_ttl(h, expire_at_secs, now_sec);
                     if ok {
+                        emit_aof(
+                            AofOp::Expire,
+                            key,
+                            expire_at_secs.to_string().as_bytes(),
+                            now_sec,
+                        );
                         if let Some(entry) = table.lookup_checked(h, now_sec) {
                             if let Some(ref mut wheel) = timing_wheel {
                                 wheel.schedule(h, entry.slab_block_id, expire_at_secs);
@@ -591,6 +790,7 @@ impl Connection {
                 if now_sec > 0 && timestamp <= now_sec as i64 {
                     if let Some(entry) = table.remove(h) {
                         let _ = pool.deallocate(entry.slab_block_id);
+                        emit_aof(AofOp::Del, key, &[], now_sec);
                         encode_integer(write_buf, 1);
                     } else {
                         encode_integer(write_buf, 0);
@@ -599,6 +799,12 @@ impl Connection {
                     let expire_at_secs = timestamp.max(0) as u32;
                     let ok = table.update_ttl(h, expire_at_secs, now_sec);
                     if ok {
+                        emit_aof(
+                            AofOp::Expire,
+                            key,
+                            expire_at_secs.to_string().as_bytes(),
+                            now_sec,
+                        );
                         if let Some(entry) = table.lookup_checked(h, now_sec) {
                             if let Some(ref mut wheel) = timing_wheel {
                                 wheel.schedule(h, entry.slab_block_id, expire_at_secs);
@@ -614,6 +820,7 @@ impl Connection {
                 if now_sec > 0 && ts_sec <= now_sec as i64 {
                     if let Some(entry) = table.remove(h) {
                         let _ = pool.deallocate(entry.slab_block_id);
+                        emit_aof(AofOp::Del, key, &[], now_sec);
                         encode_integer(write_buf, 1);
                     } else {
                         encode_integer(write_buf, 0);
@@ -622,6 +829,12 @@ impl Connection {
                     let expire_at_secs = ts_sec.max(0) as u32;
                     let ok = table.update_ttl(h, expire_at_secs, now_sec);
                     if ok {
+                        emit_aof(
+                            AofOp::Expire,
+                            key,
+                            expire_at_secs.to_string().as_bytes(),
+                            now_sec,
+                        );
                         if let Some(entry) = table.lookup_checked(h, now_sec) {
                             if let Some(ref mut wheel) = timing_wheel {
                                 wheel.schedule(h, entry.slab_block_id, expire_at_secs);
@@ -885,12 +1098,12 @@ impl Connection {
                      \r\n\
                      # Keyspace\r\n\
                      db0:keys={total_keys},expires=0,avg_ttl=0\r\n\
-                     \r\n\
-                     # VectorEngine\r\n\
-                     active_indices:0\r\n\
-                     total_vectors:0\r\n\
-                     vector_memory_bytes:0\r\n\
-                     simd_kernel:auto\r\n",
+                     \r\n                      \r\n\
+                      # VectorEngine\r\n\
+                      active_indices:{vec_indices}\r\n\
+                      total_vectors:{vec_total}\r\n\
+                      vector_memory_bytes:{vec_mem}\r\n\
+                      simd_kernel:auto\r\n",
                     os = std::env::consts::OS,
                     pid = std::process::id(),
                     uptime = now_sec,
@@ -899,11 +1112,99 @@ impl Connection {
                     megaslabs = pool.arena_count(),
                     active_slots = table.len(),
                     total_keys = table.len(),
+                    vec_indices = vectors.overall_stats(now_sec).0,
+                    vec_total = vectors.overall_stats(now_sec).1,
+                    vec_mem = vectors.overall_stats(now_sec).2,
                 );
                 encode_bulk_string(write_buf, info_text.as_bytes());
             }
             Command::CommandDoc => {
                 encode_simple_string(write_buf, "OK");
+            }
+            Command::VIndexCreate {
+                name,
+                dim,
+                m,
+                ef_construction,
+                ef_search,
+                metric,
+                quantization,
+            } => {
+                let metric_val = metric
+                    .and_then(|m| std::str::from_utf8(m).ok())
+                    .and_then(kachedb_vector::VectorMetric::parse)
+                    .unwrap_or_default();
+                let quant_val = quantization
+                    .and_then(|q| std::str::from_utf8(q).ok())
+                    .and_then(kachedb_vector::QuantizationMode::parse)
+                    .unwrap_or_default();
+                let m_val = m.unwrap_or(16);
+                let ef_c = ef_construction.unwrap_or(200);
+                let ef_s = ef_search.unwrap_or(50);
+
+                vectors.create_hnsw(name, dim, m_val, ef_c, ef_s, metric_val, quant_val);
+                let val = (dim as u32).to_le_bytes();
+                emit_aof(AofOp::VIndexCreate, name, &val, now_sec);
+                encode_simple_string(write_buf, "OK");
+            }
+            Command::VIndexDrop { name } => {
+                let dropped = vectors.drop_hnsw(name) || vectors.delete_index(name);
+                if dropped {
+                    emit_aof(AofOp::VIndexDrop, name, &[], now_sec);
+                }
+                encode_integer(write_buf, if dropped { 1 } else { 0 });
+            }
+            Command::VIndexInfo { name } => {
+                if let Some(hnsw) = vectors.get_hnsw(name) {
+                    let stats = hnsw.stats(now_sec);
+                    encode_array_header(write_buf, 12);
+                    encode_bulk_string(write_buf, b"name");
+                    encode_bulk_string(write_buf, stats.name.as_bytes());
+                    encode_bulk_string(write_buf, b"type");
+                    encode_bulk_string(write_buf, b"hnsw");
+                    encode_bulk_string(write_buf, b"dimension");
+                    encode_integer(write_buf, stats.dimension as i64);
+                    encode_bulk_string(write_buf, b"total_vectors");
+                    encode_integer(write_buf, stats.total_vectors as i64);
+                    encode_bulk_string(write_buf, b"active_vectors");
+                    encode_integer(write_buf, stats.active_vectors as i64);
+                    encode_bulk_string(write_buf, b"memory_bytes");
+                    encode_integer(write_buf, stats.memory_bytes as i64);
+                } else if let Some(flat) = vectors.get(name) {
+                    let stats = flat.stats(now_sec);
+                    encode_array_header(write_buf, 12);
+                    encode_bulk_string(write_buf, b"name");
+                    encode_bulk_string(write_buf, stats.name.as_bytes());
+                    encode_bulk_string(write_buf, b"type");
+                    encode_bulk_string(write_buf, b"flat");
+                    encode_bulk_string(write_buf, b"dimension");
+                    encode_integer(write_buf, stats.dimension as i64);
+                    encode_bulk_string(write_buf, b"total_vectors");
+                    encode_integer(write_buf, stats.total_vectors as i64);
+                    encode_bulk_string(write_buf, b"active_vectors");
+                    encode_integer(write_buf, stats.active_vectors as i64);
+                    encode_bulk_string(write_buf, b"memory_bytes");
+                    encode_integer(write_buf, stats.memory_bytes as i64);
+                } else {
+                    encode_error(write_buf, "ERR no such index");
+                }
+            }
+            Command::BgRewriteAof => {
+                encode_simple_string(write_buf, "Background append only file rewriting started");
+            }
+            Command::Auth { password, .. } => {
+                if let Some(ref expected) = pass_configured {
+                    if password == expected.as_slice() {
+                        if let Some(ref mut cs) = client_state {
+                            cs.authenticated = true;
+                        }
+                        encode_simple_string(write_buf, "OK");
+                    } else {
+                        encode_error(write_buf, "ERR invalid password");
+                    }
+                } else {
+                    encode_error(write_buf, "ERR Client sent AUTH, but no password is set");
+                }
             }
             Command::Quit => {
                 encode_simple_string(write_buf, "OK");
@@ -1767,6 +2068,173 @@ mod tests {
         assert!(resp_str.contains("# Server"));
         assert!(resp_str.contains("kachedb_version:0.1.0"));
         assert!(resp_str.contains("# Memory"));
+        conn.write_buf.clear();
+    }
+
+    #[test]
+    fn test_hnsw_vindex_command_flow() {
+        let mut conn = Connection::new();
+        let table = ShardedSwissTable::new();
+        let mut pool = SlabPool::new(0, 4 * 1024 * 1024).unwrap();
+
+        // 1. VINDEX CREATE hnsw_kb DIM 3 METRIC COSINE QUANTIZATION SQ8
+        Connection::execute_command(
+            Command::VIndexCreate {
+                name: b"hnsw_kb",
+                dim: 3,
+                m: Some(16),
+                ef_construction: Some(100),
+                ef_search: Some(50),
+                metric: Some(b"COSINE"),
+                quantization: Some(b"SQ8"),
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b"+OK\r\n");
+        conn.write_buf.clear();
+
+        // 2. VADD hnsw_kb doc1 3 <vec_bytes>
+        let v1 = [1.0f32, 0.0, 0.0];
+        let mut v1_bytes = Vec::new();
+        for f in &v1 {
+            v1_bytes.extend_from_slice(&f.to_ne_bytes());
+        }
+        Connection::execute_command(
+            Command::VAdd {
+                index: b"hnsw_kb",
+                id: b"doc1",
+                dim: 3,
+                vector_bytes: &v1_bytes,
+                payload: Some(b"doc1_payload"),
+                ttl_sec: None,
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b":1\r\n");
+        conn.write_buf.clear();
+
+        // 3. VSEARCH hnsw_kb <vec_bytes> TOPK 1 THRESHOLD 0.8
+        Connection::execute_command(
+            Command::VSearch {
+                index: b"hnsw_kb",
+                query_bytes: &v1_bytes,
+                top_k: 1,
+                threshold: 0.8,
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+        )
+        .unwrap();
+        let resp_str = String::from_utf8_lossy(&conn.write_buf);
+        assert!(resp_str.contains("doc1"));
+        assert!(resp_str.contains("doc1_payload"));
+        conn.write_buf.clear();
+
+        // 4. VINDEX INFO hnsw_kb
+        Connection::execute_command(
+            Command::VIndexInfo { name: b"hnsw_kb" },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+        )
+        .unwrap();
+        let info_str = String::from_utf8_lossy(&conn.write_buf);
+        assert!(info_str.contains("hnsw"));
+        conn.write_buf.clear();
+
+        // 5. VINDEX DROP hnsw_kb
+        Connection::execute_command(
+            Command::VIndexDrop { name: b"hnsw_kb" },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b":1\r\n");
+        conn.write_buf.clear();
+    }
+
+    #[test]
+    fn test_auth_requirepass_flow() {
+        let table = ShardedSwissTable::new();
+        let mut pool = SlabPool::new(0, 4 * 1024 * 1024).unwrap();
+        let mut conn = Connection::new();
+
+        // 1. Set password on client state
+        conn.client_state = ClientState::with_password(Some(Arc::new(b"secret123".to_vec())));
+
+        // 2. Command before auth -> -NOAUTH
+        Connection::execute_command_full(
+            Command::Get { key: b"foo" },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &DEFAULT_VECTORS,
+            None,
+            Some(&mut conn.client_state),
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b"-NOAUTH Authentication required.\r\n");
+        conn.write_buf.clear();
+
+        // 3. Wrong password -> -ERR invalid password
+        Connection::execute_command_full(
+            Command::Auth {
+                username: None,
+                password: b"wrong",
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &DEFAULT_VECTORS,
+            None,
+            Some(&mut conn.client_state),
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b"-ERR invalid password\r\n");
+        conn.write_buf.clear();
+
+        // 4. Correct password -> +OK
+        Connection::execute_command_full(
+            Command::Auth {
+                username: None,
+                password: b"secret123",
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &DEFAULT_VECTORS,
+            None,
+            Some(&mut conn.client_state),
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b"+OK\r\n");
+        assert!(conn.client_state.authenticated);
+        conn.write_buf.clear();
+
+        // 5. Subsequent command now succeeds
+        Connection::execute_command_full(
+            Command::Ping { message: None },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &DEFAULT_VECTORS,
+            None,
+            Some(&mut conn.client_state),
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b"+PONG\r\n");
         conn.write_buf.clear();
     }
 }

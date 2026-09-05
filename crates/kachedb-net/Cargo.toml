@@ -17,6 +17,10 @@ thiserror          = { workspace = true }
 smallvec           = { workspace = true }
 libc               = { workspace = true }
 crossbeam-channel  = { workspace = true }
+crc32fast          = { workspace = true }
+rustls             = { workspace = true }
+rustls-pki-types   = { workspace = true }
+rustls-pemfile     = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = { workspace = true }

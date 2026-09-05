@@ -12,17 +12,21 @@
 //! - **Cross-platform**: Uses `io_uring` on Linux and `mio` on macOS/BSD.
 
 pub mod accept;
+pub mod aof_encode;
 pub mod connection;
 pub mod engine;
 pub mod error;
+pub mod tls;
 
 #[cfg(target_os = "linux")]
 pub mod engine_uring;
 
 pub use accept::{AcceptDispatcher, create_dispatch_channels};
-pub use connection::Connection;
+pub use aof_encode::{AofOp, emit_aof, encode_frame, set_aof_channel};
+pub use connection::{Connection, DEFAULT_VECTORS, get_requirepass, set_requirepass};
 pub use engine::WorkerThread;
 pub use error::NetError;
+pub use tls::{TlsState, init_crypto_provider, load_server_config};
 
 #[cfg(target_os = "linux")]
 pub use engine_uring::UringWorkerThread;

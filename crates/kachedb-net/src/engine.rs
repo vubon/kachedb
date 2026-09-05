@@ -20,13 +20,15 @@ use mio::{Events, Interest, Poll, Token};
 
 use kachedb_core::{HashedTimingWheel, SlabPool, pin_current_thread_to_core};
 use kachedb_hash::ShardedSwissTable;
+use rustls::server::ServerConfig;
 
 use crate::connection::{Connection, DEFAULT_VECTORS};
 use crate::error::NetError;
+use crate::tls::TlsState;
 
 const SERVER_TOKEN: Token = Token(0);
 const EVENTS_CAPACITY: usize = 1024;
-const DEFAULT_POOL_CAPACITY: usize = 64 * 1024 * 1024; // 64 MB per core
+const DEFAULT_POOL_CAPACITY: usize = 4 * 1024 * 1024; // 4 MB per core
 
 /// Connection source for a `WorkerThread`.
 enum ConnSource {
@@ -42,6 +44,7 @@ pub struct WorkerThread {
     pub pool: SlabPool,
     pub table: Arc<ShardedSwissTable>,
     pub timing_wheel: HashedTimingWheel,
+    pub tls_config: Option<Arc<ServerConfig>>,
     conn_source: ConnSource,
 }
 
@@ -147,6 +150,7 @@ impl WorkerThread {
             pool,
             table,
             timing_wheel,
+            tls_config: None,
             conn_source: ConnSource::Listener(bind_addr),
         })
     }
@@ -170,8 +174,38 @@ impl WorkerThread {
             pool,
             table,
             timing_wheel,
+            tls_config: None,
             conn_source: ConnSource::Channel(receiver),
         })
+    }
+
+    /// Creates a new `WorkerThread` in **accept-dispatch mode** using a pre-initialized `SlabPool`.
+    pub fn with_channel_and_pool(
+        core_id: u16,
+        pool: SlabPool,
+        table: Arc<ShardedSwissTable>,
+        receiver: Receiver<TcpStream>,
+    ) -> Self {
+        let start_sec = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        let timing_wheel = HashedTimingWheel::new(start_sec);
+
+        Self {
+            core_id,
+            pool,
+            table,
+            timing_wheel,
+            tls_config: None,
+            conn_source: ConnSource::Channel(receiver),
+        }
+    }
+
+    /// Configures TLS encryption on this worker thread.
+    pub fn with_tls(mut self, tls_config: Option<Arc<ServerConfig>>) -> Self {
+        self.tls_config = tls_config;
+        self
     }
 
     /// Runs the single-threaded event loop until `shutdown` is signaled.
@@ -207,7 +241,8 @@ impl WorkerThread {
 
         let mut poll = Poll::new()?;
         let mut events = Events::with_capacity(EVENTS_CAPACITY);
-        let mut connections: HashMap<Token, (TcpStream, Connection)> = HashMap::new();
+        let mut connections: HashMap<Token, (TcpStream, Connection, Option<TlsState>)> =
+            HashMap::new();
         let mut next_token = 1usize;
         let mut last_tick_sec = 0u32;
         let mut expired_entries = Vec::with_capacity(64);
@@ -231,9 +266,13 @@ impl WorkerThread {
                     "Worker [{core}]: registered dispatched connection {token:?}",
                     core = self.core_id
                 );
+                let tls_state = self
+                    .tls_config
+                    .as_ref()
+                    .and_then(|cfg| TlsState::new(cfg.clone()).ok());
                 let mut conn = Connection::new();
                 conn.set_current_sec(last_tick_sec);
-                connections.insert(token, (stream, conn));
+                connections.insert(token, (stream, conn, tls_state));
             }
 
             let poll_timeout = if connections.is_empty() {
@@ -272,8 +311,12 @@ impl WorkerThread {
                     }
                 }
 
-                for (_, conn) in connections.values_mut() {
+                for (_, conn, _) in connections.values_mut() {
                     conn.set_current_sec(now_sec);
+                }
+
+                if now_sec % 10 == 0 {
+                    self.pool.reclaim_empty_arenas();
                 }
             }
         }
@@ -298,7 +341,8 @@ impl WorkerThread {
         poll.registry()
             .register(&mut listener, SERVER_TOKEN, Interest::READABLE)?;
 
-        let mut connections: HashMap<Token, (TcpStream, Connection)> = HashMap::new();
+        let mut connections: HashMap<Token, (TcpStream, Connection, Option<TlsState>)> =
+            HashMap::new();
         let mut next_token = 1usize;
         let mut last_tick_sec = 0u32;
         let mut expired_entries = Vec::with_capacity(64);
@@ -335,9 +379,13 @@ impl WorkerThread {
                                     continue;
                                 }
 
+                                let tls_state = self
+                                    .tls_config
+                                    .as_ref()
+                                    .and_then(|cfg| TlsState::new(cfg.clone()).ok());
                                 let mut conn = Connection::new();
                                 conn.set_current_sec(last_tick_sec);
-                                connections.insert(token, (stream, conn));
+                                connections.insert(token, (stream, conn, tls_state));
                             }
                             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                             Err(e) => {
@@ -376,8 +424,12 @@ impl WorkerThread {
                     }
                 }
 
-                for (_, conn) in connections.values_mut() {
+                for (_, conn, _) in connections.values_mut() {
                     conn.set_current_sec(now_sec);
+                }
+
+                if now_sec % 10 == 0 {
+                    self.pool.reclaim_empty_arenas();
                 }
             }
         }
@@ -393,7 +445,7 @@ impl WorkerThread {
     fn process_events(
         &mut self,
         events: &mut Events,
-        connections: &mut HashMap<Token, (TcpStream, Connection)>,
+        connections: &mut HashMap<Token, (TcpStream, Connection, Option<TlsState>)>,
         poll: &mut Poll,
     ) -> Result<(), NetError> {
         for event in events.iter() {
@@ -404,9 +456,15 @@ impl WorkerThread {
 
             let mut should_remove = false;
 
-            if let Some((stream, conn)) = connections.get_mut(&token) {
+            if let Some((stream, conn, tls)) = connections.get_mut(&token) {
                 if event.is_readable() {
-                    let read_res = conn.read_from(stream);
+                    let read_res = if let Some(tls_session) = tls {
+                        let res = tls_session.read_and_decrypt(stream, conn);
+                        let _ = tls_session.flush_handshake(stream);
+                        res
+                    } else {
+                        conn.read_from(stream)
+                    };
                     match read_res {
                         Ok(_) => {
                             if conn.has_unprocessed_input() {
@@ -456,7 +514,12 @@ impl WorkerThread {
 
                 if conn.has_pending_writes() || event.is_writable() {
                     while conn.has_pending_writes() {
-                        match conn.flush_to_stream(stream) {
+                        let write_res = if let Some(tls_session) = tls {
+                            tls_session.encrypt_and_write(stream, conn)
+                        } else {
+                            conn.flush_to_stream(stream)
+                        };
+                        match write_res {
                             Ok(0) => break,
                             Ok(_) => {}
                             Err(NetError::Io(ref e))
@@ -478,7 +541,7 @@ impl WorkerThread {
             }
 
             if should_remove {
-                if let Some((mut stream, _)) = connections.remove(&token) {
+                if let Some((mut stream, _, _)) = connections.remove(&token) {
                     let _ = poll.registry().deregister(&mut stream);
                 }
             }

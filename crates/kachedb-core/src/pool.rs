@@ -274,6 +274,7 @@ impl SlabPool {
 
         if let Some(idx) = candidate {
             let released_class = self.arenas[idx].class();
+            self.arenas[idx].madvise_dontneed();
             self.arenas.remove(idx);
             self.arena_last_active_sec.remove(idx);
 
@@ -282,6 +283,8 @@ impl SlabPool {
             } else {
                 self.app_quota.release_one();
             }
+
+            self.rebuild_indices();
 
             log::info!(
                 "SlabPool(core={}): reclaimed cold {:?} arena for {:?} (idle ≥{}s)",
@@ -293,6 +296,67 @@ impl SlabPool {
             true
         } else {
             false
+        }
+    }
+
+    /// Reclaims completely empty arenas back to the system.
+    ///
+    /// For each arena with 0 active allocations:
+    /// 1. Issues `madvise(MADV_DONTNEED)` on Linux to drop resident pages.
+    /// 2. Returns quota credit to the workload budget.
+    /// 3. Drops the arena (deallocating and unregistering).
+    ///
+    /// Returns the number of reclaimed arenas.
+    pub fn reclaim_empty_arenas(&mut self) -> usize {
+        let mut reclaimed = 0;
+        let mut i = 0;
+        while i < self.arenas.len() {
+            if self.arenas[i].is_reclaimable() {
+                self.arenas[i].madvise_dontneed();
+                let released_class = self.arenas[i].class();
+                if released_class.is_tensor() {
+                    self.tensor_quota.release_one();
+                } else {
+                    self.app_quota.release_one();
+                }
+                self.arenas.remove(i);
+                self.arena_last_active_sec.remove(i);
+                reclaimed += 1;
+            } else {
+                i += 1;
+            }
+        }
+
+        if reclaimed > 0 {
+            self.rebuild_indices();
+            log::debug!(
+                "SlabPool(core={}): reclaimed {} empty arena(s), {} remaining",
+                self.core_id,
+                reclaimed,
+                self.arenas.len()
+            );
+        }
+
+        reclaimed
+    }
+
+    /// Rebuilds `slab_id_to_arena` and `active_arena` index arrays after arena removals.
+    fn rebuild_indices(&mut self) {
+        self.slab_id_to_arena.clear();
+        self.active_arena = [None; 6];
+        for (i, arena) in self.arenas.iter().enumerate() {
+            self.slab_id_to_arena
+                .insert(arena.header_slab_id() as u16, i);
+            let c_idx = class_index(arena.class());
+            if !arena.is_full() && self.active_arena[c_idx].is_none() {
+                self.active_arena[c_idx] = Some(i);
+            }
+        }
+        for (i, arena) in self.arenas.iter().enumerate() {
+            let c_idx = class_index(arena.class());
+            if self.active_arena[c_idx].is_none() {
+                self.active_arena[c_idx] = Some(i);
+            }
         }
     }
 
@@ -373,5 +437,23 @@ mod tests {
         let foreign = SlabBlockId::new(0xFF, 0);
         let result = pool.deallocate(foreign);
         assert!(matches!(result, Err(CoreError::InvalidBlockId { .. })));
+    }
+
+    #[test]
+    fn test_reclaim_empty_arenas() {
+        let mut pool = make_pool();
+        let id = pool.allocate(SlabClassType::AppSmall).unwrap();
+        assert_eq!(pool.arena_count(), 1);
+        pool.deallocate(id).unwrap();
+        // The single arena is now empty.
+        let reclaimed = pool.reclaim_empty_arenas();
+        assert_eq!(reclaimed, 1);
+        assert_eq!(pool.arena_count(), 0);
+
+        // Allocating again should lazily grow a new arena.
+        let id2 = pool.allocate(SlabClassType::AppSmall).unwrap();
+        assert_eq!(pool.arena_count(), 1);
+        assert_eq!(pool.total_allocated_bytes(), 128);
+        pool.deallocate(id2).unwrap();
     }
 }

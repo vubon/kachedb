@@ -501,6 +501,17 @@ impl SwissTable {
         self.count as f64 / self.capacity as f64
     }
 
+    /// Returns a vector containing all live (hash, TableEntry) pairs in the table.
+    pub fn live_entries(&self) -> Vec<(u64, TableEntry)> {
+        let mut res = Vec::with_capacity(self.count);
+        for (idx, entry) in self.entries.iter().enumerate() {
+            if self.ctrl[idx] != CTRL_EMPTY && self.ctrl[idx] != CTRL_DELETED {
+                res.push((entry.key_hash, entry.to_snapshot()));
+            }
+        }
+        res
+    }
+
     // ── Private ──────────────────────────────────────────────────────────────
 
     /// Doubles the capacity and rehashes all live entries.
