@@ -166,6 +166,7 @@ fn apply_frame(
                             None
                         };
 
+                        #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
                         let floats: Vec<f32> = vec_bytes
                             .chunks_exact(4)
                             .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
