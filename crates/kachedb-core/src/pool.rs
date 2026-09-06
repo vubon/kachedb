@@ -65,6 +65,10 @@ pub struct SlabPool {
     arenas: Vec<MegaslabArena>,
     /// O(1) direct active arena index per size class.
     active_arena: [Option<usize>; 6],
+    /// All arena indices grouped by size class.
+    class_arenas: [Vec<usize>; 6],
+    /// Round-robin cursor for recycling across arenas of each class when full.
+    recycle_arena_cursor: [usize; 6],
     /// Fast O(1) slab_id to arena index mapping.
     slab_id_to_arena: HashMap<u16, usize>,
     /// Maximum total megaslabs allowed across all workloads.
@@ -95,6 +99,8 @@ impl SlabPool {
             core_id,
             arenas: Vec::new(),
             active_arena: [None; 6],
+            class_arenas: Default::default(),
+            recycle_arena_cursor: [0; 6],
             slab_id_to_arena: HashMap::new(),
             max_megaslabs,
             app_quota,
@@ -116,21 +122,36 @@ impl SlabPool {
     /// True **O(1) in ~1–2 nanoseconds** on the fast path.
     pub fn allocate(&mut self, class: SlabClassType) -> Result<SlabBlockId, CoreError> {
         let c_idx = class_index(class);
+
+        // 1. Fast path: active arena has free slots
         if let Some(arena_idx) = self.active_arena[c_idx].filter(|&idx| !self.arenas[idx].is_full())
         {
             return self.arenas[arena_idx].allocate();
         }
 
-        // Try to grow if quota allows
-        if self.grow(class).is_ok() {
+        // 2. Growth path: try to grow into a new arena if pool ceiling allows
+        if self.arenas.len() < self.max_megaslabs && self.grow(class).is_ok() {
             let new_idx = self.arenas.len() - 1;
             self.active_arena[c_idx] = Some(new_idx);
             return self.arenas[new_idx].allocate();
         }
 
-        // Memory pool is full: recycle oldest slot in active arena (FIFO eviction)
-        if let Some(arena_idx) = self.active_arena[c_idx] {
-            return Ok(self.arenas[arena_idx].allocate_or_recycle());
+        // 3. Scan existing arenas of this class for any free slots (e.g. from deallocations)
+        if let Some(&arena_idx) = self.class_arenas[c_idx]
+            .iter()
+            .find(|&&idx| !self.arenas[idx].is_full())
+        {
+            self.active_arena[c_idx] = Some(arena_idx);
+            return self.arenas[arena_idx].allocate();
+        }
+
+        // 4. Memory pool is full: round-robin recycle across all arenas of this class
+        let arenas_for_class = &self.class_arenas[c_idx];
+        if !arenas_for_class.is_empty() {
+            let cursor = self.recycle_arena_cursor[c_idx] % arenas_for_class.len();
+            let target_arena_idx = arenas_for_class[cursor];
+            self.recycle_arena_cursor[c_idx] = (cursor + 1) % arenas_for_class.len();
+            return Ok(self.arenas[target_arena_idx].recycle_slot());
         }
 
         Err(CoreError::PoolExhausted { class })
@@ -205,6 +226,10 @@ impl SlabPool {
     /// Allocates a new `MegaslabArena` for `class`, enforcing quota limits.
     /// Attempts S3-FIFO cold-arena reclamation before returning `PoolExhausted`.
     fn grow(&mut self, class: SlabClassType) -> Result<(), CoreError> {
+        if self.arenas.len() >= self.max_megaslabs {
+            return Err(CoreError::PoolExhausted { class });
+        }
+
         // Check workload-specific quota ceiling.
         let quota_ok = if class.is_tensor() {
             self.tensor_quota.can_borrow()
@@ -213,8 +238,13 @@ impl SlabPool {
         };
 
         if !quota_ok {
-            // Attempt to reclaim a cold arena from the opposite workload.
-            if !self.reclaim_cold_arena(class) {
+            // Attempt to reclaim a cold arena from the opposite workload only if any exist.
+            let opposite_claimed = if class.is_tensor() {
+                self.app_quota.claimed
+            } else {
+                self.tensor_quota.claimed
+            };
+            if opposite_claimed == 0 || !self.reclaim_cold_arena(class) {
                 return Err(CoreError::PoolExhausted { class });
             }
         }
@@ -227,7 +257,9 @@ impl SlabPool {
         let arena = MegaslabArena::new(class, slab_id, self.core_id)?;
         let arena_idx = self.arenas.len();
         self.slab_id_to_arena.insert(slab_id, arena_idx);
-        self.active_arena[class_index(class)] = Some(arena_idx);
+        let c_idx = class_index(class);
+        self.active_arena[c_idx] = Some(arena_idx);
+        self.class_arenas[c_idx].push(arena_idx);
         self.arenas.push(arena);
         self.arena_last_active_sec.push(now_secs());
 
@@ -255,6 +287,15 @@ impl SlabPool {
     ///
     /// Returns `true` if an arena was successfully reclaimed.
     fn reclaim_cold_arena(&mut self, requesting_class: SlabClassType) -> bool {
+        let opposite_claimed = if requesting_class.is_tensor() {
+            self.app_quota.claimed
+        } else {
+            self.tensor_quota.claimed
+        };
+        if opposite_claimed == 0 {
+            return false;
+        }
+
         let now = now_secs();
         let cold_threshold_secs: u32 = 30;
 
@@ -303,18 +344,19 @@ impl SlabPool {
     ///
     /// For each arena with 0 active allocations:
     /// 1. Issues `madvise(MADV_DONTNEED)` on Linux to drop resident pages.
-    /// 2. Returns quota credit to the workload budget.
-    /// 3. Drops the arena (deallocating and unregistering).
+    /// 2. Returns the arena memory quota back to its workload pool.
+    /// 3. Reclaims the global slab ID from the atomic registry.
     ///
     /// Returns the number of reclaimed arenas.
     pub fn reclaim_empty_arenas(&mut self) -> usize {
         let mut reclaimed = 0;
         let mut i = 0;
+
         while i < self.arenas.len() {
-            if self.arenas[i].is_reclaimable() {
+            if self.arenas[i].allocated() == 0 {
+                let class = self.arenas[i].class();
                 self.arenas[i].madvise_dontneed();
-                let released_class = self.arenas[i].class();
-                if released_class.is_tensor() {
+                if class.is_tensor() {
                     self.tensor_quota.release_one();
                 } else {
                     self.app_quota.release_one();
@@ -340,14 +382,18 @@ impl SlabPool {
         reclaimed
     }
 
-    /// Rebuilds `slab_id_to_arena` and `active_arena` index arrays after arena removals.
+    /// Rebuilds `slab_id_to_arena`, `class_arenas`, and `active_arena` index arrays after arena removals.
     fn rebuild_indices(&mut self) {
         self.slab_id_to_arena.clear();
         self.active_arena = [None; 6];
+        for list in &mut self.class_arenas {
+            list.clear();
+        }
         for (i, arena) in self.arenas.iter().enumerate() {
             self.slab_id_to_arena
                 .insert(arena.header_slab_id() as u16, i);
             let c_idx = class_index(arena.class());
+            self.class_arenas[c_idx].push(i);
             if !arena.is_full() && self.active_arena[c_idx].is_none() {
                 self.active_arena[c_idx] = Some(i);
             }
@@ -455,5 +501,24 @@ mod tests {
         assert_eq!(pool.arena_count(), 1);
         assert_eq!(pool.total_allocated_bytes(), 128);
         pool.deallocate(id2).unwrap();
+    }
+
+    #[test]
+    fn pool_round_robin_recycle_when_at_ceiling() {
+        // Pool of 6MB = 3 megaslabs max (app cache ceiling = 2)
+        let mut pool = SlabPool::new(0, 6 * 1024 * 1024).unwrap();
+        let cap = SlabClassType::AppSmall.slots_per_megaslab();
+        // Fill 2 arenas up to ceiling
+        for _ in 0..(cap * 2) {
+            pool.allocate(SlabClassType::AppSmall).unwrap();
+        }
+        assert_eq!(pool.arena_count(), 2);
+
+        // Allocating further must succeed via recycling across the 2 arenas
+        let id1 = pool.allocate(SlabClassType::AppSmall).unwrap();
+        let id2 = pool.allocate(SlabClassType::AppSmall).unwrap();
+        assert_eq!(pool.arena_count(), 2);
+        // id1 and id2 should alternate across the 2 arenas
+        assert_ne!(id1.slab_id(), id2.slab_id());
     }
 }

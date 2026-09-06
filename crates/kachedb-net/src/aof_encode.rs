@@ -59,16 +59,25 @@ pub fn encode_frame(op: AofOp, key: &[u8], value: &[u8], timestamp_sec: u64) -> 
     buf
 }
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static AOF_ENABLED: AtomicBool = AtomicBool::new(false);
+
 static AOF_CHANNEL: std::sync::RwLock<Option<crossbeam_channel::Sender<Vec<u8>>>> =
     std::sync::RwLock::new(None);
 
 /// Configures the global AOF channel for streaming mutations to the AOF writer thread.
 pub fn set_aof_channel(tx: crossbeam_channel::Sender<Vec<u8>>) {
     *AOF_CHANNEL.write().unwrap() = Some(tx);
+    AOF_ENABLED.store(true, Ordering::Release);
 }
 
 /// Dispatches an encoded frame to the active AOF writer if configured.
+#[inline(always)]
 pub fn emit_aof(op: AofOp, key: &[u8], value: &[u8], now_sec: u32) {
+    if !AOF_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
     if let Ok(guard) = AOF_CHANNEL.read() {
         if let Some(ref tx) = *guard {
             let frame = encode_frame(op, key, value, now_sec as u64);

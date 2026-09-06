@@ -226,15 +226,25 @@ impl MegaslabArena {
         Ok(SlabBlockId::new(self.slab_id, slot_index as u16))
     }
 
+    /// Directly recycles the next slot in FIFO ring order without checking for free capacity.
+    #[inline(always)]
+    pub fn recycle_slot(&mut self) -> SlabBlockId {
+        let slot_index = self.recycle_cursor;
+        self.recycle_cursor = if self.recycle_cursor + 1 >= self.capacity {
+            0
+        } else {
+            self.recycle_cursor + 1
+        };
+        SlabBlockId::new(self.slab_id, slot_index as u16)
+    }
+
     /// Allocates a new slot or recycles the oldest slot in FIFO ring order when full.
     #[inline]
     pub fn allocate_or_recycle(&mut self) -> SlabBlockId {
         if let Ok(id) = self.allocate() {
             return id;
         }
-        let slot_index = self.recycle_cursor;
-        self.recycle_cursor = (self.recycle_cursor + 1) % self.capacity;
-        SlabBlockId::new(self.slab_id, slot_index as u16)
+        self.recycle_slot()
     }
 
     /// Returns a slot back to this arena for immediate reuse.
