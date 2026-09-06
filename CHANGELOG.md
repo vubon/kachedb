@@ -5,6 +5,67 @@ All notable changes to **KacheDB** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.1.0-beta.3] — 2026-09-06
+
+### 🏆 Milestone Benchmark Victory: Lowest Memory Footprint & 3.56M QPS
+- **Uncontested #1 Across Memory and Speed (`docs/benchmarks/benchmark_comparison_results.md`):**
+  - **Lowest Peak RSS:** **`871.4 MiB`** — Lower memory footprint than Redis (`1,001 MiB`), Valkey (`932 MiB`), and Dragonfly (`1.05 GiB`).
+  - **Peak GET (Reads):** **`3,563,603 QPS`** ($3.69\times$ Redis, $3.45\times$ Valkey, $1.55\times$ Dragonfly).
+  - **Peak SET (Writes):** **`3,217,341 QPS`** ($3.48\times$ Redis, $3.25\times$ Valkey, $1.57\times$ Dragonfly).
+  - **Mixed 80/20 QPS:** **`3,524,141 QPS`** ($3.75\times$ Redis, $3.65\times$ Valkey, $1.75\times$ Dragonfly).
+  - **P50 Tail Latency:** **`0.703 ms`** ($4.62\times$ faster than Redis $3.25\text{ ms}$, $1.86\times$ faster than Dragonfly $1.31\text{ ms}$).
+  - **P99 Tail Latency:** **`3.535 ms`** (Lowest tail latency of all tested engines).
+
+### 🧹 Megaslab Adaptive Compaction & Memory Optimization (`crates/kachedb-core`)
+- **Continuous Megaslab Page Deflation:**
+  - Implemented `madvise(MADV_DONTNEED)` on free slab pages in the megaslab allocator to immediately yield physical pages back to the operating system kernel without unmapping virtual address space.
+  - Background compaction routine reclaims unused slab frames and defragments active slots.
+- **Hot-Path SET Optimization & Multi-Arena Recycling:**
+  - Removed hot-path `SystemTime::now()` syscalls from pool allocation paths.
+  - Implemented cross-arena round-robin recycling (`recycle_slot()`) avoiding pipeline stalls under stringent memory constraints.
+  - Eliminated mutex locking on hot mutation paths with atomic fast-path flags.
+
+### 📐 HNSW Vector Indexing & 8-Bit Scalar Quantization (`crates/kachedb-vector`)
+- **Hierarchical Navigable Small World (HNSW) Index:**
+  - Implemented multi-layer HNSW graph exploration supporting sub-millisecond approximate nearest neighbor (ANN) search over massive vector datasets.
+  - Configurable graph connectivity parameters `M` and `ef_construction` via `VINDEX CREATE <index> TYPE HNSW`.
+- **SQ8 Scalar Quantization:**
+  - Added 8-bit scalar quantization compressing 32-bit floating-point embeddings by $4\times$ (75% memory footprint reduction) with minimal recall degradation.
+  - Hardware-accelerated integer dot products leveraging AVX2 and NEON SIMD instructions.
+
+### 💾 Append-Only File (AOF) Persistence Engine (`crates/kachedb-core` & `crates/kachedb-net`)
+- **Streaming Binary Journaling (`.kaof`):**
+  - Continuous binary append log recording all state mutations (`SET`, `DEL`, `EXPIRE`, `VADD`, `VDEL`).
+  - Framing with 32-bit CRC32 integrity checksums per transaction record.
+  - Configurable sync policies: `always`, `everysec`, and `no`.
+- **Startup Crash Recovery & Replay:**
+  - High-throughput parallel log replayer parsing `.kaof` records at server startup to reconstruct state.
+- **Online Zero-Downtime Compaction (`BGREWRITEAOF`):**
+  - Non-blocking background compaction snapshotting current in-memory keyspace into a fresh minimal journal file.
+
+### 🔒 TLS 1.3 Encryption & Password Authentication Hardening (`crates/kachedb-net`)
+- **Native TLS 1.3 Wire Security:**
+  - Direct TLS termination powered by `rustls 0.23` with ALPN `resp/2` negotiation.
+  - Optional Mutual TLS (mTLS) client certificate verification (`--ssl-cert`, `--ssl-key`, `--ssl-ca`).
+- **Timing-Safe Password Authentication:**
+  - Constant-time password hashing and verification resisting side-channel timing attacks via `AUTH <password>`.
+
+---
+
+## [v0.1.0-beta.2] — 2026-09-02
+
+### ⚡ Batch Vector Operations & AI Ecosystem Integration
+- **Zero-Copy Bulk Vector Operations (`crates/kachedb-proto-resp` & `crates/kachedb-net`):**
+  - Added `VADD_BATCH` for bulk ingestion of embedding vectors and JSON payloads in a single round-trip.
+  - Added `VSEARCH_BATCH` for parallel multi-query similarity searches across shared index graphs.
+- **Benchmarking & Tooling Enhancements (`crates/kachedb-bench`):**
+  - Added `-P/--pipeline` and `-t/--command` CLI flags.
+  - Pre-allocated zero-heap RESP frame builder for saturating multi-gigabit pipelines.
+- **OpenAI Reverse Proxy Integration Guide:**
+  - Added comprehensive integration guide and reference architecture for OpenAI semantic caching proxy.
+
+---
+
 ## [v0.1.0-beta.1] — 2026-08-30
 
 ### ⏱️ Full Redis TTL Lifecycle & Active Timing Wheel Expiry Engine

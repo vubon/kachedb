@@ -10,8 +10,8 @@
 
 <p align="center">
   <a href="#-benchmark-performance"><img src="https://img.shields.io/badge/benchmark-sub--4ns%20alloc-brightgreen.svg" alt="Benchmark"/></a>
-  <a href="#-benchmark-performance"><img src="https://img.shields.io/badge/throughput-1.91M%20QPS%20(io__uring)-blue.svg" alt="Throughput"/></a>
-  <a href="https://github.com/vubon/kachedb/actions"><img src="https://img.shields.io/badge/tests-88%20passed%2C%200%20failed-success.svg" alt="Tests"/></a>
+  <a href="#-benchmark-performance"><img src="https://img.shields.io/badge/throughput-3.56M%20QPS%20(epoll)-blue.svg" alt="Throughput"/></a>
+  <a href="https://github.com/vubon/kachedb/actions"><img src="https://img.shields.io/badge/tests-110%20passed%2C%200%20failed-success.svg" alt="Tests"/></a>
   <a href="#-license"><img src="https://img.shields.io/badge/license-Apache--2.0%20%2F%20MIT-blue.svg" alt="License"/></a>
 </p>
 
@@ -31,11 +31,12 @@
 | Feature / Metric | Redis 7.4 | Valkey 8.0 | DragonflyDB | **KacheDB v0.1** |
 | :--- | :---: | :---: | :---: | :---: |
 | **Language** | C | C | C++ | **Rust** 🦀 |
-| **Peak GET Throughput** | 799,823 QPS | 953,308 QPS | 1,775,543 QPS | **2,912,997 QPS** 👑 |
-| **Peak SET Throughput** | 763,170 QPS | 858,115 QPS | 1,476,315 QPS | **2,896,299 QPS** 👑 |
-| **Mixed 80/20 QPS** | 859,441 QPS | 902,205 QPS | 1,623,785 QPS | **2,127,839 QPS** 👑 |
-| **P50 Tail Latency** | 3.42 ms | 3.13 ms | 1.43 ms | **0.91 ms** 👑 |
-| **Memory Architecture** | `jemalloc` / Heap | `jemalloc` / Heap | Custom Slab | **2 MB Megaslab (Bump + Free-list)** |
+| **Peak GET Throughput** | 964,654 QPS | 1,033,849 QPS | 2,296,822 QPS | **3,563,603 QPS** 👑 |
+| **Peak SET Throughput** | 924,900 QPS | 989,303 QPS | 2,047,948 QPS | **3,217,341 QPS** 👑 |
+| **Mixed 80/20 QPS** | 940,532 QPS | 966,189 QPS | 2,009,829 QPS | **3,524,141 QPS** 👑 |
+| **P50 Tail Latency** | 3.25 ms | 3.09 ms | 1.31 ms | **0.70 ms** 👑 |
+| **Peak Memory (RSS)** | 1,001 MiB | 932 MiB | 1.05 GiB | **871.4 MiB** 👑 |
+| **Memory Architecture** | `jemalloc` / Heap | `jemalloc` / Heap | Custom Slab | **2 MB Megaslab (Bump + Free-list + Compaction)** |
 | **Hot-Path Alloc Overhead** | 20–50 ns | 20–50 ns | 10–25 ns | **3.84 ns ($\mathcal{O}(1)$)** |
 | **Hash Indexing** | Dict / Chained Hash | Dict / Chained Hash | `dashtable` | **AVX-512 / NEON Swiss Table** |
 | **Lookup Hit Latency** | 15–30 ns | 15–30 ns | 8–15 ns | **3.09 ns (L1 Cache Line)** |
@@ -124,7 +125,7 @@ KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can 
 +-----------------------------------------------------------------------------------------------+
 |                                 STORAGE & ZERO-COPY TRANSPORT                                 |
 |   - POSIX Shared Memory (/dev/shm) Lock-Free SPSC Ring Buffer IPC (17.66M msgs/sec)           |
-|   - Accept-Dispatch Thread-per-Core TCP Engine (epoll + TCP_NODELAY / mio) (2.91M QPS)        |
+|   - Accept-Dispatch Thread-per-Core TCP Engine (epoll + TCP_NODELAY / mio) (3.56M QPS)        |
 +-----------------------------------------------------------------------------------------------+
 ```
 
@@ -137,10 +138,10 @@ KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can 
 
 | Storage Engine | SET (Writes/sec) | GET (Reads/sec) | Mixed 80/20 (QPS) | Latency P50 (ms) | Latency P99 (ms) | Peak RAM (RSS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **REDIS 7.4** | 899,320.53 | 959,312.86 | 916,774.77 | 3.25 ms | 5.89 ms | 1.00 GiB |
-| **VALKEY 8.0** | 886,262.52 | 1,016,891.28 | 863,512.52 | 3.06 ms | 6.18 ms | 0.93 GiB |
-| **DRAGONFLY** | 1,719,800.18 | 2,120,352.93 | 1,997,088.05 | 1.38 ms | 4.61 ms | 1.09 GiB |
-| **KACHEDB** 👑 | **3,112,158.46** | **2,910,072.50** | **2,605,221.99** | **0.84 ms** | **4.99 ms** | **3.37 GiB** |
+| **REDIS 7.4** | 924,900.44 | 964,653.69 | 940,532.39 | 3.25 ms | 5.57 ms | 1,001 MiB |
+| **VALKEY 8.0** | 989,302.62 | 1,033,848.62 | 966,188.94 | 3.09 ms | 5.15 ms | 932 MiB |
+| **DRAGONFLY** | 2,047,947.57 | 2,296,821.72 | 2,009,828.87 | 1.31 ms | 3.78 ms | 1.05 GiB |
+| **KACHEDB** 👑 | **3,217,341.21** | **3,563,602.65** | **3,524,140.89** | **0.70 ms** | **3.54 ms** | **871.4 MiB** 👑 |
 
 ### 🔬 Subsystem Micro-Benchmarks
 All micro-benchmarks evaluated with [Criterion.rs](https://github.com/bheisler/criterion.rs) in release mode (`opt-level = 3`):
@@ -155,7 +156,7 @@ All micro-benchmarks evaluated with [Criterion.rs](https://github.com/bheisler/c
 | **`kachedb-radix`** | Bottom-up LRU Leaf Eviction | **403.1 ns** | Sub-microsecond tensor memory reclaim |
 | **`kachedb-shm`** | POSIX Shared Memory Push/Pop Roundtrip | **83.18 ns / msg** | **12.0 Million msgs/sec** (single-thread) |
 | **`kachedb-proto-resp`**| Streaming Zero-Alloc RESP `GET` Decoding | **86.17 ns** | Zero heap allocations on borrowed slice |
-| **`kachedb-net`** | Accept-Dispatch TCP Engine (Linux epoll) | **0.79 ms (P50)** | **3.11 Million QPS** (Docker Linux) |
+| **`kachedb-net`** | Accept-Dispatch TCP Engine (Linux epoll) | **0.70 ms (P50)** | **3.56 Million QPS** (Docker Linux) |
 | **`kachedb-net`** | macOS `mio` / `kqueue` TCP (4 Workers, 100 Clients) | **16 µs (P50)** | **4.32 Million SET/s, 3.92M GET/s** |
 
 ---
