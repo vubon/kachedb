@@ -18,9 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `DBSIZE`: returns exact count of active keys across all 256 shards in $O(1)$.
   - Added `TYPE <key>`: returns `+string\r\n` or `+none\r\n` matching Redis specifications.
   - Added `FLUSHDB` and `FLUSHALL`: clears in-memory tables and instantly recycles slab blocks back into core memory pools without memory leaks.
-- **Hyper-Optimized Distroless Docker Image (< 20 MB):**
+- **Hyper-Optimized Distroless Docker Image (37.5 MB disk / ~12 MB download):**
   - Transitioned runtime image to `gcr.io/distroless/cc-debian12:nonroot` with automatic binary debug symbol stripping (`strip`).
-  - Slashed production image size from 108 MB down to < 20 MB ($2.2\times$ smaller than `redis:alpine`).
+  - Core KacheDB binaries total only **3.2 MB**; full uncompressed runtime slashed from 108 MB down to **37.5 MB** ($2.9\times$ reduction, ~12 MB compressed transfer).
 - **Production Systemd Service Unit (`docker/kachedb.service`):**
   - Added hardened systemd unit file with security sandboxing (`ProtectSystem=strict`, `ProtectHome=true`, `LimitNOFILE=65535`).
 - **mdBook Official Documentation Site:**

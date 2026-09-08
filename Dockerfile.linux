@@ -1,5 +1,5 @@
 # ─── Dockerfile.linux ────────────────────────────────────────────────────────
-# Standalone Linux image for manual testing and production deployment (<20 MB).
+# Standalone Linux image for manual testing and production deployment (37.5 MB).
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── Stage 1: Build ──────────────────────────────────────────────────────────

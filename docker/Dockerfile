@@ -21,7 +21,7 @@ RUN strip /usr/src/kachedb/target/release/kachedb-server \
           /usr/src/kachedb/target/release/kachedb-cli \
           /usr/src/kachedb/target/release/kachedb-bench
 
-# Runtime image — distroless cc-debian12 provides minimal glibc runtime (<20 MB total)
+# Runtime image — distroless cc-debian12 provides minimal glibc runtime (37.5 MB uncompressed, ~12 MB download)
 FROM gcr.io/distroless/cc-debian12:nonroot
 
 WORKDIR /data
