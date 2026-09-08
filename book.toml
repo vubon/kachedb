@@ -7,7 +7,6 @@ title = "KacheDB Documentation"
 [output.html]
 site-url = "/kachedb/"
 git-repository-url = "https://github.com/vubon/kachedb"
-git-repository-icon = "fa-github"
 edit-url-template = "https://github.com/vubon/kachedb/edit/main/{path}"
 theme = "theme"
 default-theme = "rust"
