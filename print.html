@@ -1,0 +1,1811 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>KacheDB Documentation</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+        <script type="text/x-mathjax-config">
+          MathJax.Hub.Config({
+            tex2jax: {
+              inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+              displayMath: [ ['$$','$$'], ["\\[","\\]"] ],
+              processEscapes: true
+            }
+          });
+        </script>
+        <script>
+          window.MathJax = {
+            tex: {
+              inlineMath: [['$', '$'], ['\\(', '\\)']],
+              displayMath: [['$$', '$$'], ['\\[', '\\]']],
+              processEscapes: true
+            }
+          };
+        </script>
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "rust";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="index.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="getting-started/quickstart.html"><strong aria-hidden="true">1.</strong> Quickstart Guide</a></li><li class="chapter-item expanded "><a href="getting-started/kachedb-cli.html"><strong aria-hidden="true">2.</strong> kachedb-cli User Guide</a></li><li class="chapter-item expanded "><a href="getting-started/configuration.html"><strong aria-hidden="true">3.</strong> Server Configuration & Tuning</a></li><li class="chapter-item expanded affix "><li class="part-title">Command Reference</li><li class="chapter-item expanded "><a href="commands/core-kv.html"><strong aria-hidden="true">4.</strong> Core Key-Value Commands</a></li><li class="chapter-item expanded "><a href="commands/ttl-lifecycle.html"><strong aria-hidden="true">5.</strong> TTL & Key Lifecycle</a></li><li class="chapter-item expanded "><a href="commands/vector-search.html"><strong aria-hidden="true">6.</strong> SIMD Vector Commands</a></li><li class="chapter-item expanded "><a href="commands/server-introspection.html"><strong aria-hidden="true">7.</strong> Server Observability & Introspection</a></li><li class="chapter-item expanded affix "><li class="part-title">System Architecture</li><li class="chapter-item expanded "><a href="architecture/overview.html"><strong aria-hidden="true">8.</strong> System Architecture Overview</a></li><li class="chapter-item expanded "><a href="architecture/memory-engine.html"><strong aria-hidden="true">9.</strong> 2 MB Megaslab Memory Engine</a></li><li class="chapter-item expanded "><a href="architecture/radix-prefix-tree.html"><strong aria-hidden="true">10.</strong> Token Radix Prefix Tree</a></li><li class="chapter-item expanded "><a href="architecture/zero-copy-ipc.html"><strong aria-hidden="true">11.</strong> Zero-Copy Shared Memory IPC</a></li><li class="chapter-item expanded affix "><li class="part-title">Production Integration Guides</li><li class="chapter-item expanded "><a href="guides/vllm-integration.html"><strong aria-hidden="true">12.</strong> vLLM Integration</a></li><li class="chapter-item expanded "><a href="guides/sglang-integration.html"><strong aria-hidden="true">13.</strong> SGLang Integration</a></li><li class="chapter-item expanded "><a href="guides/semantic-caching.html"><strong aria-hidden="true">14.</strong> Semantic Caching Guide</a></li><li class="chapter-item expanded "><a href="guides/openai-proxy.html"><strong aria-hidden="true">15.</strong> OpenAI Proxy</a></li><li class="chapter-item expanded affix "><li class="part-title">Performance & Benchmarks</li><li class="chapter-item expanded "><a href="benchmark_report.html"><strong aria-hidden="true">16.</strong> Consolidated Master Benchmark Report</a></li><li class="chapter-item expanded "><a href="benchmarks/reproducibility.html"><strong aria-hidden="true">17.</strong> Benchmark Reproducibility</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="kachedb-version-bar" style="display: flex; justify-content: flex-end; align-items: center; padding: 4px 16px; background-color: var(--sidebar-bg); border-bottom: 1px solid var(--sidebar-separator);">
+                  <label for="kachedb-version-select" style="font-size: 0.8rem; font-weight: 600; margin-right: 8px; opacity: 0.85;">Version:</label>
+                  <select id="kachedb-version-select" style="background: var(--bg); color: var(--fg); border: 1px solid var(--theme-hover); border-radius: 4px; padding: 2px 8px; font-size: 0.8rem; cursor: pointer;">
+                    <option value="/kachedb/">v0.1.0 (Stable)</option>
+                    <option value="/kachedb/latest/">latest (edge)</option>
+                  </select>
+                </div>
+                
+                <script>
+                  (function() {
+                    var select = document.getElementById("kachedb-version-select");
+                    if (!select) return;
+                    var path = window.location.pathname;
+                    if (path.indexOf("/kachedb/latest/") !== -1) {
+                      select.value = "/kachedb/latest/";
+                    } else {
+                      select.value = "/kachedb/";
+                    }
+                    select.addEventListener("change", function() {
+                      var targetBase = this.value;
+                      var currentPath = window.location.pathname;
+                      var relative = currentPath.replace(/^\/kachedb\/(latest\/)?/, "");
+                      window.location.href = targetBase + relative;
+                    });
+                  })();
+                </script>
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">KacheDB Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/vubon/kachedb" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="kachedb-documentation"><a class="header" href="#kachedb-documentation">KacheDB Documentation</a></h1>
+<p align="center">
+  <img src="./assets/logo.svg" alt="KacheDB Logo" width="160"/>
+</p>
+<p align="center">
+  <strong>The High-Performance, Zero-Copy In-Memory Engine for Redis-Compatible Caching & LLM KV-Cache Offloading</strong>
+</p>
+<hr />
+<h2 id="-welcome-to-the-kachedb-documentation"><a class="header" href="#-welcome-to-the-kachedb-documentation">📖 Welcome to the KacheDB Documentation</a></h2>
+<p><strong>KacheDB</strong> is an open-source, next-generation in-memory storage engine engineered from first principles in Rust. It bridges the gap between traditional microsecond application caching (<strong>Redis / Valkey</strong> workloads) and multi-gigabyte tensor state offloading for Large Language Model (LLM) inference engines (<strong>vLLM, SGLang, PyTorch</strong>).</p>
+<hr />
+<h2 id="-documentation-sitemap"><a class="header" href="#-documentation-sitemap">🗺️ Documentation Sitemap</a></h2>
+<h3 id="-getting-started"><a class="header" href="#-getting-started">🚀 Getting Started</a></h3>
+<ul>
+<li><a href="./getting-started/quickstart.html"><strong>Quickstart Guide</strong></a>: Build from source, run via Cargo or Docker, and query via CLI.</li>
+<li><a href="./getting-started/kachedb-cli.html"><strong>kachedb-cli User Guide</strong></a>: Interactive terminal REPL and built-in throughput benchmark harness.</li>
+<li><a href="./getting-started/configuration.html"><strong>Server Configuration &amp; Tuning</strong></a>: Worker threads, CPU pinning, memory pool sizing, and kernel bypass settings.</li>
+</ul>
+<hr />
+<h3 id="-command-reference"><a class="header" href="#-command-reference">⚡ Command Reference</a></h3>
+<ul>
+<li><a href="./commands/core-kv.html"><strong>Core Key-Value Commands</strong></a>: <code>GET</code>, <code>SET</code>, <code>MGET</code>, <code>MSET</code>, <code>DEL</code>, <code>EXISTS</code>, <code>INCR</code>, <code>DECR</code>, <code>APPEND</code>, <code>STRLEN</code>, <code>DBSIZE</code>, <code>TYPE</code>, <code>FLUSHDB</code>, <code>FLUSHALL</code>, <code>PING</code>.</li>
+<li><a href="./commands/ttl-lifecycle.html"><strong>TTL &amp; Key Lifecycle Commands</strong></a>: <code>EXPIRE</code>, <code>PEXPIRE</code>, <code>EXPIREAT</code>, <code>PEXPIREAT</code>, <code>TTL</code>, <code>PTTL</code>, <code>PERSIST</code>, and the background Timing Wheel.</li>
+<li><a href="./commands/vector-search.html"><strong>SIMD Semantic Vector Commands</strong></a>: <code>VADD</code>, <code>VSEARCH</code>, <code>VADD_BATCH</code>, <code>VSEARCH_BATCH</code>, <code>VDEL</code>, <code>VSTATS</code>, <code>VINDEX</code>, ARM NEON / AVX2 kernels.</li>
+<li><a href="./commands/server-introspection.html"><strong>Server Observability &amp; Introspection</strong></a>: <code>INFO</code>, <code>COMMAND DOCS</code>, <code>HELLO 2/3</code>, <code>AUTH</code>, <code>CLIENT SETNAME/GETNAME/ID/LIST</code>, <code>BGREWRITEAOF</code>, <code>QUIT</code>.</li>
+</ul>
+<hr />
+<h3 id="-system-architecture"><a class="header" href="#-system-architecture">🏛️ System Architecture</a></h3>
+<ul>
+<li><a href="./architecture/overview.html"><strong>System Architecture Overview</strong></a>: High-level system design, thread-per-core model, and the physical memory hierarchy.</li>
+<li><a href="./architecture/memory-engine.html"><strong>2 MB Megaslab Memory Engine</strong></a>: Slotted slab bump allocator, 64-byte cache-line alignment, and S3-FIFO quota manager.</li>
+<li><a href="./architecture/radix-prefix-tree.html"><strong>Token Radix Prefix Tree</strong></a>: Hierarchical <code>&amp;[u32]</code> token prefix tree, sub-microsecond prefill lookup, and Epoch RCU concurrency.</li>
+<li><a href="./architecture/zero-copy-ipc.html"><strong>Zero-Copy Shared Memory IPC</strong></a>: POSIX <code>/dev/shm</code> lock-free ring buffers and PCIe line-rate tensor sharing.</li>
+</ul>
+<hr />
+<h3 id="-production-integration-guides"><a class="header" href="#-production-integration-guides">🤖 Production Integration Guides</a></h3>
+<ul>
+<li><a href="./guides/vllm-integration.html"><strong>vLLM Integration Guide</strong></a>: Drop-in PagedAttention KV connector for vLLM inference servers.</li>
+<li><a href="./guides/sglang-integration.html"><strong>SGLang Integration Guide</strong></a>: RadixAttention tree-branching prefill offloading with SGLang.</li>
+<li><a href="./guides/semantic-caching.html"><strong>Semantic Caching Guide</strong></a>: High-throughput sync and async prompt caching with <code>kachedb-py</code> and FastEmbed/HuggingFace.</li>
+</ul>
+<hr />
+<h3 id="-performance--benchmarks"><a class="header" href="#-performance--benchmarks">📊 Performance &amp; Benchmarks</a></h3>
+<ul>
+<li><a href="./benchmark_report.html"><strong>Consolidated Master Benchmark Report</strong></a>: Criterion micro-benchmarks, latency percentiles, and hardware comparisons against Redis 7.4, Valkey 8.0, and DragonflyDB.</li>
+<li><a href="./benchmarks/"><strong>Benchmark Artifacts &amp; Logs</strong></a>: Raw test outputs, multi-phase scaling reports, and reproducibility scripts.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="-quickstart-guide"><a class="header" href="#-quickstart-guide">🚀 Quickstart Guide</a></h1>
+<p>Get up and running with <strong>KacheDB</strong> in less than 60 seconds.</p>
+<hr />
+<h2 id="-installation--deployment-options"><a class="header" href="#-installation--deployment-options">📦 Installation &amp; Deployment Options</a></h2>
+<h3 id="option-1-run-with-pre-built-docker-image-recommended-for-cloudproduction"><a class="header" href="#option-1-run-with-pre-built-docker-image-recommended-for-cloudproduction">Option 1: Run with Pre-Built Docker Image (Recommended for Cloud/Production)</a></h3>
+<p>KacheDB publishes official multi-architecture container images (<code>linux/amd64</code> and <code>linux/arm64</code>) to the GitHub Container Registry:</p>
+<pre><code class="language-bash"># Run with host IPC for zero-copy POSIX Shared Memory support
+docker run --privileged --ipc host -p 6379:6379 -d --name kachedb ghcr.io/vubon/kachedb:latest
+</code></pre>
+<p>Verify the container is running:</p>
+<pre><code class="language-bash">docker logs kachedb
+</code></pre>
+<hr />
+<h3 id="option-2-build--run-from-source-with-cargo"><a class="header" href="#option-2-build--run-from-source-with-cargo">Option 2: Build &amp; Run from Source with Cargo</a></h3>
+<h4 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h4>
+<ul>
+<li><strong>Rust Toolchain</strong>: 2024 edition (<code>rustc &gt;= 1.85.0</code>)</li>
+<li><strong>OS</strong>: Linux (kernel 5.10+ recommended for <code>io_uring</code>) or macOS (Apple Silicon / Intel with <code>kqueue</code>)</li>
+</ul>
+<pre><code class="language-bash"># 1. Clone the repository
+git clone https://github.com/vubon/kachedb.git
+cd kachedb
+
+# 2. Compile release binaries across all workspace crates
+cargo build --release --workspace
+
+# 3. Start the KacheDB multi-core daemon on default port 6379 with 4 worker threads
+./target/release/kachedb-server -p 6379 -w 4
+</code></pre>
+<hr />
+<h3 id="option-3-run-with-docker-compose"><a class="header" href="#option-3-run-with-docker-compose">Option 3: Run with Docker Compose</a></h3>
+<pre><code class="language-bash">git clone https://github.com/vubon/kachedb.git
+cd kachedb
+docker compose -f docker/docker-compose.yml up -d --build
+</code></pre>
+<hr />
+<h2 id="-connecting-to-kachedb"><a class="header" href="#-connecting-to-kachedb">⚡ Connecting to KacheDB</a></h2>
+<h3 id="1-using-the-interactive-kachedb-cli"><a class="header" href="#1-using-the-interactive-kachedb-cli">1. Using the Interactive <code>kachedb-cli</code></a></h3>
+<p>KacheDB includes a built-in terminal CLI with colorized output and syntax assistance:</p>
+<pre><code class="language-bash"># Start interactive REPL connected to localhost:6379
+./target/release/kachedb-cli -p 6379
+</code></pre>
+<p>Try some basic commands:</p>
+<pre><code class="language-text">127.0.0.1:6379&gt; PING
+PONG
+
+127.0.0.1:6379&gt; SET user:100 "alice" EX 60
+OK
+
+127.0.0.1:6379&gt; GET user:100
+"alice"
+
+127.0.0.1:6379&gt; TTL user:100
+(integer) 58
+
+127.0.0.1:6379&gt; INCR counter
+(integer) 1
+
+127.0.0.1:6379&gt; INFO
+# Server
+kachedb_version:0.1.0
+os:macos
+arch_bits:64
+...
+</code></pre>
+<hr />
+<h3 id="2-using-standard-redis-cli"><a class="header" href="#2-using-standard-redis-cli">2. Using Standard <code>redis-cli</code></a></h3>
+<p>Because KacheDB implements the standard Redis RESP2/RESP3 wire protocol, you can use any existing <code>redis-cli</code> tool:</p>
+<pre><code class="language-bash"># Connect using standard redis-cli
+redis-cli -p 6379
+
+127.0.0.1:6379&gt; MSET key1 "val1" key2 "val2"
+OK
+
+127.0.0.1:6379&gt; MGET key1 key2 missing_key
+1) "val1"
+2) "val2"
+3) (nil)
+</code></pre>
+<hr />
+<h3 id="3-using-the-official-python-sdk-kachedb-py"><a class="header" href="#3-using-the-official-python-sdk-kachedb-py">3. Using the Official Python SDK (<code>kachedb-py</code>)</a></h3>
+<p>Install the client SDK:</p>
+<pre><code class="language-bash">pip install kachedb
+</code></pre>
+<p>Synchronous usage:</p>
+<pre><code class="language-python">from kachedb import KacheClient
+
+with KacheClient(host="127.0.0.1", port=6379) as client:
+    client.set("greeting", "Hello from Python", ex=300)
+    val = client.get("greeting")
+    print(val)  # b'Hello from Python'
+</code></pre>
+<p>Asynchronous usage (<code>asyncio</code>):</p>
+<pre><code class="language-python">import asyncio
+from kachedb import AsyncKacheClient
+
+async def main():
+    async with AsyncKacheClient(host="127.0.0.1", port=6379) as client:
+        await client.set("session:abc", "active_data", ex=120)
+        res = await client.get("session:abc")
+        print(res)
+
+asyncio.run(main())
+</code></pre>
+<hr />
+<h2 id="-next-steps"><a class="header" href="#-next-steps">🎯 Next Steps</a></h2>
+<ul>
+<li>Explore all supported operations in the <a href="getting-started/../commands/core-kv.html"><strong>Core Key-Value Command Reference</strong></a>.</li>
+<li>Learn about active memory reclamation in <a href="getting-started/../commands/ttl-lifecycle.html"><strong>TTL &amp; Key Lifecycle Guide</strong></a>.</li>
+<li>Perform nearest-neighbor vector queries in the <a href="getting-started/../commands/vector-search.html"><strong>SIMD Vector Search Guide</strong></a>.</li>
+<li>Offload LLM prompt prefill compute in the <a href="getting-started/../guides/vllm-integration.html"><strong>vLLM Integration Guide</strong></a>.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="-kachedb-cli-user-guide"><a class="header" href="#-kachedb-cli-user-guide">💻 <code>kachedb-cli</code> User Guide</a></h1>
+<p><code>kachedb-cli</code> is the native command-line interface and benchmarking utility for <strong>KacheDB</strong>. It provides an interactive REPL with formatted RESP rendering, auto-reconnect capabilities, and a high-performance live throughput benchmarking harness.</p>
+<hr />
+<h2 id="-usage--command-line-flags"><a class="header" href="#-usage--command-line-flags">🛠️ Usage &amp; Command-Line Flags</a></h2>
+<pre><code class="language-bash">kachedb-cli [OPTIONS]
+</code></pre>
+<h3 id="options-reference"><a class="header" href="#options-reference">Options Reference</a></h3>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Flag</th><th style="text-align: left">Long Flag</th><th style="text-align: left">Description</th><th style="text-align: left">Default</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>-h</code></td><td style="text-align: left"><code>--host &lt;HOST&gt;</code></td><td style="text-align: left">Target KacheDB server hostname or IP address</td><td style="text-align: left"><code>127.0.0.1</code></td></tr>
+<tr><td style="text-align: left"><code>-p</code></td><td style="text-align: left"><code>--port &lt;PORT&gt;</code></td><td style="text-align: left">Target KacheDB server TCP port</td><td style="text-align: left"><code>6379</code></td></tr>
+<tr><td style="text-align: left"><code>-b</code></td><td style="text-align: left"><code>--bench</code></td><td style="text-align: left">Execute a high-speed throughput benchmark</td><td style="text-align: left"><code>false</code></td></tr>
+<tr><td style="text-align: left"><code>-n</code></td><td style="text-align: left"><code>-n &lt;NUM&gt;</code></td><td style="text-align: left">Total number of requests in benchmark mode</td><td style="text-align: left"><code>10,000</code></td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><code>--help</code></td><td style="text-align: left">Display command help and usage flags</td><td style="text-align: left"></td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="-interactive-repl-mode"><a class="header" href="#-interactive-repl-mode">💬 Interactive REPL Mode</a></h2>
+<p>Starting <code>kachedb-cli</code> without <code>--bench</code> enters interactive REPL mode:</p>
+<pre><code class="language-bash">./target/release/kachedb-cli -h 127.0.0.1 -p 6379
+</code></pre>
+<h3 id="banner--prompt"><a class="header" href="#banner--prompt">Banner &amp; Prompt</a></h3>
+<p>Upon connection, <code>kachedb-cli</code> displays the ASCII logo and prompt:</p>
+<pre><code class="language-text">  _  __           _          _____  ____   _____ _      _____ 
+ | |/ /          | |        |  __ \|  _ \ / ____| |    |_   _|
+ | ' / __ _  ___| |__   ___| |  | | |_) | |    | |      | |  
+ |  &lt; / _` |/ __| '_ \ / _ \ |  | |  _ &lt;| |    | |      | |  
+ | . \ (_| | (__| | | |  __/ |__| | |_) | |____| |____ _| |_ 
+ |_|\_\__,_|\___|_| |_|\___|_____/|____/ \_____|______|_____|
+
+Connecting to KacheDB at 127.0.0.1:6379...
+⚡ Connected to KacheDB. Type commands or 'help' / 'quit'.
+
+127.0.0.1:6379&gt; 
+</code></pre>
+<hr />
+<h2 id="-repl-commands--examples"><a class="header" href="#-repl-commands--examples">⚡ REPL Commands &amp; Examples</a></h2>
+<h3 id="1-key-value--strings"><a class="header" href="#1-key-value--strings">1. Key-Value &amp; Strings</a></h3>
+<pre><code class="language-text">127.0.0.1:6379&gt; SET user:1 "Alice Smith"
+OK
+
+127.0.0.1:6379&gt; GET user:1
+"Alice Smith"
+
+127.0.0.1:6379&gt; APPEND user:1 " (Admin)"
+(integer) 19
+
+127.0.0.1:6379&gt; GET user:1
+"Alice Smith (Admin)"
+
+127.0.0.1:6379&gt; STRLEN user:1
+(integer) 19
+</code></pre>
+<h3 id="2-atomic-counters"><a class="header" href="#2-atomic-counters">2. Atomic Counters</a></h3>
+<pre><code class="language-text">127.0.0.1:6379&gt; INCR visits
+(integer) 1
+
+127.0.0.1:6379&gt; INCRBY visits 10
+(integer) 11
+
+127.0.0.1:6379&gt; DECR visits
+(integer) 10
+
+127.0.0.1:6379&gt; DECRBY visits 5
+(integer) 5
+</code></pre>
+<h3 id="3-expiration--ttl-management"><a class="header" href="#3-expiration--ttl-management">3. Expiration &amp; TTL Management</a></h3>
+<pre><code class="language-text">127.0.0.1:6379&gt; SET session:temp "xyz" EX 60
+OK
+
+127.0.0.1:6379&gt; TTL session:temp
+(integer) 58
+
+127.0.0.1:6379&gt; PERSIST session:temp
+(integer) 1
+
+127.0.0.1:6379&gt; TTL session:temp
+(integer) -1
+</code></pre>
+<h3 id="4-vector-ingestion--nearest-neighbor-search"><a class="header" href="#4-vector-ingestion--nearest-neighbor-search">4. Vector Ingestion &amp; Nearest Neighbor Search</a></h3>
+<pre><code class="language-text"># Store a 4-dimensional vector in index 'docs' with ID 'doc:1'
+127.0.0.1:6379&gt; VADD docs doc:1 4 "\x00\x00\x80?\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" PAYLOAD "Introduction to KacheDB" EX 3600
+OK
+
+# Search index 'docs' for closest vector matches
+127.0.0.1:6379&gt; VSEARCH docs "\x00\x00\x80?\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" TOPK 1 THRESHOLD 0.8
+1) 1) "doc:1"
+   2) "1.000000"
+   3) "Introduction to KacheDB"
+
+# Check vector index statistics
+127.0.0.1:6379&gt; VSTATS docs
+1) "dimension"
+2) (integer) 4
+3) "total_vectors"
+4) (integer) 1
+5) "active_vectors"
+6) (integer) 1
+6) "memory_bytes"
+8) (integer) 64
+</code></pre>
+<h3 id="5-introspection--diagnostics"><a class="header" href="#5-introspection--diagnostics">5. Introspection &amp; Diagnostics</a></h3>
+<pre><code class="language-text">127.0.0.1:6379&gt; INFO
+# Server
+kachedb_version:0.1.0
+os:macos
+arch_bits:64
+process_id:48123
+tcp_port:6379
+uptime_in_seconds:342
+
+# Memory
+used_memory:134217728
+used_memory_human:128.00M
+used_memory_peak:134217728
+megaslabs_allocated:64
+slab_slots_active:1024
+fragmentation_ratio:1.00
+
+# Stats
+total_connections_received:42
+total_commands_processed:15234
+instantaneous_ops_per_sec:0
+keyspace_hits:14200
+keyspace_misses:1034
+</code></pre>
+<h3 id="6-built-in-repl-helper-commands"><a class="header" href="#6-built-in-repl-helper-commands">6. Built-in REPL Helper Commands</a></h3>
+<ul>
+<li><code>help</code>: Displays a quick command reference card.</li>
+<li><code>clear</code>: Clears the terminal screen.</li>
+<li><code>quit</code> / <code>exit</code>: Closes the connection and exits the CLI.</li>
+</ul>
+<hr />
+<h2 id="-live-benchmark-mode---bench"><a class="header" href="#-live-benchmark-mode---bench">🔥 Live Benchmark Mode (<code>--bench</code>)</a></h2>
+<p>You can measure raw network round-trip throughput and latency using the built-in benchmark harness:</p>
+<pre><code class="language-bash"># Run a 100,000-request pipelined benchmark against localhost
+./target/release/kachedb-cli -p 6379 --bench -n 100000
+</code></pre>
+<h3 id="example-benchmark-output"><a class="header" href="#example-benchmark-output">Example Benchmark Output</a></h3>
+<pre><code class="language-text">🔥 Connecting to 127.0.0.1:6379 for live benchmark (100,000 requests)...
+⚡ Pipelining 100,000 PING commands...
+
+══════════════════════════════════════════════════════════════
+  KacheDB Live Benchmark Report
+══════════════════════════════════════════════════════════════
+  Requests:          100,000
+  Total Elapsed:     34.28 ms
+  Throughput:        2,916,742 ops/sec
+  Average Latency:   342.8 ns / op
+══════════════════════════════════════════════════════════════
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="-server-configuration--tuning"><a class="header" href="#-server-configuration--tuning">⚙️ Server Configuration &amp; Tuning</a></h1>
+<p>This guide covers operational parameters, memory pool configuration, CPU core pinning, and kernel bypass tuning for <strong>KacheDB</strong>.</p>
+<hr />
+<h2 id="-daemon-command-line-arguments-kachedb-server"><a class="header" href="#-daemon-command-line-arguments-kachedb-server">🚀 Daemon Command-Line Arguments (<code>kachedb-server</code>)</a></h2>
+<p>The <code>kachedb-server</code> binary accepts several command-line flags to control hardware allocation and network binding:</p>
+<pre><code class="language-bash">./target/release/kachedb-server [OPTIONS]
+</code></pre>
+<h3 id="options-reference-1"><a class="header" href="#options-reference-1">Options Reference</a></h3>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Flag</th><th style="text-align: left">Long Option</th><th style="text-align: left">Description</th><th style="text-align: left">Default</th><th style="text-align: left">Recommended Production</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>-c</code></td><td style="text-align: left"><code>--config &lt;PATH&gt;</code></td><td style="text-align: left">Path to configuration file (e.g., <code>kachedb.conf</code>)</td><td style="text-align: left">None</td><td style="text-align: left"><code>/etc/kachedb/kachedb.conf</code></td></tr>
+<tr><td style="text-align: left"><code>-p</code></td><td style="text-align: left"><code>--port &lt;PORT&gt;</code></td><td style="text-align: left">TCP listening port</td><td style="text-align: left"><code>6379</code></td><td style="text-align: left"><code>6379</code></td></tr>
+<tr><td style="text-align: left"><code>-w</code></td><td style="text-align: left"><code>--workers &lt;NUM&gt;</code></td><td style="text-align: left">Number of worker threads (1 per CPU core)</td><td style="text-align: left">Auto (all physical cores)</td><td style="text-align: left">Equal to physical CPU cores</td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><code>--pool-mb &lt;MB&gt;</code></td><td style="text-align: left">Megaslab memory pool allocated per core in megabytes</td><td style="text-align: left"><code>64</code></td><td style="text-align: left"><code>256</code> or <code>1024</code></td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><code>--maxclients &lt;NUM&gt;</code></td><td style="text-align: left">Maximum simultaneous client connections</td><td style="text-align: left"><code>10000</code></td><td style="text-align: left"><code>10000</code>–<code>65535</code></td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><code>--requirepass &lt;PASS&gt;</code></td><td style="text-align: left">Password required for client authentication via <code>AUTH</code></td><td style="text-align: left">None</td><td style="text-align: left">Set strong password</td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><code>--aof &lt;true|false&gt;</code></td><td style="text-align: left">Enable Append-Only File (AOF) persistence</td><td style="text-align: left"><code>false</code></td><td style="text-align: left"><code>true</code> (if durability needed)</td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><code>--aof-path &lt;PATH&gt;</code></td><td style="text-align: left">Path to Append-Only File log</td><td style="text-align: left"><code>kachedb.aof</code></td><td style="text-align: left"><code>/var/lib/kachedb/kachedb.aof</code></td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><code>--appendfsync &lt;POLICY&gt;</code></td><td style="text-align: left">AOF disk sync policy (<code>always</code>, <code>everysec</code>, <code>no</code>)</td><td style="text-align: left"><code>everysec</code></td><td style="text-align: left"><code>everysec</code></td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><code>--shm &lt;true|false&gt;</code></td><td style="text-align: left">Enable POSIX Shared Memory (<code>/dev/shm</code>) IPC</td><td style="text-align: left"><code>true</code></td><td style="text-align: left"><code>true</code></td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><code>--tls-cert &lt;PATH&gt;</code></td><td style="text-align: left">Path to TLS server certificate PEM file</td><td style="text-align: left">None</td><td style="text-align: left">Optional</td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><code>--tls-key &lt;PATH&gt;</code></td><td style="text-align: left">Path to TLS private key PEM file</td><td style="text-align: left">None</td><td style="text-align: left">Optional</td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><code>--tls-ca &lt;PATH&gt;</code></td><td style="text-align: left">Optional path to CA certificate for mTLS verification</td><td style="text-align: left">None</td><td style="text-align: left">Optional</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="-configuration-file-kachedbconf"><a class="header" href="#-configuration-file-kachedbconf">📄 Configuration File (<code>kachedb.conf</code>)</a></h2>
+<p>KacheDB supports declarative configuration using a canonical <code>kachedb.conf</code> file:</p>
+<pre><code class="language-text"># Network &amp; Binding
+bind 127.0.0.1
+port 6379
+maxclients 10000
+
+# Worker Threads &amp; Memory
+workers 4
+pool_mb_per_core 256
+
+# IPC &amp; LLM Tensor Streaming
+shm_enabled true
+
+# Persistence (Append-Only File)
+aof_enabled false
+aof_path kachedb.aof
+appendfsync everysec
+
+# Security
+# requirepass my_secret_token
+</code></pre>
+<p>To launch <code>kachedb-server</code> using the configuration file:</p>
+<pre><code class="language-bash">./target/release/kachedb-server -c /path/to/kachedb.conf
+</code></pre>
+<p><em>Note: Any explicit CLI flags will take precedence over directives inside the configuration file.</em></p>
+<hr />
+<h2 id="-thread-per-core-topology--cpu-pinning"><a class="header" href="#-thread-per-core-topology--cpu-pinning">🧵 Thread-per-Core Topology &amp; CPU Pinning</a></h2>
+<p>KacheDB operates on a <strong>shared-nothing, thread-per-core architecture</strong>:</p>
+<ul>
+<li>Each active worker thread is pinned to a dedicated physical CPU core using <code>core_affinity</code>.</li>
+<li><strong>Zero Cross-Core Contention:</strong> Each worker thread owns its private 2 MB Megaslab arena pool and independent Swiss Table shard.</li>
+<li>Request execution requires <strong>no global mutex locks</strong>, eliminating lock contention and cache-line bouncing.</li>
+</ul>
+<h3 id="example-running-on-a-dedicated-8-core-node"><a class="header" href="#example-running-on-a-dedicated-8-core-node">Example: Running on a Dedicated 8-Core Node</a></h3>
+<pre><code class="language-bash"># Pin 8 workers to cores 0..7 with 512 MB memory per core (4 GB total)
+./target/release/kachedb-server -p 6379 -w 8 --pool-mb 512
+</code></pre>
+<hr />
+<h2 id="-memory-sizing--s3-fifo-quota-management"><a class="header" href="#-memory-sizing--s3-fifo-quota-management">🧱 Memory Sizing &amp; S3-FIFO Quota Management</a></h2>
+<p>Memory is managed through uniform <strong>2 MB Megaslabs</strong>:</p>
+<ul>
+<li>Rather than calling <code>malloc()</code> on every request, KacheDB pre-allocates contiguous megaslab page frames.</li>
+<li><strong>Per-Core Sizing:</strong> If <code>--pool-mb</code> is set to <code>256</code> on a 4-core machine, total initial memory allocated across the daemon is $4 \times 256\text{ MB} = 1.024\text{ GB}$.</li>
+<li><strong>Elastic Borrowing:</strong> The dynamic <code>WorkloadQuota</code> manager elastically allocates megaslabs between application key-value cache and tensor memory based on current demand.</li>
+</ul>
+<hr />
+<h2 id="-linux-kernel--io_uring-tuning"><a class="header" href="#-linux-kernel--io_uring-tuning">🐧 Linux Kernel &amp; <code>io_uring</code> Tuning</a></h2>
+<p>For maximum throughput on Linux (&gt; 2.5M QPS), apply the following kernel optimizations:</p>
+<h3 id="1-somaxconn--tcp-backlog"><a class="header" href="#1-somaxconn--tcp-backlog">1. <code>somaxconn</code> &amp; TCP Backlog</a></h3>
+<pre><code class="language-bash">sudo sysctl -w net.core.somaxconn=65535
+sudo sysctl -w net.ipv4.tcp_max_syn_backlog=65535
+</code></pre>
+<h3 id="2-posix-shared-memory-limits-devshm"><a class="header" href="#2-posix-shared-memory-limits-devshm">2. POSIX Shared Memory Limits (<code>/dev/shm</code>)</a></h3>
+<p>Ensure <code>/dev/shm</code> has sufficient space for high-volume LLM KV-cache offloading:</p>
+<pre><code class="language-bash"># Verify current /dev/shm size
+df -h /dev/shm
+
+# Remount /dev/shm with 32 GB (if serving 70B+ LLM inference nodes)
+sudo mount -o remount,size=32G /dev/shm
+</code></pre>
+<h3 id="3-file-descriptor-limits"><a class="header" href="#3-file-descriptor-limits">3. File Descriptor Limits</a></h3>
+<pre><code class="language-bash">ulimit -n 1048576
+</code></pre>
+<hr />
+<h2 id="-production-docker-configuration"><a class="header" href="#-production-docker-configuration">🐳 Production Docker Configuration</a></h2>
+<p>Here is the recommended production <code>docker-compose.yml</code>:</p>
+<pre><code class="language-yaml">services:
+  kachedb:
+    image: ghcr.io/vubon/kachedb:latest
+    container_name: kachedb
+    privileged: true
+    ipc: host
+    network_mode: host
+    restart: always
+    command: ["-p", "6379", "-w", "4", "--pool-mb", "256"]
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+      memlock:
+        soft: -1
+        hard: -1
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="-core-key-value-commands"><a class="header" href="#-core-key-value-commands">🔑 Core Key-Value Commands</a></h1>
+<p>KacheDB implements the standard <strong>Redis / Valkey RESP2 and RESP3</strong> binary wire protocol for standard key-value operations. All keys and values are treated as raw byte slices (<code>&amp;[u8]</code>) and stored with zero heap allocation overhead inside 64-byte aligned Megaslab slots.</p>
+<hr />
+<h2 id="-command-summary"><a class="header" href="#-command-summary">📋 Command Summary</a></h2>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Command</th><th style="text-align: left">Syntax</th><th style="text-align: center">Complexity</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong><code>PING</code></strong></td><td style="text-align: left"><code>PING [message]</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Tests server liveness; returns <code>PONG</code> or echoed message.</td></tr>
+<tr><td style="text-align: left"><strong><code>GET</code></strong></td><td style="text-align: left"><code>GET key</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Retrieves binary value; returns <code>nil</code> if missing or expired.</td></tr>
+<tr><td style="text-align: left"><strong><code>SET</code></strong></td><td style="text-align: left"><code>SET key value [EX seconds] [PX millis]</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Stores binary value with optional TTL expiration.</td></tr>
+<tr><td style="text-align: left"><strong><code>MGET</code></strong></td><td style="text-align: left"><code>MGET key [key ...]</code></td><td style="text-align: center"><code>O(N)</code></td><td style="text-align: left">Batch retrieves multiple keys in a single pipelined operation.</td></tr>
+<tr><td style="text-align: left"><strong><code>MSET</code></strong></td><td style="text-align: left"><code>MSET key value [key value ...]</code></td><td style="text-align: center"><code>O(N)</code></td><td style="text-align: left">Atomically stores multiple key-value pairs.</td></tr>
+<tr><td style="text-align: left"><strong><code>DEL</code></strong></td><td style="text-align: left"><code>DEL key [key ...]</code></td><td style="text-align: center"><code>O(N)</code></td><td style="text-align: left">Deletes keys and immediately frees Megaslab slots.</td></tr>
+<tr><td style="text-align: left"><strong><code>EXISTS</code></strong></td><td style="text-align: left"><code>EXISTS key [key ...]</code></td><td style="text-align: center"><code>O(N)</code></td><td style="text-align: left">Returns the count of existing, unexpired keys.</td></tr>
+<tr><td style="text-align: left"><strong><code>INCR</code></strong></td><td style="text-align: left"><code>INCR key</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Atomically increments string integer value by 1.</td></tr>
+<tr><td style="text-align: left"><strong><code>DECR</code></strong></td><td style="text-align: left"><code>DECR key</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Atomically decrements string integer value by 1.</td></tr>
+<tr><td style="text-align: left"><strong><code>INCRBY</code></strong></td><td style="text-align: left"><code>INCRBY key delta</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Atomically increments string integer value by <code>delta</code>.</td></tr>
+<tr><td style="text-align: left"><strong><code>DECRBY</code></strong></td><td style="text-align: left"><code>DECRBY key delta</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Atomically decrements string integer value by <code>delta</code>.</td></tr>
+<tr><td style="text-align: left"><strong><code>APPEND</code></strong></td><td style="text-align: left"><code>APPEND key value</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Appends <code>value</code> to existing string, returning new byte length.</td></tr>
+<tr><td style="text-align: left"><strong><code>STRLEN</code></strong></td><td style="text-align: left"><code>STRLEN key</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Returns length of string value in bytes (0 if missing).</td></tr>
+<tr><td style="text-align: left"><strong><code>DBSIZE</code></strong></td><td style="text-align: left"><code>DBSIZE</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Returns the total number of stored keys in the database.</td></tr>
+<tr><td style="text-align: left"><strong><code>TYPE</code></strong></td><td style="text-align: left"><code>TYPE key</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Returns the string representation of the key's type (<code>string</code>, <code>vector</code>, or <code>none</code>).</td></tr>
+<tr><td style="text-align: left"><strong><code>FLUSHDB</code></strong></td><td style="text-align: left"><code>FLUSHDB</code></td><td style="text-align: center"><code>O(N)</code></td><td style="text-align: left">Removes all keys from the currently selected database.</td></tr>
+<tr><td style="text-align: left"><strong><code>FLUSHALL</code></strong></td><td style="text-align: left"><code>FLUSHALL</code></td><td style="text-align: center"><code>O(N)</code></td><td style="text-align: left">Removes all keys from all databases and resets Megaslab allocators.</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="-detailed-command-reference--examples"><a class="header" href="#-detailed-command-reference--examples">🛠️ Detailed Command Reference &amp; Examples</a></h2>
+<h3 id="set--get"><a class="header" href="#set--get"><code>SET</code> &amp; <code>GET</code></a></h3>
+<p>Stores and retrieves binary-safe values up to 2 MB per slot.</p>
+<h4 id="syntax"><a class="header" href="#syntax">Syntax</a></h4>
+<pre><code class="language-text">SET key value [EX seconds] [PX milliseconds]
+GET key
+</code></pre>
+<h4 id="kachedb-cli-example"><a class="header" href="#kachedb-cli-example"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; SET user:100 "Alice"
+OK
+
+127.0.0.1:6379&gt; GET user:100
+"Alice"
+
+127.0.0.1:6379&gt; SET session:temp "abc123xyz" EX 30
+OK
+
+127.0.0.1:6379&gt; GET missing_key
+(nil)
+</code></pre>
+<h4 id="python-sdk-example"><a class="header" href="#python-sdk-example">Python SDK Example</a></h4>
+<pre><code class="language-python">with KacheClient() as client:
+    client.set("user:100", "Alice")
+    val = client.get("user:100")  # b'Alice'
+</code></pre>
+<hr />
+<h3 id="mset--mget"><a class="header" href="#mset--mget"><code>MSET</code> &amp; <code>MGET</code></a></h3>
+<p>Batch operations that store and retrieve multiple keys in a single network round-trip.</p>
+<h4 id="syntax-1"><a class="header" href="#syntax-1">Syntax</a></h4>
+<pre><code class="language-text">MSET key value [key value ...]
+MGET key [key ...]
+</code></pre>
+<h4 id="kachedb-cli-example-1"><a class="header" href="#kachedb-cli-example-1"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; MSET config:theme "dark" config:lang "en" config:tz "UTC"
+OK
+
+127.0.0.1:6379&gt; MGET config:theme config:lang config:missing config:tz
+1) "dark"
+2) "en"
+3) (nil)
+4) "UTC"
+</code></pre>
+<hr />
+<h3 id="incr-decr-incrby-decrby"><a class="header" href="#incr-decr-incrby-decrby"><code>INCR</code>, <code>DECR</code>, <code>INCRBY</code>, <code>DECRBY</code></a></h3>
+<p>Atomic integer arithmetic executed in-place on string values. If the key does not exist, it is initialized to <code>0</code> before applying the operation.</p>
+<h4 id="syntax-2"><a class="header" href="#syntax-2">Syntax</a></h4>
+<pre><code class="language-text">INCR key
+DECR key
+INCRBY key delta
+DECRBY key delta
+</code></pre>
+<h4 id="kachedb-cli-example-2"><a class="header" href="#kachedb-cli-example-2"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; INCR page_views
+(integer) 1
+
+127.0.0.1:6379&gt; INCRBY page_views 100
+(integer) 101
+
+127.0.0.1:6379&gt; DECR page_views
+(integer) 100
+
+127.0.0.1:6379&gt; DECRBY page_views 50
+(integer) 50
+</code></pre>
+<hr />
+<h3 id="append--strlen"><a class="header" href="#append--strlen"><code>APPEND</code> &amp; <code>STRLEN</code></a></h3>
+<p>String manipulation and length inspection.</p>
+<h4 id="syntax-3"><a class="header" href="#syntax-3">Syntax</a></h4>
+<pre><code class="language-text">APPEND key value
+STRLEN key
+</code></pre>
+<h4 id="kachedb-cli-example-3"><a class="header" href="#kachedb-cli-example-3"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; SET doc:title "KacheDB"
+OK
+
+127.0.0.1:6379&gt; APPEND doc:title " Architecture"
+(integer) 20
+
+127.0.0.1:6379&gt; GET doc:title
+"KacheDB Architecture"
+
+127.0.0.1:6379&gt; STRLEN doc:title
+(integer) 20
+</code></pre>
+<hr />
+<h3 id="del--exists"><a class="header" href="#del--exists"><code>DEL</code> &amp; <code>EXISTS</code></a></h3>
+<p>Key deletion and existence verification.</p>
+<h4 id="syntax-4"><a class="header" href="#syntax-4">Syntax</a></h4>
+<pre><code class="language-text">DEL key [key ...]
+EXISTS key [key ...]
+</code></pre>
+<h4 id="kachedb-cli-example-4"><a class="header" href="#kachedb-cli-example-4"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; EXISTS user:1 user:2
+(integer) 1
+
+127.0.0.1:6379&gt; DEL user:1 user:2
+(integer) 1
+
+127.0.0.1:6379&gt; EXISTS user:1
+(integer) 0
+</code></pre>
+<hr />
+<h3 id="dbsize"><a class="header" href="#dbsize"><code>DBSIZE</code></a></h3>
+<p>Returns the count of active, unexpired keys stored in the database.</p>
+<h4 id="syntax-5"><a class="header" href="#syntax-5">Syntax</a></h4>
+<pre><code class="language-text">DBSIZE
+</code></pre>
+<h4 id="kachedb-cli-example-5"><a class="header" href="#kachedb-cli-example-5"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; SET k1 "v1"
+OK
+127.0.0.1:6379&gt; SET k2 "v2"
+OK
+127.0.0.1:6379&gt; DBSIZE
+(integer) 2
+</code></pre>
+<hr />
+<h3 id="type"><a class="header" href="#type"><code>TYPE</code></a></h3>
+<p>Returns the underlying data structure type of the specified key.</p>
+<h4 id="syntax-6"><a class="header" href="#syntax-6">Syntax</a></h4>
+<pre><code class="language-text">TYPE key
+</code></pre>
+<h4 id="kachedb-cli-example-6"><a class="header" href="#kachedb-cli-example-6"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; SET greeting "hello"
+OK
+127.0.0.1:6379&gt; TYPE greeting
+string
+
+127.0.0.1:6379&gt; TYPE nonexistent
+none
+</code></pre>
+<hr />
+<h3 id="flushdb--flushall"><a class="header" href="#flushdb--flushall"><code>FLUSHDB</code> &amp; <code>FLUSHALL</code></a></h3>
+<p>Deletes all keys in the database and recycles Megaslab blocks back to the free-list.</p>
+<h4 id="syntax-7"><a class="header" href="#syntax-7">Syntax</a></h4>
+<pre><code class="language-text">FLUSHDB
+FLUSHALL
+</code></pre>
+<h4 id="kachedb-cli-example-7"><a class="header" href="#kachedb-cli-example-7"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; DBSIZE
+(integer) 1000
+127.0.0.1:6379&gt; FLUSHDB
+OK
+127.0.0.1:6379&gt; DBSIZE
+(integer) 0
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="-ttl--key-lifecycle-commands"><a class="header" href="#-ttl--key-lifecycle-commands">⏱️ TTL &amp; Key Lifecycle Commands</a></h1>
+<p>KacheDB provides high-resolution time-to-live (TTL) expiration support with <strong>dual-engine memory reclamation</strong>:</p>
+<ol>
+<li><strong>Sub-Nanosecond Passive Expiry:</strong> On <code>GET</code>/<code>EXISTS</code> queries, the Swiss Table verifies the cached second timestamp in ~0.5 ns.</li>
+<li><strong>Active O(1) Background Timing Wheel:</strong> A lock-free 3,600-bucket per-core circular wheel proactively evicts expired keys and returns 2 MB Megaslab slots back to the free-list every second without waiting for read traffic.</li>
+</ol>
+<hr />
+<h2 id="-command-summary-1"><a class="header" href="#-command-summary-1">📋 Command Summary</a></h2>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Command</th><th style="text-align: left">Syntax</th><th style="text-align: center">Return Value</th><th style="text-align: center">Complexity</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong><code>EXPIRE</code></strong></td><td style="text-align: left"><code>EXPIRE key seconds</code></td><td style="text-align: center"><code>1</code> or <code>0</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Sets timeout on <code>key</code> in seconds.</td></tr>
+<tr><td style="text-align: left"><strong><code>PEXPIRE</code></strong></td><td style="text-align: left"><code>PEXPIRE key milliseconds</code></td><td style="text-align: center"><code>1</code> or <code>0</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Sets timeout on <code>key</code> in milliseconds.</td></tr>
+<tr><td style="text-align: left"><strong><code>EXPIREAT</code></strong></td><td style="text-align: left"><code>EXPIREAT key unix_seconds</code></td><td style="text-align: center"><code>1</code> or <code>0</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Sets expiration deadline as an absolute Unix timestamp.</td></tr>
+<tr><td style="text-align: left"><strong><code>PEXPIREAT</code></strong></td><td style="text-align: left"><code>PEXPIREAT key unix_millis</code></td><td style="text-align: center"><code>1</code> or <code>0</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Sets expiration deadline as an absolute millisecond timestamp.</td></tr>
+<tr><td style="text-align: left"><strong><code>TTL</code></strong></td><td style="text-align: left"><code>TTL key</code></td><td style="text-align: center"><code>integer</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Returns remaining TTL in seconds (<code>-2</code> if missing, <code>-1</code> if no TTL).</td></tr>
+<tr><td style="text-align: left"><strong><code>PTTL</code></strong></td><td style="text-align: left"><code>PTTL key</code></td><td style="text-align: center"><code>integer</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Returns remaining TTL in milliseconds (<code>-2</code> if missing, <code>-1</code> if no TTL).</td></tr>
+<tr><td style="text-align: left"><strong><code>PERSIST</code></strong></td><td style="text-align: left"><code>PERSIST key</code></td><td style="text-align: center"><code>1</code> or <code>0</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Removes timeout, persisting the key indefinitely.</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="-command-details--examples"><a class="header" href="#-command-details--examples">🛠️ Command Details &amp; Examples</a></h2>
+<h3 id="expire--pexpire"><a class="header" href="#expire--pexpire"><code>EXPIRE</code> &amp; <code>PEXPIRE</code></a></h3>
+<p>Sets a relative timeout from the current time.</p>
+<h4 id="kachedb-cli-example-8"><a class="header" href="#kachedb-cli-example-8"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; SET user:auth "token_xyz123"
+OK
+
+# Expire in 60 seconds
+127.0.0.1:6379&gt; EXPIRE user:auth 60
+(integer) 1
+
+# Check remaining seconds
+127.0.0.1:6379&gt; TTL user:auth
+(integer) 59
+
+# Check remaining milliseconds
+127.0.0.1:6379&gt; PTTL user:auth
+(integer) 58942
+
+# Attempting to expire a non-existent key returns 0
+127.0.0.1:6379&gt; EXPIRE missing_key 30
+(integer) 0
+</code></pre>
+<hr />
+<h3 id="expireat--pexpireat"><a class="header" href="#expireat--pexpireat"><code>EXPIREAT</code> &amp; <code>PEXPIREAT</code></a></h3>
+<p>Sets an absolute Unix epoch deadline timestamp.</p>
+<h4 id="kachedb-cli-example-9"><a class="header" href="#kachedb-cli-example-9"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text"># Expire at Unix timestamp 1893456000 (Jan 1, 2030)
+127.0.0.1:6379&gt; EXPIREAT user:auth 1893456000
+(integer) 1
+
+127.0.0.1:6379&gt; TTL user:auth
+(integer) 109895658
+</code></pre>
+<hr />
+<h3 id="persist"><a class="header" href="#persist"><code>PERSIST</code></a></h3>
+<p>Removes the timeout from a key, converting it back to a permanent key.</p>
+<h4 id="kachedb-cli-example-10"><a class="header" href="#kachedb-cli-example-10"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; PERSIST user:auth
+(integer) 1
+
+# TTL returns -1 for unexpired keys without timeout
+127.0.0.1:6379&gt; TTL user:auth
+(integer) -1
+</code></pre>
+<hr />
+<h2 id="-architecture-how-the-timing-wheel-works"><a class="header" href="#-architecture-how-the-timing-wheel-works">🏗️ Architecture: How the Timing Wheel Works</a></h2>
+<pre><code class="language-text">┌────────────────────────────────────────────────────────────────────────────────────────┐
+│               HashedTimingWheel (3,600 Circular 1-Second Buckets)                       │
+│                                                                                        │
+│   Slot 0       Slot 1       Slot 2        ...         Slot 3599                        │
+│ ┌─────────┐  ┌─────────┐  ┌─────────┐               ┌─────────┐                        │
+│ │ Entries │  │ Entries │  │ Entries │               │ Entries │                        │
+│ └────┬────┘  └────┬────┘  └────┬────┘               └────┬────┘                        │
+│      │            │            │                         │                             │
+│      ▼            ▼            ▼                         ▼                             │
+│   KeyHash 1    KeyHash 2    KeyHash 3                 KeyHash N                        │
+│  [BlockID 5]  [BlockID 9]  [BlockID 2]               [BlockID 14]                      │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+                                      ▲
+                                      │ Current Second Pointer (Advances every 1.0s)
+                               [ Event Loop Tick ]
+</code></pre>
+<ol>
+<li><strong>In-Place Mutation:</strong> <code>EXPIRE</code> and <code>PERSIST</code> mutate <code>expiry_sec: u32</code> in the 64-byte <code>TableEntry</code> in-place.</li>
+<li><strong>Zero Allocation Jitter:</strong> Scheduling a key in the timing wheel appends to a per-bucket pre-allocated array.</li>
+<li><strong>Double-Free Safety:</strong> When the 1-second tick advances, the worker thread executes <code>table.remove_if_matching(key_hash, slab_block_id)</code>. If the key was updated or replaced by a new <code>SET</code> command, the stale entry is safely ignored without double-deallocating slab blocks.</li>
+</ol>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="-simd-semantic-vector-commands"><a class="header" href="#-simd-semantic-vector-commands">🧠 SIMD Semantic Vector Commands</a></h1>
+<p>KacheDB features a hardware-accelerated <strong>SIMD Vector Search Engine</strong> (<code>kachedb-vector</code>) built directly into the storage core. It enables sub-microsecond nearest-neighbor vector lookups, semantic caching, and LLM prompt similarity matching with zero external dependencies.</p>
+<hr />
+<h2 id="-hardware-simd-acceleration"><a class="header" href="#-hardware-simd-acceleration">⚡ Hardware SIMD Acceleration</a></h2>
+<ul>
+<li><strong>ARM NEON (<code>aarch64</code>):</strong> 128-bit <code>vfmaq_f32</code> with 4-way loop unrolling (16 floats per loop iteration) delivering $&lt; 120\text{ ns}$ dot products on Apple Silicon and AWS Graviton.</li>
+<li><strong>x86_64 AVX2 / FMA:</strong> 256-bit <code>_mm256_fmadd_ps</code> with 4-way loop unrolling (32 floats per iteration) delivering $&gt; 40\text{ GB/s}$ throughput.</li>
+<li><strong>Normalized Cosine Similarity:</strong> All stored vectors are automatically $L_2$-normalized upon ingestion, transforming cosine distance calculation into a single high-speed inner dot product:
+$$\text{CosineSimilarity}(\vec{u}, \vec{v}) = \sum_{i=1}^{D} u_i \cdot v_i$$</li>
+</ul>
+<hr />
+<h2 id="-command-summary-2"><a class="header" href="#-command-summary-2">📋 Command Summary</a></h2>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Command</th><th style="text-align: left">Syntax</th><th style="text-align: center">Complexity</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong><code>VADD</code></strong></td><td style="text-align: left"><code>VADD index id dim vector_bytes [PAYLOAD text] [EX sec]</code></td><td style="text-align: center"><code>O(D)</code></td><td style="text-align: left">Ingests vector embedding into named index with optional payload and TTL.</td></tr>
+<tr><td style="text-align: left"><strong><code>VADD_BATCH</code></strong></td><td style="text-align: left"><code>VADD_BATCH index id1 vec1 payload1 id2 vec2 payload2 ...</code></td><td style="text-align: center"><code>O(B · D)</code></td><td style="text-align: left">Batch ingests multiple vectors into named index in a single operation.</td></tr>
+<tr><td style="text-align: left"><strong><code>VSEARCH</code></strong></td><td style="text-align: left"><code>VSEARCH index query_bytes [TOPK k] [THRESHOLD min_score]</code></td><td style="text-align: center"><code>O(N · D)</code></td><td style="text-align: left">Nearest-neighbor cosine search returning matched IDs, scores, and payloads.</td></tr>
+<tr><td style="text-align: left"><strong><code>VSEARCH_BATCH</code></strong></td><td style="text-align: left"><code>VSEARCH_BATCH index q1 q2 ... [TOPK k] [THRESHOLD min_score]</code></td><td style="text-align: center"><code>O(B · N · D)</code></td><td style="text-align: left">Parallel multi-query batch nearest-neighbor search.</td></tr>
+<tr><td style="text-align: left"><strong><code>VDEL</code></strong></td><td style="text-align: left"><code>VDEL index id</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Deletes vector from named index.</td></tr>
+<tr><td style="text-align: left"><strong><code>VSTATS</code></strong></td><td style="text-align: left"><code>VSTATS index</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Returns index dimension, active vector count, and memory consumption.</td></tr>
+<tr><td style="text-align: left"><strong><code>VINDEX CREATE</code></strong></td><td style="text-align: left"><code>VINDEX CREATE name DIM dim [M m] [EF_CONSTRUCTION ef_c] ...</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Creates and configures a dedicated HNSW vector index.</td></tr>
+<tr><td style="text-align: left"><strong><code>VINDEX DROP</code></strong></td><td style="text-align: left"><code>VINDEX DROP name</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Drops a vector index and frees associated memory slots.</td></tr>
+<tr><td style="text-align: left"><strong><code>VINDEX INFO</code></strong></td><td style="text-align: left"><code>VINDEX INFO name</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Returns configuration and metrics for a named index.</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="-detailed-command-reference--examples-1"><a class="header" href="#-detailed-command-reference--examples-1">🛠️ Detailed Command Reference &amp; Examples</a></h2>
+<h3 id="vadd"><a class="header" href="#vadd"><code>VADD</code></a></h3>
+<p>Ingests a single float32 vector into a named index. The vector is provided as raw little-endian IEEE 754 float32 byte buffers.</p>
+<h4 id="syntax-8"><a class="header" href="#syntax-8">Syntax</a></h4>
+<pre><code class="language-text">VADD &lt;index&gt; &lt;id&gt; &lt;dim&gt; &lt;vector_bytes&gt; [PAYLOAD &lt;payload&gt;] [EX &lt;seconds&gt;]
+</code></pre>
+<h4 id="kachedb-cli-example-11"><a class="header" href="#kachedb-cli-example-11"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text"># Insert a 4-dimensional vector with payload and 1-hour expiration
+127.0.0.1:6379&gt; VADD faq q:101 4 "\x00\x00\x80?\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" PAYLOAD "To reset password, go to Settings -&gt; Security." EX 3600
+OK
+</code></pre>
+<hr />
+<h3 id="vsearch"><a class="header" href="#vsearch"><code>VSEARCH</code></a></h3>
+<p>Performs nearest-neighbor cosine similarity search across all vectors in the index.</p>
+<h4 id="syntax-9"><a class="header" href="#syntax-9">Syntax</a></h4>
+<pre><code class="language-text">VSEARCH &lt;index&gt; &lt;query_bytes&gt; [TOPK &lt;k&gt;] [THRESHOLD &lt;min_similarity&gt;]
+</code></pre>
+<h4 id="kachedb-cli-example-12"><a class="header" href="#kachedb-cli-example-12"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text"># Search index 'faq' for top 1 match with similarity &gt;= 0.80
+127.0.0.1:6379&gt; VSEARCH faq "\x00\x00\x80?\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" TOPK 1 THRESHOLD 0.80
+1) 1) "q:101"
+   2) "1.000000"
+   3) "To reset password, go to Settings -&gt; Security."
+</code></pre>
+<hr />
+<h3 id="vdel--vstats"><a class="header" href="#vdel--vstats"><code>VDEL</code> &amp; <code>VSTATS</code></a></h3>
+<p>Index management and telemetry.</p>
+<h4 id="kachedb-cli-example-13"><a class="header" href="#kachedb-cli-example-13"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; VSTATS faq
+1) "dimension"
+2) (integer) 4
+3) "total_vectors"
+4) (integer) 1
+5) "active_vectors"
+6) (integer) 1
+7) "memory_bytes"
+8) (integer) 64
+
+127.0.0.1:6379&gt; VDEL faq q:101
+(integer) 1
+</code></pre>
+<hr />
+<h3 id="vadd_batch--vsearch_batch"><a class="header" href="#vadd_batch--vsearch_batch"><code>VADD_BATCH</code> &amp; <code>VSEARCH_BATCH</code></a></h3>
+<p>High-throughput bulk ingestion and multi-vector querying.</p>
+<h4 id="syntax-10"><a class="header" href="#syntax-10">Syntax</a></h4>
+<pre><code class="language-text">VADD_BATCH &lt;index&gt; &lt;id1&gt; &lt;vec1_bytes&gt; [payload1] ...
+VSEARCH_BATCH &lt;index&gt; &lt;q1_bytes&gt; &lt;q2_bytes&gt; ... [TOPK &lt;k&gt;] [THRESHOLD &lt;min_similarity&gt;]
+</code></pre>
+<hr />
+<h3 id="vindex-create-vindex-info--vindex-drop"><a class="header" href="#vindex-create-vindex-info--vindex-drop"><code>VINDEX CREATE</code>, <code>VINDEX INFO</code> &amp; <code>VINDEX DROP</code></a></h3>
+<p>Lifecycle management for named HNSW vector index topologies.</p>
+<h4 id="syntax-11"><a class="header" href="#syntax-11">Syntax</a></h4>
+<pre><code class="language-text">VINDEX CREATE &lt;name&gt; DIM &lt;dim&gt; [M &lt;m&gt;] [EF_CONSTRUCTION &lt;ef_c&gt;] [EF_SEARCH &lt;ef_s&gt;] [METRIC &lt;COSINE|L2|IP&gt;] [QUANTIZATION &lt;NONE|SQ8&gt;]
+VINDEX INFO &lt;name&gt;
+VINDEX DROP &lt;name&gt;
+</code></pre>
+<h4 id="kachedb-cli-example-14"><a class="header" href="#kachedb-cli-example-14"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text"># Create an index for 1536-dimensional OpenAI embeddings
+127.0.0.1:6379&gt; VINDEX CREATE embeddings DIM 1536 METRIC COSINE QUANTIZATION SQ8
+OK
+
+# Inspect index topology
+127.0.0.1:6379&gt; VINDEX INFO embeddings
+1) "name"
+2) "embeddings"
+3) "dimension"
+4) (integer) 1536
+5) "metric"
+6) "COSINE"
+7) "quantization"
+8) "SQ8"
+
+# Drop index when no longer needed
+127.0.0.1:6379&gt; VINDEX DROP embeddings
+OK
+</code></pre>
+<hr />
+<h2 id="-python-sdk-kachedb-py-example"><a class="header" href="#-python-sdk-kachedb-py-example">🐍 Python SDK (<code>kachedb-py</code>) Example</a></h2>
+<p>Using vectors is seamless via <code>kachedb-py</code>:</p>
+<pre><code class="language-python">from kachedb import KacheClient
+
+with KacheClient() as client:
+    # 1. Ingest vector embedding (automatically packs float lists to IEEE-754 bytes)
+    embedding = [0.12, -0.45, 0.88, 0.05]
+    client.vadd(
+        index="products",
+        item_id="item:1001",
+        vector=embedding,
+        payload="Ergonomic Mechanical Keyboard",
+        ex=86400,
+    )
+
+    # 2. Query nearest vectors
+    query_vector = [0.10, -0.40, 0.85, 0.04]
+    results = client.vsearch(
+        index="products",
+        query_vector=query_vector,
+        top_k=3,
+        threshold=0.85,
+    )
+
+    for item_id, score, payload in results:
+        print(f"Matched {item_id} (Score: {score:.4f}): {payload}")
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="-server-observability--introspection"><a class="header" href="#-server-observability--introspection">📊 Server Observability &amp; Introspection</a></h1>
+<p>KacheDB provides self-describing runtime introspection compatible with modern Redis tooling, GUI clients (such as <strong>Redis Insight</strong> and <strong>TablePlus</strong>), and monitoring agents.</p>
+<hr />
+<h2 id="-command-summary-3"><a class="header" href="#-command-summary-3">📋 Command Summary</a></h2>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Command</th><th style="text-align: left">Syntax</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong><code>INFO</code></strong></td><td style="text-align: left"><code>INFO [section]</code></td><td style="text-align: left">Returns server, memory, traffic, keyspace, and vector statistics.</td></tr>
+<tr><td style="text-align: left"><strong><code>HELLO</code></strong></td><td style="text-align: left"><code>HELLO [protover [AUTH user pass] [SETNAME name]]</code></td><td style="text-align: left">Protocol handshake negotiating RESP2 or RESP3 and returning connection metadata.</td></tr>
+<tr><td style="text-align: left"><strong><code>AUTH</code></strong></td><td style="text-align: left"><code>AUTH [username] &lt;password&gt;</code></td><td style="text-align: left">Authenticates the connection when <code>requirepass</code> is configured.</td></tr>
+<tr><td style="text-align: left"><strong><code>CLIENT</code></strong></td><td style="text-align: left"><code>CLIENT &lt;SETNAME | GETNAME | ID | LIST&gt;</code></td><td style="text-align: left">Inspects and configures client connection state.</td></tr>
+<tr><td style="text-align: left"><strong><code>COMMAND</code></strong></td><td style="text-align: left"><code>COMMAND [DOCS]</code></td><td style="text-align: left">Returns server capability descriptors for client auto-discovery.</td></tr>
+<tr><td style="text-align: left"><strong><code>BGREWRITEAOF</code></strong></td><td style="text-align: left"><code>BGREWRITEAOF</code></td><td style="text-align: left">Triggers asynchronous compaction and rewrite of the Append-Only File.</td></tr>
+<tr><td style="text-align: left"><strong><code>QUIT</code></strong></td><td style="text-align: left"><code>QUIT</code></td><td style="text-align: left">Gracefully closes the client connection.</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="-detailed-command-reference--examples-2"><a class="header" href="#-detailed-command-reference--examples-2">🛠️ Detailed Command Reference &amp; Examples</a></h2>
+<h3 id="info"><a class="header" href="#info"><code>INFO</code></a></h3>
+<p>Outputs multi-section server metrics in standard Redis key-value format.</p>
+<h4 id="syntax-12"><a class="header" href="#syntax-12">Syntax</a></h4>
+<pre><code class="language-text">INFO [server | memory | stats | keyspace | vector]
+</code></pre>
+<h4 id="kachedb-cli-example-15"><a class="header" href="#kachedb-cli-example-15"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; INFO
+# Server
+kachedb_version:0.1.0
+os:macos
+arch_bits:64
+process_id:48123
+tcp_port:6379
+uptime_in_seconds:1250
+
+# Memory
+used_memory:134217728
+used_memory_human:128.00M
+used_memory_peak:134217728
+megaslabs_allocated:64
+slab_slots_active:5120
+fragmentation_ratio:1.00
+
+# Stats
+total_connections_received:128
+total_commands_processed:150240
+instantaneous_ops_per_sec:0
+keyspace_hits:148000
+keyspace_misses:2240
+
+# Keyspace
+db0:keys=5120,expires=450,avg_ttl=1820
+
+# VectorEngine
+active_indices:3
+total_vectors:10240
+vector_memory_bytes:655360
+simd_kernel:auto
+</code></pre>
+<hr />
+<h3 id="hello"><a class="header" href="#hello"><code>HELLO</code></a></h3>
+<p>Negotiates RESP wire protocol version with the server (supports version 2 and version 3).</p>
+<h4 id="syntax-13"><a class="header" href="#syntax-13">Syntax</a></h4>
+<pre><code class="language-text">HELLO 3 [SETNAME client_name]
+</code></pre>
+<h4 id="kachedb-cli-example-16"><a class="header" href="#kachedb-cli-example-16"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; HELLO 3 SETNAME my_worker
+ 1) "server"
+ 2) "kachedb"
+ 3) "version"
+ 4) "0.1.0"
+ 5) "proto"
+ 6) (integer) 3
+ 7) "id"
+ 8) (integer) 1
+ 9) "mode"
+10) "standalone"
+11) "role"
+12) "master"
+13) "modules"
+14) (empty array)
+</code></pre>
+<hr />
+<h3 id="client"><a class="header" href="#client"><code>CLIENT</code></a></h3>
+<p>Manages client connection names and identifiers.</p>
+<h4 id="subcommands"><a class="header" href="#subcommands">Subcommands</a></h4>
+<ul>
+<li><code>CLIENT SETNAME &lt;name&gt;</code>: Assigns a human-readable name to the current TCP connection.</li>
+<li><code>CLIENT GETNAME</code>: Retrieves the assigned name (or <code>nil</code>).</li>
+<li><code>CLIENT ID</code>: Returns the unique client connection ID.</li>
+<li><code>CLIENT LIST</code>: Returns connected client details.</li>
+</ul>
+<h4 id="kachedb-cli-example-17"><a class="header" href="#kachedb-cli-example-17"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; CLIENT SETNAME web_app_1
+OK
+
+127.0.0.1:6379&gt; CLIENT GETNAME
+"web_app_1"
+
+127.0.0.1:6379&gt; CLIENT ID
+(integer) 1
+</code></pre>
+<hr />
+<h3 id="command--command-docs"><a class="header" href="#command--command-docs"><code>COMMAND</code> &amp; <code>COMMAND DOCS</code></a></h3>
+<p>Provides capability introspection so GUI tools and drivers can discover supported commands dynamically without crashing.</p>
+<h4 id="kachedb-cli-example-18"><a class="header" href="#kachedb-cli-example-18"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; COMMAND DOCS
+OK
+</code></pre>
+<hr />
+<h3 id="auth"><a class="header" href="#auth"><code>AUTH</code></a></h3>
+<p>Authenticates a client connection when password protection is enabled with <code>requirepass</code>.</p>
+<h4 id="syntax-14"><a class="header" href="#syntax-14">Syntax</a></h4>
+<pre><code class="language-text">AUTH [username] &lt;password&gt;
+</code></pre>
+<h4 id="kachedb-cli-example-19"><a class="header" href="#kachedb-cli-example-19"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; GET secret_key
+(error) NOAUTH Authentication required.
+127.0.0.1:6379&gt; AUTH my_secure_password
+OK
+127.0.0.1:6379&gt; GET secret_key
+"confidential_data"
+</code></pre>
+<hr />
+<h3 id="bgrewriteaof"><a class="header" href="#bgrewriteaof"><code>BGREWRITEAOF</code></a></h3>
+<p>Instructs the server to compact and rewrite the Append-Only File (<code>kachedb.aof</code>) to remove redundant commands and minimize disk space.</p>
+<h4 id="syntax-15"><a class="header" href="#syntax-15">Syntax</a></h4>
+<pre><code class="language-text">BGREWRITEAOF
+</code></pre>
+<h4 id="kachedb-cli-example-20"><a class="header" href="#kachedb-cli-example-20"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; BGREWRITEAOF
+Background append only file rewriting started
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="-system-architecture-overview"><a class="header" href="#-system-architecture-overview">🏛️ System Architecture Overview</a></h1>
+<p>KacheDB is built from first principles in Rust to solve the fundamental memory, OS, and serialization bottlenecks of modern database architectures.</p>
+<hr />
+<h2 id="-the-dual-engine-topology"><a class="header" href="#-the-dual-engine-topology">⚡ The Dual-Engine Topology</a></h2>
+<pre><code class="language-text">+-----------------------------------------------------------------------------------------------+
+|                                      CLIENT INTERFACES                                        |
+|   [RESP3 Wire Protocol (Redis/Valkey Clients)]     [Zero-Copy Tensor IPC / Python SDK]        |
++-----------------------------------------------------------------------------------------------+
+                                               │
++-----------------------------------------------------------------------------------------------+
+|                                       INDEXING SUBSYSTEM                                      |
+|   1. SIMD Swiss Hash Table (3.09 ns Point Lookups, S3-FIFO Eviction Tracking)                 |
+|   2. Token Radix Prefix Tree (&amp;[u32] Longest Prefix Match for LLM KV-Cache Prefills)          |
+|   3. Per-Core Hashed Timing Wheel (3,600 Circular Buckets for O(1) Memory Reclamation)        |
++-----------------------------------------------------------------------------------------------+
+                                               │
++-----------------------------------------------------------------------------------------------+
+|                                  CORE SLAB &amp; ARENA ENGINE                                     |
+|   - 2 MB Megaslab Page Frames (64-byte Cache-Line Aligned Slots, 0 False Sharing)             |
+|   - Zero Runtime Heap Allocation Jitter (Bump-pointer + Free-list Recycling)                  |
+|   - S3-FIFO Dynamic Quota Management (Elastic Workload Quotas)                                |
++-----------------------------------------------------------------------------------------------+
+                                               │
++-----------------------------------------------------------------------------------------------+
+|                                ZERO-COPY TRANSPORT LAYER                                      |
+|   - Local: POSIX Shared Memory (/dev/shm) Lock-Free SPSC Ring Buffers (17.66M msgs/sec)       |
+|   - Network: Linux io_uring (SQPOLL Fixed Buffers) / macOS kqueue (Edge-Triggered Workers)    |
++-----------------------------------------------------------------------------------------------+
+</code></pre>
+<hr />
+<h2 id="-why-traditional-in-memory-databases-hit-a-wall"><a class="header" href="#-why-traditional-in-memory-databases-hit-a-wall">🥊 Why Traditional In-Memory Databases Hit a Wall</a></h2>
+<p>Traditional in-memory engines (e.g. Redis, Memcached) struggle when scaling to tens of millions of operations per second or serving multi-megabyte AI tensors due to three physical hardware constraints:</p>
+<h3 id="1-the-generality-tax-heap-fragmentation--pointer-chasing"><a class="header" href="#1-the-generality-tax-heap-fragmentation--pointer-chasing">1. The Generality Tax (Heap Fragmentation &amp; Pointer Chasing)</a></h3>
+<ul>
+<li>General-purpose databases support variable-size dynamic keys and polymorphic data structures, relying on standard dynamic allocators (<code>jemalloc</code>, <code>malloc</code>).</li>
+<li>Every non-contiguous pointer chase incurs an <strong>L1/L2/L3 CPU cache miss</strong> (~50–100 ns stall), degrading memory bandwidth.</li>
+<li><strong>KacheDB Solution:</strong> Pre-allocates uniform <strong>2 MB Megaslabs</strong> with fixed size classes and 64-byte cache line alignment, eliminating runtime malloc overhead down to <strong>3.84 ns</strong>.</li>
+</ul>
+<h3 id="2-kernel-context-switching-overhead"><a class="header" href="#2-kernel-context-switching-overhead">2. Kernel Context-Switching Overhead</a></h3>
+<ul>
+<li>Standard POSIX socket operations (<code>read()</code>, <code>write()</code>, <code>epoll_wait()</code>) require constant transitions between user-space and kernel-space.</li>
+<li>Processing millions of small network packets saturates the CPU with interrupt handling and buffer copies.</li>
+<li><strong>KacheDB Solution:</strong> Utilizes <strong>Linux <code>io_uring</code> with SQPOLL</strong> for zero-syscall kernel-bypass socket polling and an <strong>Accept-Dispatcher</strong> ring for even worker CPU saturation.</li>
+</ul>
+<h3 id="3-the-tensor-serialization-penalty"><a class="header" href="#3-the-tensor-serialization-penalty">3. The Tensor Serialization Penalty</a></h3>
+<ul>
+<li>Traditional key-value protocols serialize all responses over TCP sockets.</li>
+<li>For an LLM KV cache (hundreds of megabytes of FP16/BF16 attention matrices), serializing and copying through kernel socket buffers to Python completely destroys latency gains.</li>
+<li><strong>KacheDB Solution:</strong> Direct <strong>POSIX Shared Memory (<code>/dev/shm</code>) lock-free SPSC ring buffers</strong>, allowing PyTorch and vLLM to map tensors directly from host RAM at PCIe line rate without socket copies.</li>
+</ul>
+<hr />
+<h2 id="-thread-per-core-execution-model"><a class="header" href="#-thread-per-core-execution-model">🧵 Thread-per-Core Execution Model</a></h2>
+<ul>
+<li>Each physical CPU core runs an independent <code>WorkerThread</code> pinned via <code>core_affinity</code>.</li>
+<li>Each worker owns an isolated <code>SlabPool</code>, <code>SwissTable</code> shard, and <code>TimingWheel</code>.</li>
+<li>Zero cross-thread locks during request execution ensures <strong>linear throughput scaling</strong> across 4, 8, 32, or 64 cores.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="-2-mb-megaslab-memory-engine"><a class="header" href="#-2-mb-megaslab-memory-engine">🧱 2 MB Megaslab Memory Engine</a></h1>
+<p>The <code>kachedb-core</code> memory subsystem completely eliminates runtime <code>malloc</code> and <code>free</code> allocation jitter by managing storage through structured <strong>2 MB Megaslabs</strong> with 64-byte L1 CPU cache-line alignment.</p>
+<hr />
+<h2 id="-memory-slab-geometry"><a class="header" href="#-memory-slab-geometry">📐 Memory Slab Geometry</a></h2>
+<pre><code class="language-text">┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        2 MB Megaslab Page Frame (2,097,152 Bytes)                      │
+│ ┌───────────────────┬───────────────────┬───────────────────┬────────────────────────┐ │
+│ │  Slot 0 (64B-Aln) │  Slot 1 (64B-Aln) │  Slot 2 (64B-Aln) │  Slot N (64B-Aln)      │ │
+│ │ [ Payload Data  ] │ [ Payload Data  ] │ [ Payload Data  ] │ [ Payload Data  ]      │ │
+│ └───────────────────┴───────────────────┴───────────────────┴────────────────────────┘ │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="1-cache-line-alignment-64-byte"><a class="header" href="#1-cache-line-alignment-64-byte">1. Cache-Line Alignment (<code>64-byte</code>)</a></h3>
+<ul>
+<li>Every allocated slot is guaranteed to start on a 64-byte boundary via <code>libc::posix_memalign</code>.</li>
+<li><strong>Zero False Sharing:</strong> Multi-core writes to neighboring slots never cross CPU L1 cache line boundaries, eliminating cache invalidation stalls.</li>
+</ul>
+<h3 id="2-standard-size-classes"><a class="header" href="#2-standard-size-classes">2. Standard Size Classes</a></h3>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Class Name</th><th style="text-align: left">Slot Size</th><th style="text-align: center">Slots per 2 MB Megaslab</th><th style="text-align: left">Primary Workload</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong><code>AppSmall</code></strong></td><td style="text-align: left">128 Bytes</td><td style="text-align: center">16,384</td><td style="text-align: left">Session IDs, token auths, atomic counters, short strings</td></tr>
+<tr><td style="text-align: left"><strong><code>AppMedium</code></strong></td><td style="text-align: left">512 Bytes</td><td style="text-align: center">4,096</td><td style="text-align: left">JSON user profiles, metadata records</td></tr>
+<tr><td style="text-align: left"><strong><code>AppLarge</code></strong></td><td style="text-align: left">4,096 Bytes (4 KB)</td><td style="text-align: center">512</td><td style="text-align: left">Large document blobs, web cache pages</td></tr>
+<tr><td style="text-align: left"><strong><code>Tensor64KB</code></strong></td><td style="text-align: left">65,536 Bytes (64 KB)</td><td style="text-align: center">32</td><td style="text-align: left">LLM KV attention block (16 tokens FP16)</td></tr>
+<tr><td style="text-align: left"><strong><code>Tensor256KB</code></strong></td><td style="text-align: left">262,144 Bytes (256 KB)</td><td style="text-align: center">8</td><td style="text-align: left">LLM KV attention block (64 tokens BF16)</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="-bump-pointer--free-list-recycling"><a class="header" href="#-bump-pointer--free-list-recycling">⚡ Bump Pointer + Free-List Recycling</a></h2>
+<p>Allocation in KacheDB occurs in two stages:</p>
+<ol>
+<li><strong>Fast-Path Bump Allocation:</strong> If the active 2 MB arena has unallocated capacity, it increments a local cursor in <strong>$\approx 3.84\text{ ns}$</strong>.</li>
+<li><strong>Free-List Slot Recycling:</strong> When keys are overwritten, deleted, or expired, their <code>BlockId</code> is pushed to a lock-free LIFO free-list for immediate <code>O(1)</code> slot reuse.</li>
+</ol>
+<hr />
+<h2 id="-dynamic-s3-fifo-workload-quotas"><a class="header" href="#-dynamic-s3-fifo-workload-quotas">🔄 Dynamic S3-FIFO Workload Quotas</a></h2>
+<p>KacheDB implements the state-of-the-art <strong>S3-FIFO (Simple, Scalable, Small-footprint FIFO)</strong> cache eviction algorithm:</p>
+<ul>
+<li><strong>Small Queue (10% capacity):</strong> Acts as a high-speed filter against scan pollution and one-off burst keys.</li>
+<li><strong>Main Queue (90% capacity):</strong> Stores frequency-accessed keys with multi-chance bit tracking.</li>
+<li><strong>Ghost Queue:</strong> Tracks key signatures after eviction to detect re-access and promote directly into the Main Queue.</li>
+<li><strong>Elastic Borrowing:</strong> The <code>WorkloadQuota</code> manager balances memory pools between Redis key-value workloads and LLM tensor memory elastically.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="-token-radix-prefix-tree"><a class="header" href="#-token-radix-prefix-tree">🌳 Token Radix Prefix Tree</a></h1>
+<p>The <code>kachedb-radix</code> subsystem implements a hierarchical token prefix tree optimized for LLM attention prompt prefill reuse (such as <strong>vLLM PagedAttention</strong> and <strong>SGLang RadixAttention</strong>).</p>
+<hr />
+<h2 id="-the-llm-prefill-problem"><a class="header" href="#-the-llm-prefill-problem">⚡ The LLM Prefill Problem</a></h2>
+<p>During LLM inference, requests operate in two phases:</p>
+<ol>
+<li><strong>Prefill Phase:</strong> Computes the Key and Value ($K, V$) attention matrices across all layers for the prompt tokens. Computational complexity is <code>O(N²)</code> with respect to sequence length.</li>
+<li><strong>Decode Phase:</strong> Autoregressively generates tokens one by one using previously computed $K, V$ states.</li>
+</ol>
+<p>For long multi-turn prompts (e.g. system prompts, few-shot examples, large codebases, 16K–128K tokens):</p>
+<ul>
+<li>Recomputing a 32K token prefill on an NVIDIA H100 GPU takes <strong>$200\text{--}500\text{ ms}$</strong>.</li>
+<li>Restoring precomputed KV tensors from KacheDB takes <strong>$&lt; 20\text{ ms}$</strong>.</li>
+<li><strong>Result:</strong> Offloading attention states cuts Time-To-First-Token (TTFT) by <strong>5× to 15×</strong>.</li>
+</ul>
+<hr />
+<h2 id="-tree-topology--chunked-edges"><a class="header" href="#-tree-topology--chunked-edges">🌲 Tree Topology &amp; Chunked Edges</a></h2>
+<pre><code class="language-text">               [ Root (Parent Hash = 0) ]
+                            │
+               ┌────────────┴────────────┐
+               ▼                         ▼
+      "You are an assistant"   "System Prompt: Coding"
+       [Chunk: 16 Tokens]        [Chunk: 16 Tokens]
+               │                         │
+       ┌───────┴───────┐                 │
+       ▼               ▼                 ▼
+  "Turn 1: Python" "Turn 1: Rust"  "User Prompt: Refactor"
+   [Block ID 4]     [Block ID 9]     [Block ID 12]
+</code></pre>
+<h3 id="1-compressed-edge-hops-u32-16"><a class="header" href="#1-compressed-edge-hops-u32-16">1. Compressed Edge Hops (<code>[u32; 16]</code>)</a></h3>
+<ul>
+<li>Rather than storing 1 token per node hop, KacheDB edges compress <strong>16 tokens per block</strong>.</li>
+<li>Traversal complexity drops from <code>O(L)</code> to <code>O(L / 16)</code>.</li>
+<li>A 1,024-token prompt prefix matches in <strong>$2.45\ \mu\text{s}$</strong> ($&gt; 10,000\times$ faster than GPU recomputation).</li>
+</ul>
+<h3 id="2-epoch-based-rcu-concurrency-epochtree"><a class="header" href="#2-epoch-based-rcu-concurrency-epochtree">2. Epoch-Based RCU Concurrency (<code>EpochTree</code>)</a></h3>
+<ul>
+<li>Multi-reader concurrency is managed via lock-free Read-Copy-Update (RCU) snapshots using <code>arc-swap</code>.</li>
+<li>Reader inference threads access snapshots with <strong>$\approx 1\text{ ns}$</strong> atomic load overhead without locking writers.</li>
+</ul>
+<h3 id="3-reference-counting--pinning"><a class="header" href="#3-reference-counting--pinning">3. Reference Counting &amp; Pinning</a></h3>
+<ul>
+<li>Active attention decoders pin tree nodes (<code>ref_count++</code>), ensuring active conversation blocks are never evicted while a request is in flight.</li>
+<li>Eviction uses <strong>Bottom-Up Hierarchical LRU</strong>, pruning leaf turns while protecting shared root system prompts.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="-zero-copy-shared-memory-ipc"><a class="header" href="#-zero-copy-shared-memory-ipc">🚀 Zero-Copy Shared Memory IPC</a></h1>
+<p>The <code>kachedb-shm</code> subsystem implements high-throughput, zero-copy inter-process communication (IPC) between the KacheDB daemon and Python / PyTorch / CUDA inference engines via POSIX Shared Memory (<code>/dev/shm</code>).</p>
+<hr />
+<h2 id="-the-socket-serialization-bottleneck"><a class="header" href="#-the-socket-serialization-bottleneck">⚡ The Socket Serialization Bottleneck</a></h2>
+<p>Transferring large attention tensors (50 MB – 2 GB) over standard TCP loopback sockets suffers from severe throughput degradation:</p>
+<ol>
+<li>Python creates a socket payload → serializes tensor buffers.</li>
+<li>Kernel performs socket <code>send()</code> / context switch into kernel space → copies into socket ring buffers.</li>
+<li>Daemon <code>recv()</code> / context switch into user space → deserializes data into memory.</li>
+<li>Total latency penalty: <strong>15–40 ms</strong>, completely negating prefill savings.</li>
+</ol>
+<hr />
+<h2 id="-kachedb-zero-copy-architecture"><a class="header" href="#-kachedb-zero-copy-architecture">🏛️ KacheDB Zero-Copy Architecture</a></h2>
+<pre><code class="language-text">┌────────────────────────┐              ┌────────────────────────┐
+│   KacheDB Rust Daemon  │              │  vLLM / PyTorch Worker │
+│ ┌────────────────────┐ │              │ ┌────────────────────┐ │
+│ │  Megaslab Memory   │ │              │ │   torch.Tensor     │ │
+│ │ (Direct Slot Ptr)  │ │              │ │  (Zero-Copy View)  │ │
+│ └─────────┬──────────┘ │              │ └──────────┬─────────┘ │
+└───────────┼────────────┘              └────────────┼───────────┘
+            │                                        │
+            ▼                                        ▼
+┌────────────────────────────────────────────────────────────────┐
+│           POSIX Shared Memory Region (/dev/shm/kachedb_0)       │
+│ ┌────────────────────────────────────────────────────────────┐ │
+│ │ 192-byte Lock-Free SPSC Ring Header (3 Isolated 64B Lines) │ │
+│ ├────────────────────────────────────────────────────────────┤ │
+│ │ Cache-Line Aligned Megaslab Page Frames (Multi-GB Storage) │ │
+│ └────────────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="1-lock-free-spsc-ring-buffer"><a class="header" href="#1-lock-free-spsc-ring-buffer">1. Lock-Free SPSC Ring Buffer</a></h3>
+<ul>
+<li>Operates a Single-Producer Single-Consumer queue transferring <code>TensorBlockDescriptor</code> metadata frames.</li>
+<li><strong>Throughput:</strong> Delivers <strong>17.66 Million messages/sec</strong> (56.6 ns per slot) across process boundaries.</li>
+</ul>
+<h3 id="2-cache-line-isolation-0-false-sharing"><a class="header" href="#2-cache-line-isolation-0-false-sharing">2. Cache-Line Isolation (0 False Sharing)</a></h3>
+<ul>
+<li>The 192-byte ring header is partitioned into three isolated 64-byte cache lines:
+<ul>
+<li>Cache Line 0: Read cursor &amp; consumer state</li>
+<li>Cache Line 1: Write cursor &amp; producer state</li>
+<li>Cache Line 2: Ring capacity &amp; flags</li>
+</ul>
+</li>
+<li>Multi-core reader and writer threads never trigger CPU L1 cache invalidation races.</li>
+</ul>
+<h3 id="3-adaptive-spin-then-park-strategy"><a class="header" href="#3-adaptive-spin-then-park-strategy">3. Adaptive Spin-Then-Park Strategy</a></h3>
+<ul>
+<li>Fast-path transfers use busy-spinning for $&lt; 50\text{ ns}$ handoffs.</li>
+<li>Falls back to OS thread parking if the queue remains empty or full for $&gt; 100\ \mu\text{s}$, conserving CPU cycles during idle periods.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="-vllm-integration-guide"><a class="header" href="#-vllm-integration-guide">🤖 vLLM Integration Guide</a></h1>
+<p>This guide walks through configuring <strong>KacheDB</strong> as a high-speed external KV-cache offloading tier for <strong>vLLM</strong> (PagedAttention).</p>
+<hr />
+<h2 id="-overview"><a class="header" href="#-overview">⚡ Overview</a></h2>
+<p>By offloading PagedAttention KV-cache blocks from GPU VRAM to KacheDB's zero-copy POSIX Shared Memory (<code>/dev/shm</code>), vLLM inference instances achieve:</p>
+<ul>
+<li><strong>Up to 10,000× faster prompt prefill</strong> for repeated system prompts, few-shot examples, and multi-turn chat sessions.</li>
+<li><strong>Zero socket serialization overhead</strong> using PyTorch tensor memory views.</li>
+<li>Seamless multi-GPU and distributed tensor parallel support.</li>
+</ul>
+<hr />
+<h2 id="-installation--setup"><a class="header" href="#-installation--setup">📦 Installation &amp; Setup</a></h2>
+<ol>
+<li>Start the KacheDB daemon with <code>--ipc host</code> or native POSIX Shared Memory enabled:</li>
+</ol>
+<pre><code class="language-bash">./target/release/kachedb-server -p 6379 -w 4 --pool-mb 512
+</code></pre>
+<ol start="2">
+<li>Install the KacheDB Python client with PyTorch support:</li>
+</ol>
+<pre><code class="language-bash">pip install kachedb[torch]
+</code></pre>
+<hr />
+<h2 id="-programmatic-integration-example"><a class="header" href="#-programmatic-integration-example">🚀 Programmatic Integration Example</a></h2>
+<p>The <code>KacheDBConnector</code> handles prefix caching, block hashing, and zero-copy restoration automatically:</p>
+<pre><code class="language-python">import torch
+from kachedb.vllm import KacheDBConnector
+
+# 1. Initialize the connector for the active GPU worker rank
+connector = KacheDBConnector(
+    rank=0,
+    local_rank=0,
+    block_size=16,
+    pool_size_mb=256,
+)
+
+# 2. Simulated PagedAttention tensor for 2 transformer layers
+# Shape: [num_blocks=4, 2 (K/V), num_heads=8, block_size=16, head_dim=64]
+kv_shape = (4, 2, 8, 16, 64)
+kv_caches = [
+    torch.randn(kv_shape, dtype=torch.float16),
+    torch.randn(kv_shape, dtype=torch.float16),
+]
+
+# 3. Offload KV cache blocks to KacheDB
+prompt_tokens = [101, 2054, 2003, 1037, 2742, 102]
+connector.offload_kv_cache(
+    prompt_tokens=prompt_tokens,
+    kv_caches=kv_caches,
+)
+
+# 4. On subsequent requests, restore matching prefix blocks
+new_request_tokens = [*prompt_tokens, 999, 1000]
+target_kv_caches = [
+    torch.zeros(kv_shape, dtype=torch.float16),
+    torch.zeros(kv_shape, dtype=torch.float16),
+]
+
+matched_tokens, is_hit = connector.restore_kv_cache(
+    prompt_tokens=new_request_tokens,
+    target_kv_caches=target_kv_caches,
+)
+
+if is_hit:
+    print(f"✅ Cache Hit! Restored {matched_tokens} tokens from KacheDB zero-copy.")
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="-sglang-radixattention-integration-guide"><a class="header" href="#-sglang-radixattention-integration-guide">🌲 SGLang RadixAttention Integration Guide</a></h1>
+<p>This guide describes integrating <strong>KacheDB</strong> with <strong>SGLang</strong>'s RadixAttention hierarchical tree-branching engine.</p>
+<hr />
+<h2 id="-overview-1"><a class="header" href="#-overview-1">⚡ Overview</a></h2>
+<p>SGLang manages KV-caches as a dynamic Radix Tree across multiple conversational branches and tool calls. KacheDB's <code>KacheDBSGLangConnector</code> maps SGLang tree nodes directly to lock-free memory frames:</p>
+<ul>
+<li><strong>Arbitrary Slice Lengths:</strong> Variable-length token chunks hashed via chained Blake2b.</li>
+<li><strong>Hierarchical Multi-Branch Restoration:</strong> Restores branched tree paths in a single pass.</li>
+<li><strong>Multi-Precision Support:</strong> Native support for <code>FP16</code>, <code>BF16</code> (LLaMA default), <code>FP32</code>, and <code>INT8</code>.</li>
+</ul>
+<hr />
+<h2 id="-programmatic-integration-example-1"><a class="header" href="#-programmatic-integration-example-1">🚀 Programmatic Integration Example</a></h2>
+<pre><code class="language-python">import torch
+from kachedb.sglang import KacheDBSGLangConnector
+
+# 1. Initialize connector
+connector = KacheDBSGLangConnector(
+    rank=0,
+    local_rank=0,
+    pool_size_mb=256,
+)
+
+num_heads = 4
+head_dim = 64
+num_layers = 2
+dtype = torch.bfloat16
+
+# 2. Node 1: Root System Prompt (10 tokens)
+root_tokens = list(range(10))
+k_root = [torch.randn((num_heads, 10, head_dim), dtype=dtype) for _ in range(num_layers)]
+v_root = [torch.randn((num_heads, 10, head_dim), dtype=dtype) for _ in range(num_layers)]
+
+desc_root = connector.offload_node(
+    node_id=1,
+    token_ids=root_tokens,
+    k_tensors=k_root,
+    v_tensors=v_root,
+    parent_hash=0,
+)
+
+# 3. Node 2: Child Branch Turn (20 tokens)
+child_tokens = list(range(10, 30))
+k_child = [torch.randn((num_heads, 20, head_dim), dtype=dtype) for _ in range(num_layers)]
+v_child = [torch.randn((num_heads, 20, head_dim), dtype=dtype) for _ in range(num_layers)]
+
+connector.offload_node(
+    node_id=2,
+    token_ids=child_tokens,
+    k_tensors=k_child,
+    v_tensors=v_child,
+    parent_hash=desc_root.node_hash,
+)
+
+# 4. Restore Full 30-Token Sequence (Root + Child)
+full_prompt = list(range(30))
+target_k = [torch.zeros((num_heads, 30, head_dim), dtype=dtype) for _ in range(num_layers)]
+target_v = [torch.zeros((num_heads, 30, head_dim), dtype=dtype) for _ in range(num_layers)]
+
+matched_count, is_hit = connector.restore_prefix(
+    prompt_tokens=full_prompt,
+    target_k_buffers=target_k,
+    target_v_buffers=target_v,
+)
+
+if is_hit:
+    print(f"🌲 SGLang Restored {matched_count} tokens across Radix tree hierarchy!")
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="-semantic-caching-guide"><a class="header" href="#-semantic-caching-guide">💬 Semantic Caching Guide</a></h1>
+<p>This guide explains how to use <strong>KacheDB's Semantic Cache Engine</strong> to intercept and cache LLM completions based on semantic intent and cosine similarity, saving 100% of GPU compute and token costs on semantic cache hits.</p>
+<hr />
+<h2 id="-how-semantic-caching-works"><a class="header" href="#-how-semantic-caching-works">⚡ How Semantic Caching Works</a></h2>
+<p>Traditional caching requires an exact character-for-character string match (<code>"What is KacheDB?"</code> vs <code>"what is kachedb?"</code>).</p>
+<p>KacheDB's <code>SemanticCache</code> computes a dense vector embedding for incoming prompts and searches the in-memory SIMD vector index using normalized Cosine Similarity:</p>
+<ul>
+<li><strong>Cache HIT:</strong> If similarity $\ge \text{threshold}$ (default <code>0.85</code>), KacheDB immediately returns the cached LLM answer in <strong>$&lt; 50\ \mu\text{s}$</strong> without invoking the LLM.</li>
+<li><strong>Cache MISS:</strong> The application queries the LLM and writes the answer to KacheDB for future semantic matches.</li>
+</ul>
+<hr />
+<h2 id="-synchronous-usage-semanticcache"><a class="header" href="#-synchronous-usage-semanticcache">🚀 Synchronous Usage (<code>SemanticCache</code>)</a></h2>
+<pre><code class="language-python">from kachedb import KacheClient, SemanticCache
+
+# 1. Connect to KacheDB
+client = KacheClient(host="127.0.0.1", port=6379)
+
+# 2. Initialize the semantic cache (auto-detects FastEmbed or SentenceTransformers)
+cache = SemanticCache(
+    client=client,
+    index_name="customer_support_faq",
+    similarity_threshold=0.85,
+    ttl_seconds=86400,  # 24 hours
+)
+
+# 3. Store a Q&amp;A pair in the semantic cache
+cache.set(
+    prompt="How do I change my billing address?",
+    response="Go to Account Settings -&gt; Billing -&gt; Edit Address.",
+)
+
+# 4. Query with a semantically equivalent but differently worded prompt
+query = "Where can I update my billing location?"
+match = cache.get(query)
+
+if match:
+    print(f"🎯 Cache HIT! (Similarity: {match.similarity:.2f})")
+    print(f"Response: {match.value}")
+else:
+    print("❌ Cache MISS")
+</code></pre>
+<hr />
+<h2 id="-asynchronous-usage-asyncsemanticcache"><a class="header" href="#-asynchronous-usage-asyncsemanticcache">⚡ Asynchronous Usage (<code>AsyncSemanticCache</code>)</a></h2>
+<p>For non-blocking <code>asyncio</code> inference servers (such as FastAPI, vLLM, or LiteLLM):</p>
+<pre><code class="language-python">import asyncio
+from kachedb import AsyncKacheClient, AsyncSemanticCache
+
+async def main():
+    async with AsyncKacheClient(host="127.0.0.1", port=6379) as client:
+        cache = AsyncSemanticCache(
+            client=client,
+            index_name="async_chat_cache",
+            similarity_threshold=0.88,
+        )
+
+        # Store response
+        await cache.set(
+            prompt="Explain quantum entanglement briefly",
+            response="Quantum entanglement is a physical phenomenon where particles remain connected so that actions performed on one affect the other.",
+        )
+
+        # Retrieve asynchronously
+        result = await cache.get("What is quantum entanglement in simple terms?")
+        if result:
+            print(f"⚡ Async Hit: {result.value}")
+
+asyncio.run(main())
+</code></pre>
+<hr />
+<h2 id="-pluggable-embedding-backends"><a class="header" href="#-pluggable-embedding-backends">🔌 Pluggable Embedding Backends</a></h2>
+<p>KacheDB supports multiple embedding backends via <code>kachedb.semantic.embedders</code>:</p>
+<ul>
+<li><strong><code>FastEmbedAdapter</code></strong>: Ultra-fast local ONNX Runtime embeddings (<code>pip install fastembed</code>).</li>
+<li><strong><code>SentenceTransformersAdapter</code></strong>: HuggingFace <code>sentence-transformers</code> models.</li>
+<li><strong><code>OpenAIAdapter</code></strong>: Remote OpenAI embedding API (<code>text-embedding-3-small</code>).</li>
+<li><strong><code>CallableAdapter</code></strong>: Custom function wrapping any embedding model (<code>Callable[[str], list[float]]</code>).</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="openai-semantic-reverse-proxy-kachedb-proxy"><a class="header" href="#openai-semantic-reverse-proxy-kachedb-proxy">OpenAI Semantic Reverse Proxy (<code>kachedb-proxy</code>)</a></h1>
+<p>The <strong><code>kachedb-proxy</code></strong> service is a lightweight, standalone reverse proxy that bridges AI developer tools (<strong>Cursor</strong>, <strong>Aider</strong>, <strong>Continue.dev</strong>, <strong>LiteLLM</strong>, <strong>LangChain</strong>, and <strong>OpenAI SDKs</strong>) with <strong>KacheDB</strong>'s in-memory SIMD vector cache.</p>
+<hr />
+<h2 id="-architecture--packet-flow"><a class="header" href="#-architecture--packet-flow">🏗️ Architecture &amp; Packet Flow</a></h2>
+<pre><code class="language-text">┌─────────────────────────────────────────────────────────────────────────────┐
+│                    CLIENT: Cursor / Aider / OpenAI SDK                      │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │ POST /v1/chat/completions
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                   KACHEDB-PROXY (localhost:8080)                            │
+│  1. Extract messages &amp; canonicalize prompt text                             │
+│  2. Compute local 384-dim embedding via FastEmbed/ONNX in 2-4 ms ($0 cost)  │
+│  3. SIMD vector query to KacheDB daemon (127.0.0.1:6379, &lt; 0.3 ms)          │
+└───────────────────────┬─────────────────────────────┬───────────────────────┘
+                        │                             │
+              [ SEMANTIC HIT (&gt;= 0.85) ]      [ SEMANTIC MISS ]
+                        │                             │
+                        ▼                             ▼
+        ⚡ Return Cached Response (JSON/SSE)    🌐 Forward to Upstream LLM
+        - Latency: &lt; 5 ms                      - Pass client auth headers
+        - Upstream Cost: $0.00                 - Stream chunks to client
+        - Header: X-KacheDB-Cache: HIT         - Async VADD to KacheDB
+</code></pre>
+<hr />
+<h2 id="-quickstart"><a class="header" href="#-quickstart">🚀 Quickstart</a></h2>
+<h3 id="1-start-kachedb-server"><a class="header" href="#1-start-kachedb-server">1. Start KacheDB Server</a></h3>
+<pre><code class="language-bash">./target/release/kachedb-server -p 6379
+</code></pre>
+<h3 id="2-launch-kachedb-proxy"><a class="header" href="#2-launch-kachedb-proxy">2. Launch <code>kachedb-proxy</code></a></h3>
+<pre><code class="language-bash">cargo run --release --manifest-path kachedb-proxy/Cargo.toml -- \
+  --port 8080 \
+  --upstream https://api.openai.com/v1 \
+  --kachedb-port 6379
+</code></pre>
+<h3 id="3-connect-cursor--ide"><a class="header" href="#3-connect-cursor--ide">3. Connect Cursor / IDE</a></h3>
+<p>Set <strong>OpenAI Base URL</strong> in Cursor settings:</p>
+<pre><code class="language-text">http://localhost:8080/v1
+</code></pre>
+<hr />
+<h2 id="-configuration-reference"><a class="header" href="#-configuration-reference">⚙️ Configuration Reference</a></h2>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Parameter</th><th style="text-align: left">Environment Variable</th><th style="text-align: left">Default</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>--port</code></td><td style="text-align: left"><code>KACHEDB_PROXY_PORT</code></td><td style="text-align: left"><code>8080</code></td><td style="text-align: left">Local HTTP listening port</td></tr>
+<tr><td style="text-align: left"><code>--upstream</code></td><td style="text-align: left"><code>UPSTREAM_BASE_URL</code></td><td style="text-align: left"><code>https://api.openai.com/v1</code></td><td style="text-align: left">Target LLM endpoint</td></tr>
+<tr><td style="text-align: left"><code>--kachedb-host</code></td><td style="text-align: left"><code>KACHEDB_HOST</code></td><td style="text-align: left"><code>127.0.0.1</code></td><td style="text-align: left">KacheDB daemon IP</td></tr>
+<tr><td style="text-align: left"><code>--kachedb-port</code></td><td style="text-align: left"><code>KACHEDB_PORT</code></td><td style="text-align: left"><code>6379</code></td><td style="text-align: left">KacheDB daemon port</td></tr>
+<tr><td style="text-align: left"><code>--threshold</code></td><td style="text-align: left"><code>SIMILARITY_THRESHOLD</code></td><td style="text-align: left"><code>0.85</code></td><td style="text-align: left">Cosine similarity threshold (0.0–1.0)</td></tr>
+<tr><td style="text-align: left"><code>--ttl</code></td><td style="text-align: left"><code>CACHE_TTL_SECONDS</code></td><td style="text-align: left"><code>86400</code></td><td style="text-align: left">Expiration time for cached responses (seconds)</td></tr>
+<tr><td style="text-align: left"><code>--embedding-model</code></td><td style="text-align: left"><code>EMBEDDING_MODEL</code></td><td style="text-align: left"><code>bge-small-en-v1.5</code></td><td style="text-align: left">On-device ONNX embedding model</td></tr>
+</tbody></table>
+</div><div style="break-before: page; page-break-before: always;"></div><h1 id="kachedb--consolidated-master-benchmark-report"><a class="header" href="#kachedb--consolidated-master-benchmark-report">KacheDB — Consolidated Master Benchmark Report</a></h1>
+<p><strong>Date:</strong> 2026-08-17<br />
+<strong>Engine:</strong> KacheDB v0.1.0<br />
+<strong>Status:</strong> ✅ All 4 Phases Complete &amp; Verified</p>
+<hr />
+<h2 id="1-executive-summary"><a class="header" href="#1-executive-summary">1. Executive Summary</a></h2>
+<p>KacheDB is an in-memory storage engine designed from scratch in Rust to address the memory bottlenecks of modern AI and high-concurrency microservices:</p>
+<ol>
+<li><strong>Sub-4 ns Memory Allocation:</strong> Replaces runtime <code>malloc</code>/<code>free</code> with 64-byte aligned 2 MB Megaslab arenas, achieving <strong>3.93 ns</strong> allocation latency regardless of slot size (128 B to 256 KB).</li>
+<li><strong>L1 Cache-Speed Point Queries:</strong> SIMD-probed Swiss Table hash index delivers <strong>3.15 ns</strong> lookup hit latency with lock-free S3-FIFO eviction flags.</li>
+<li><strong>~10,000× TTFT Speedup for LLM KV-Cache:</strong> Hierarchical <code>&amp;[u32]</code> Radix Prefix Tree matches a 1,024-token sequence in <strong>2.61 µs</strong>, skipping costly GPU attention prefill.</li>
+<li><strong>15.04 Million msgs/sec Zero-Copy IPC:</strong> POSIX Shared Memory (<code>/dev/shm</code>) lock-free SPSC ring buffers stream tensor descriptors across processes in <strong>66.47 ns per message</strong> with zero serialization and zero memory copies.</li>
+<li><strong>10.2 Million QPS per Core:</strong> Ingests, parses, executes, and encodes standard Redis RESP commands over TCP in <strong>97.63 ns</strong> end-to-end.</li>
+</ol>
+<hr />
+<h2 id="2-test-environment"><a class="header" href="#2-test-environment">2. Test Environment</a></h2>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Metric</th><th style="text-align: left">Specification</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>Operating System</strong></td><td style="text-align: left">macOS 26.5.2 (Darwin 25F84)</td></tr>
+<tr><td style="text-align: left"><strong>Architecture</strong></td><td style="text-align: left"><code>arm64</code> (Apple Silicon)</td></tr>
+<tr><td style="text-align: left"><strong>Cores</strong></td><td style="text-align: left">8 Physical / 8 Logical Cores</td></tr>
+<tr><td style="text-align: left"><strong>System Memory</strong></td><td style="text-align: left">16 GB Unified Memory</td></tr>
+<tr><td style="text-align: left"><strong>Rust Toolchain</strong></td><td style="text-align: left"><code>rustc 1.97.1</code> / <code>cargo 1.97.1</code></td></tr>
+<tr><td style="text-align: left"><strong>Optimization Profile</strong></td><td style="text-align: left"><code>release</code> (<code>opt-level = 3</code>)</td></tr>
+<tr><td style="text-align: left"><strong>Benchmarking Suite</strong></td><td style="text-align: left">Criterion.rs v0.5.1 (100 samples per test, 3s warmup)</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="3-detailed-subsystem-benchmark-matrix"><a class="header" href="#3-detailed-subsystem-benchmark-matrix">3. Detailed Subsystem Benchmark Matrix</a></h2>
+<h3 id="phase-0-memory-allocation--swiss-hash-table"><a class="header" href="#phase-0-memory-allocation--swiss-hash-table">Phase 0: Memory Allocation &amp; Swiss Hash Table</a></h3>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Crate</th><th style="text-align: left">Benchmark Target</th><th style="text-align: right">Measured Latency</th><th style="text-align: left">Target / Industry Baseline</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>kachedb-core</code></td><td style="text-align: left">Arena Slot Allocation (<code>AppSmall</code> 128 B)</td><td style="text-align: right"><strong>3.93 ns</strong></td><td style="text-align: left">&lt; 20 ns target (5.1× faster)</td></tr>
+<tr><td style="text-align: left"><code>kachedb-core</code></td><td style="text-align: left">Arena Slot Allocation (<code>AppMedium</code> 512 B)</td><td style="text-align: right"><strong>3.92 ns</strong></td><td style="text-align: left">&lt; 20 ns target</td></tr>
+<tr><td style="text-align: left"><code>kachedb-core</code></td><td style="text-align: left">Arena Slot Allocation (<code>AppLarge</code> 4 KB)</td><td style="text-align: right"><strong>3.96 ns</strong></td><td style="text-align: left">&lt; 20 ns target</td></tr>
+<tr><td style="text-align: left"><code>kachedb-core</code></td><td style="text-align: left">Arena Slot Allocation (<code>Tensor64KB</code> 64 KB)</td><td style="text-align: right"><strong>3.97 ns</strong></td><td style="text-align: left">&lt; 20 ns target</td></tr>
+<tr><td style="text-align: left"><code>kachedb-core</code></td><td style="text-align: left">Arena Slot Allocation (<code>Tensor256KB</code> 256 KB)</td><td style="text-align: right"><strong>4.11 ns</strong></td><td style="text-align: left">&lt; 20 ns target</td></tr>
+<tr><td style="text-align: left"><code>kachedb-core</code></td><td style="text-align: left">Pool Alloc + Dealloc Cycle (<code>AppSmall</code>)</td><td style="text-align: right"><strong>5.76 ns</strong></td><td style="text-align: left">&lt; 20 ns target</td></tr>
+<tr><td style="text-align: left"><code>kachedb-core</code></td><td style="text-align: left">Pool Alloc + Dealloc Cycle (<code>Tensor64KB</code>)</td><td style="text-align: right"><strong>7.06 ns</strong></td><td style="text-align: left">&lt; 20 ns target</td></tr>
+<tr><td style="text-align: left"><code>kachedb-hash</code></td><td style="text-align: left">Swiss Table Lookup Hit (1M keys preloaded)</td><td style="text-align: right"><strong>3.15 ns</strong></td><td style="text-align: left">L1 cache probe speed</td></tr>
+<tr><td style="text-align: left"><code>kachedb-hash</code></td><td style="text-align: left">Swiss Table Lookup Miss</td><td style="text-align: right"><strong>8.27 ns</strong></td><td style="text-align: left">Fast group termination</td></tr>
+</tbody></table>
+</div>
+<h3 id="phase-1-llm-token-radix-tree--posix-shared-memory"><a class="header" href="#phase-1-llm-token-radix-tree--posix-shared-memory">Phase 1: LLM Token Radix Tree &amp; POSIX Shared Memory</a></h3>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Crate</th><th style="text-align: left">Benchmark Target</th><th style="text-align: right">Measured Latency</th><th style="text-align: left">Throughput / Speedup</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>kachedb-radix</code></td><td style="text-align: left">Prefix Lookup Hit (128 tokens / 8 blocks)</td><td style="text-align: right"><strong>253.85 ns</strong></td><td style="text-align: left">~31.7 ns per block hop</td></tr>
+<tr><td style="text-align: left"><code>kachedb-radix</code></td><td style="text-align: left">Prefix Lookup Hit (1,024 tokens / 64 blocks)</td><td style="text-align: right"><strong>2.61 µs</strong></td><td style="text-align: left"><strong>~10,000× faster</strong> than GPU prefill</td></tr>
+<tr><td style="text-align: left"><code>kachedb-radix</code></td><td style="text-align: left">Prefix Lookup Hit (4,096 tokens / 256 blocks)</td><td style="text-align: right"><strong>19.98 µs</strong></td><td style="text-align: left">Deep context chain lookup</td></tr>
+<tr><td style="text-align: left"><code>kachedb-radix</code></td><td style="text-align: left">Insert 1,024-token sequence (64 new nodes)</td><td style="text-align: right"><strong>2.41 µs</strong></td><td style="text-align: left">~37.6 ns per node</td></tr>
+<tr><td style="text-align: left"><code>kachedb-radix</code></td><td style="text-align: left">Hierarchical Bottom-up LRU Eviction</td><td style="text-align: right"><strong>568.13 ns</strong></td><td style="text-align: left">Sub-microsecond memory reclaim</td></tr>
+<tr><td style="text-align: left"><code>kachedb-shm</code></td><td style="text-align: left">Single-Thread 128B Slot Roundtrip</td><td style="text-align: right"><strong>89.39 ns</strong></td><td style="text-align: left">Lock-free push + pop</td></tr>
+<tr><td style="text-align: left"><code>kachedb-shm</code></td><td style="text-align: left">Cross-Thread SPSC Ring Streaming</td><td style="text-align: right"><strong>66.47 ns / msg</strong></td><td style="text-align: left"><strong>15.04 Million msgs/sec</strong></td></tr>
+</tbody></table>
+</div>
+<h3 id="phase-2-wire-protocol--asynchronous-tcp-pipeline"><a class="header" href="#phase-2-wire-protocol--asynchronous-tcp-pipeline">Phase 2: Wire Protocol &amp; Asynchronous TCP Pipeline</a></h3>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Crate</th><th style="text-align: left">Benchmark Target</th><th style="text-align: right">Measured Latency</th><th style="text-align: left">Single-Core Capacity</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>kachedb-proto-resp</code></td><td style="text-align: left">Zero-Alloc <code>GET</code> Frame Parse &amp; Decode</td><td style="text-align: right"><strong>68.80 ns</strong></td><td style="text-align: left"><strong>14.53 Million cmds/sec</strong></td></tr>
+<tr><td style="text-align: left"><code>kachedb-proto-resp</code></td><td style="text-align: left">Zero-Alloc <code>SET</code> Frame Parse &amp; Decode</td><td style="text-align: right"><strong>96.15 ns</strong></td><td style="text-align: left"><strong>10.40 Million cmds/sec</strong></td></tr>
+<tr><td style="text-align: left"><code>kachedb-proto-resp</code></td><td style="text-align: left">Zero-Alloc <code>MGET</code> Frame Parse &amp; Decode (4 keys)</td><td style="text-align: right"><strong>153.06 ns</strong></td><td style="text-align: left"><strong>6.53 Million cmds/sec</strong></td></tr>
+<tr><td style="text-align: left"><code>kachedb-proto-resp</code></td><td style="text-align: left">Frame Bulk String Serialization</td><td style="text-align: right"><strong>8.25 ns</strong></td><td style="text-align: left"><strong>121.2 Million frames/sec</strong></td></tr>
+<tr><td style="text-align: left"><code>kachedb-net</code></td><td style="text-align: left">Full <code>GET</code> Hit Pipeline Execution</td><td style="text-align: right"><strong>97.63 ns</strong></td><td style="text-align: left"><strong>10.24 Million requests/sec / core</strong></td></tr>
+<tr><td style="text-align: left"><code>kachedb-net</code></td><td style="text-align: left">Full <code>SET</code> + <code>DEL</code> Cycle Execution</td><td style="text-align: right"><strong>267.58 ns</strong></td><td style="text-align: left"><strong>3.74 Million write cycles/sec</strong></td></tr>
+</tbody></table>
+</div>
+<h3 id="phase-3-multi-core-server-daemon--python-bindings"><a class="header" href="#phase-3-multi-core-server-daemon--python-bindings">Phase 3: Multi-Core Server Daemon &amp; Python Bindings</a></h3>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Subsystem</th><th style="text-align: left">Operation</th><th style="text-align: right">Measured Performance</th><th style="text-align: left">Context</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>kachedb-cli</code></td><td style="text-align: left">Live Server Loopback Ping-Pong (10K reqs)</td><td style="text-align: right"><strong>48,493 req/sec (20.62 µs/req)</strong></td><td style="text-align: left">Synchronous unpipelined TCP</td></tr>
+<tr><td style="text-align: left"><code>bindings/python</code></td><td style="text-align: left">64-byte Header Validation &amp; Recovery</td><td style="text-align: right"><strong>&lt; 1 µs</strong></td><td style="text-align: left">0 heap allocations</td></tr>
+<tr><td style="text-align: left"><code>bindings/python</code></td><td style="text-align: left">Zero-Copy Tensor Extraction (<code>np.frombuffer</code>)</td><td style="text-align: right"><strong>Instantaneous (&lt; 50 ns)</strong></td><td style="text-align: left"><strong>0 bytes copied</strong> (direct memory view)</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="4-reproducing-benchmarks"><a class="header" href="#4-reproducing-benchmarks">4. Reproducing Benchmarks</a></h2>
+<p>All benchmarks can be reproduced locally with:</p>
+<pre><code class="language-bash"># Run all crate micro-benchmarks
+cargo bench --workspace
+
+# Or run individual crate benchmarks
+cargo bench -p kachedb-core
+cargo bench -p kachedb-hash
+cargo bench -p kachedb-radix
+cargo bench -p kachedb-shm
+cargo bench -p kachedb-proto-resp
+cargo bench -p kachedb-net
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="kachedb-standardized-benchmark-reproduction-protocol"><a class="header" href="#kachedb-standardized-benchmark-reproduction-protocol">KacheDB: Standardized Benchmark Reproduction Protocol</a></h1>
+<p><strong>Document Version:</strong> 1.0<br />
+<strong>Target Engine:</strong> KacheDB v0.1.0+</p>
+<p>This guide provides the exact methodology, hardware parameters, and commands to independently reproduce the published performance numbers for KacheDB.</p>
+<hr />
+<h2 id="1-hardware--environment-reference"><a class="header" href="#1-hardware--environment-reference">1. Hardware &amp; Environment Reference</a></h2>
+<p>To achieve identical peak throughput numbers, tests should be run on a dedicated bare-metal or high-priority virtualized host:</p>
+<ul>
+<li><strong>CPU:</strong> Multi-core modern x86_64 or ARM64 (e.g. Apple Silicon M-series, AMD EPYC 9004, or Intel Xeon 4th Gen)</li>
+<li><strong>Linux Kernel:</strong> Linux 6.8+ (for SQPOLL kernel thread pooling and <code>io_uring</code> multishot socket support)</li>
+<li><strong>RAM:</strong> Minimum 16 GB DDR4/DDR5</li>
+<li><strong>IPC Mount:</strong> <code>/dev/shm</code> (POSIX Shared Memory mounted as <code>tmpfs</code>)</li>
+</ul>
+<hr />
+<h2 id="2-one-command-turnkey-reproduction-docker-linux"><a class="header" href="#2-one-command-turnkey-reproduction-docker-linux">2. One-Command Turnkey Reproduction (Docker Linux)</a></h2>
+<p>Run the full end-to-end multi-core benchmark in an isolated Linux container with kernel <code>io_uring</code> + <code>SQPOLL</code>:</p>
+<pre><code class="language-bash"># From the repository root:
+make benchmark-reproduce
+</code></pre>
+<p>This runs the automated suite inside Docker with <code>--privileged</code> and <code>--ipc host</code>, measuring:</p>
+<ol>
+<li><strong>PING Throughput &amp; Latencies</strong> (50 concurrent clients, pipeline 16)</li>
+<li><strong>SET Throughput &amp; Latencies</strong> (50 concurrent clients, pipeline 16, 64-byte payload)</li>
+<li><strong>GET Throughput &amp; Latencies</strong> (50 concurrent clients, pipeline 16)</li>
+</ol>
+<hr />
+<h2 id="3-local-micro-benchmarks-criterionrs"><a class="header" href="#3-local-micro-benchmarks-criterionrs">3. Local Micro-Benchmarks (Criterion.rs)</a></h2>
+<p>Run the statistical Criterion micro-benchmarks with nanosecond-level resolution:</p>
+<pre><code class="language-bash"># Memory Allocator &amp; Pool Benchmarks
+cargo bench -p kachedb-core
+
+# Swiss Table Point Index Benchmarks
+cargo bench -p kachedb-hash
+
+# Full Workspace Benchmarks
+cargo bench --workspace
+</code></pre>
+<h3 id="measured-baselines"><a class="header" href="#measured-baselines">Measured Baselines:</a></h3>
+<ul>
+<li><code>arena::allocate (128 B)</code>: <strong>~3.84 ns</strong></li>
+<li><code>pool::allocate+deallocate</code>: <strong>~5.40 ns</strong></li>
+<li><code>swiss_table::lookup hit</code>: <strong>~3.09 ns</strong></li>
+<li><code>radix::lookup (1,024 tokens)</code>: <strong>~2.45 µs</strong></li>
+</ul>
+<hr />
+<h2 id="4-live-multi-core-tcp-benchmarks-kachedb-bench"><a class="header" href="#4-live-multi-core-tcp-benchmarks-kachedb-bench">4. Live Multi-Core TCP Benchmarks (<code>kachedb-bench</code>)</a></h2>
+<p>Start the multi-worker server and load generator manually:</p>
+<pre><code class="language-bash"># Build release binaries
+cargo build --release --workspace
+
+# Start server on 4 dedicated cores
+./target/release/kachedb-server -p 6379 -w 4 &amp;
+SERVER_PID=$!
+sleep 1
+
+# Run PING benchmark
+./target/release/kachedb-bench -p 6379 -n 100000 -c 50 --pipeline 16 --command PING
+
+# Run SET benchmark
+./target/release/kachedb-bench -p 6379 -n 100000 -c 50 --pipeline 16 --command SET
+
+# Run GET benchmark
+./target/release/kachedb-bench -p 6379 -n 100000 -c 50 --pipeline 16 --command GET
+
+# Terminate server
+kill $SERVER_PID
+</code></pre>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+        <script>
+        window.addEventListener('load', function() {
+            MathJax.Hub.Register.StartupHook('End', function() {
+                window.setTimeout(window.print, 100);
+            });
+        });
+        </script>
+
+    </div>
+    </body>
+</html>

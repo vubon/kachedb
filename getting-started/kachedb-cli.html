@@ -1,0 +1,429 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>kachedb-cli User Guide - KacheDB Documentation</title>
+
+
+        <!-- Custom HTML head -->
+        <script type="text/x-mathjax-config">
+          MathJax.Hub.Config({
+            tex2jax: {
+              inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+              displayMath: [ ['$$','$$'], ["\\[","\\]"] ],
+              processEscapes: true
+            }
+          });
+        </script>
+        <script>
+          window.MathJax = {
+            tex: {
+              inlineMath: [['$', '$'], ['\\(', '\\)']],
+              displayMath: [['$$', '$$'], ['\\[', '\\]']],
+              processEscapes: true
+            }
+          };
+        </script>
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "rust";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../index.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="../getting-started/quickstart.html"><strong aria-hidden="true">1.</strong> Quickstart Guide</a></li><li class="chapter-item expanded "><a href="../getting-started/kachedb-cli.html" class="active"><strong aria-hidden="true">2.</strong> kachedb-cli User Guide</a></li><li class="chapter-item expanded "><a href="../getting-started/configuration.html"><strong aria-hidden="true">3.</strong> Server Configuration & Tuning</a></li><li class="chapter-item expanded affix "><li class="part-title">Command Reference</li><li class="chapter-item expanded "><a href="../commands/core-kv.html"><strong aria-hidden="true">4.</strong> Core Key-Value Commands</a></li><li class="chapter-item expanded "><a href="../commands/ttl-lifecycle.html"><strong aria-hidden="true">5.</strong> TTL & Key Lifecycle</a></li><li class="chapter-item expanded "><a href="../commands/vector-search.html"><strong aria-hidden="true">6.</strong> SIMD Vector Commands</a></li><li class="chapter-item expanded "><a href="../commands/server-introspection.html"><strong aria-hidden="true">7.</strong> Server Observability & Introspection</a></li><li class="chapter-item expanded affix "><li class="part-title">System Architecture</li><li class="chapter-item expanded "><a href="../architecture/overview.html"><strong aria-hidden="true">8.</strong> System Architecture Overview</a></li><li class="chapter-item expanded "><a href="../architecture/memory-engine.html"><strong aria-hidden="true">9.</strong> 2 MB Megaslab Memory Engine</a></li><li class="chapter-item expanded "><a href="../architecture/radix-prefix-tree.html"><strong aria-hidden="true">10.</strong> Token Radix Prefix Tree</a></li><li class="chapter-item expanded "><a href="../architecture/zero-copy-ipc.html"><strong aria-hidden="true">11.</strong> Zero-Copy Shared Memory IPC</a></li><li class="chapter-item expanded affix "><li class="part-title">Production Integration Guides</li><li class="chapter-item expanded "><a href="../guides/vllm-integration.html"><strong aria-hidden="true">12.</strong> vLLM Integration</a></li><li class="chapter-item expanded "><a href="../guides/sglang-integration.html"><strong aria-hidden="true">13.</strong> SGLang Integration</a></li><li class="chapter-item expanded "><a href="../guides/semantic-caching.html"><strong aria-hidden="true">14.</strong> Semantic Caching Guide</a></li><li class="chapter-item expanded "><a href="../guides/openai-proxy.html"><strong aria-hidden="true">15.</strong> OpenAI Proxy</a></li><li class="chapter-item expanded affix "><li class="part-title">Performance & Benchmarks</li><li class="chapter-item expanded "><a href="../benchmark_report.html"><strong aria-hidden="true">16.</strong> Consolidated Master Benchmark Report</a></li><li class="chapter-item expanded "><a href="../benchmarks/reproducibility.html"><strong aria-hidden="true">17.</strong> Benchmark Reproducibility</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="kachedb-version-bar" style="display: flex; justify-content: flex-end; align-items: center; padding: 4px 16px; background-color: var(--sidebar-bg); border-bottom: 1px solid var(--sidebar-separator);">
+                  <label for="kachedb-version-select" style="font-size: 0.8rem; font-weight: 600; margin-right: 8px; opacity: 0.85;">Version:</label>
+                  <select id="kachedb-version-select" style="background: var(--bg); color: var(--fg); border: 1px solid var(--theme-hover); border-radius: 4px; padding: 2px 8px; font-size: 0.8rem; cursor: pointer;">
+                    <option value="/kachedb/">v0.1.0 (Stable)</option>
+                    <option value="/kachedb/latest/">latest (edge)</option>
+                  </select>
+                </div>
+                
+                <script>
+                  (function() {
+                    var select = document.getElementById("kachedb-version-select");
+                    if (!select) return;
+                    var path = window.location.pathname;
+                    if (path.indexOf("/kachedb/latest/") !== -1) {
+                      select.value = "/kachedb/latest/";
+                    } else {
+                      select.value = "/kachedb/";
+                    }
+                    select.addEventListener("change", function() {
+                      var targetBase = this.value;
+                      var currentPath = window.location.pathname;
+                      var relative = currentPath.replace(/^\/kachedb\/(latest\/)?/, "");
+                      window.location.href = targetBase + relative;
+                    });
+                  })();
+                </script>
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">KacheDB Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/vubon/kachedb" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/vubon/kachedb/edit/main/docs/getting-started/kachedb-cli.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="-kachedb-cli-user-guide"><a class="header" href="#-kachedb-cli-user-guide">💻 <code>kachedb-cli</code> User Guide</a></h1>
+<p><code>kachedb-cli</code> is the native command-line interface and benchmarking utility for <strong>KacheDB</strong>. It provides an interactive REPL with formatted RESP rendering, auto-reconnect capabilities, and a high-performance live throughput benchmarking harness.</p>
+<hr />
+<h2 id="-usage--command-line-flags"><a class="header" href="#-usage--command-line-flags">🛠️ Usage &amp; Command-Line Flags</a></h2>
+<pre><code class="language-bash">kachedb-cli [OPTIONS]
+</code></pre>
+<h3 id="options-reference"><a class="header" href="#options-reference">Options Reference</a></h3>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Flag</th><th style="text-align: left">Long Flag</th><th style="text-align: left">Description</th><th style="text-align: left">Default</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>-h</code></td><td style="text-align: left"><code>--host &lt;HOST&gt;</code></td><td style="text-align: left">Target KacheDB server hostname or IP address</td><td style="text-align: left"><code>127.0.0.1</code></td></tr>
+<tr><td style="text-align: left"><code>-p</code></td><td style="text-align: left"><code>--port &lt;PORT&gt;</code></td><td style="text-align: left">Target KacheDB server TCP port</td><td style="text-align: left"><code>6379</code></td></tr>
+<tr><td style="text-align: left"><code>-b</code></td><td style="text-align: left"><code>--bench</code></td><td style="text-align: left">Execute a high-speed throughput benchmark</td><td style="text-align: left"><code>false</code></td></tr>
+<tr><td style="text-align: left"><code>-n</code></td><td style="text-align: left"><code>-n &lt;NUM&gt;</code></td><td style="text-align: left">Total number of requests in benchmark mode</td><td style="text-align: left"><code>10,000</code></td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><code>--help</code></td><td style="text-align: left">Display command help and usage flags</td><td style="text-align: left"></td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="-interactive-repl-mode"><a class="header" href="#-interactive-repl-mode">💬 Interactive REPL Mode</a></h2>
+<p>Starting <code>kachedb-cli</code> without <code>--bench</code> enters interactive REPL mode:</p>
+<pre><code class="language-bash">./target/release/kachedb-cli -h 127.0.0.1 -p 6379
+</code></pre>
+<h3 id="banner--prompt"><a class="header" href="#banner--prompt">Banner &amp; Prompt</a></h3>
+<p>Upon connection, <code>kachedb-cli</code> displays the ASCII logo and prompt:</p>
+<pre><code class="language-text">  _  __           _          _____  ____   _____ _      _____ 
+ | |/ /          | |        |  __ \|  _ \ / ____| |    |_   _|
+ | ' / __ _  ___| |__   ___| |  | | |_) | |    | |      | |  
+ |  &lt; / _` |/ __| '_ \ / _ \ |  | |  _ &lt;| |    | |      | |  
+ | . \ (_| | (__| | | |  __/ |__| | |_) | |____| |____ _| |_ 
+ |_|\_\__,_|\___|_| |_|\___|_____/|____/ \_____|______|_____|
+
+Connecting to KacheDB at 127.0.0.1:6379...
+⚡ Connected to KacheDB. Type commands or 'help' / 'quit'.
+
+127.0.0.1:6379&gt; 
+</code></pre>
+<hr />
+<h2 id="-repl-commands--examples"><a class="header" href="#-repl-commands--examples">⚡ REPL Commands &amp; Examples</a></h2>
+<h3 id="1-key-value--strings"><a class="header" href="#1-key-value--strings">1. Key-Value &amp; Strings</a></h3>
+<pre><code class="language-text">127.0.0.1:6379&gt; SET user:1 "Alice Smith"
+OK
+
+127.0.0.1:6379&gt; GET user:1
+"Alice Smith"
+
+127.0.0.1:6379&gt; APPEND user:1 " (Admin)"
+(integer) 19
+
+127.0.0.1:6379&gt; GET user:1
+"Alice Smith (Admin)"
+
+127.0.0.1:6379&gt; STRLEN user:1
+(integer) 19
+</code></pre>
+<h3 id="2-atomic-counters"><a class="header" href="#2-atomic-counters">2. Atomic Counters</a></h3>
+<pre><code class="language-text">127.0.0.1:6379&gt; INCR visits
+(integer) 1
+
+127.0.0.1:6379&gt; INCRBY visits 10
+(integer) 11
+
+127.0.0.1:6379&gt; DECR visits
+(integer) 10
+
+127.0.0.1:6379&gt; DECRBY visits 5
+(integer) 5
+</code></pre>
+<h3 id="3-expiration--ttl-management"><a class="header" href="#3-expiration--ttl-management">3. Expiration &amp; TTL Management</a></h3>
+<pre><code class="language-text">127.0.0.1:6379&gt; SET session:temp "xyz" EX 60
+OK
+
+127.0.0.1:6379&gt; TTL session:temp
+(integer) 58
+
+127.0.0.1:6379&gt; PERSIST session:temp
+(integer) 1
+
+127.0.0.1:6379&gt; TTL session:temp
+(integer) -1
+</code></pre>
+<h3 id="4-vector-ingestion--nearest-neighbor-search"><a class="header" href="#4-vector-ingestion--nearest-neighbor-search">4. Vector Ingestion &amp; Nearest Neighbor Search</a></h3>
+<pre><code class="language-text"># Store a 4-dimensional vector in index 'docs' with ID 'doc:1'
+127.0.0.1:6379&gt; VADD docs doc:1 4 "\x00\x00\x80?\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" PAYLOAD "Introduction to KacheDB" EX 3600
+OK
+
+# Search index 'docs' for closest vector matches
+127.0.0.1:6379&gt; VSEARCH docs "\x00\x00\x80?\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" TOPK 1 THRESHOLD 0.8
+1) 1) "doc:1"
+   2) "1.000000"
+   3) "Introduction to KacheDB"
+
+# Check vector index statistics
+127.0.0.1:6379&gt; VSTATS docs
+1) "dimension"
+2) (integer) 4
+3) "total_vectors"
+4) (integer) 1
+5) "active_vectors"
+6) (integer) 1
+6) "memory_bytes"
+8) (integer) 64
+</code></pre>
+<h3 id="5-introspection--diagnostics"><a class="header" href="#5-introspection--diagnostics">5. Introspection &amp; Diagnostics</a></h3>
+<pre><code class="language-text">127.0.0.1:6379&gt; INFO
+# Server
+kachedb_version:0.1.0
+os:macos
+arch_bits:64
+process_id:48123
+tcp_port:6379
+uptime_in_seconds:342
+
+# Memory
+used_memory:134217728
+used_memory_human:128.00M
+used_memory_peak:134217728
+megaslabs_allocated:64
+slab_slots_active:1024
+fragmentation_ratio:1.00
+
+# Stats
+total_connections_received:42
+total_commands_processed:15234
+instantaneous_ops_per_sec:0
+keyspace_hits:14200
+keyspace_misses:1034
+</code></pre>
+<h3 id="6-built-in-repl-helper-commands"><a class="header" href="#6-built-in-repl-helper-commands">6. Built-in REPL Helper Commands</a></h3>
+<ul>
+<li><code>help</code>: Displays a quick command reference card.</li>
+<li><code>clear</code>: Clears the terminal screen.</li>
+<li><code>quit</code> / <code>exit</code>: Closes the connection and exits the CLI.</li>
+</ul>
+<hr />
+<h2 id="-live-benchmark-mode---bench"><a class="header" href="#-live-benchmark-mode---bench">🔥 Live Benchmark Mode (<code>--bench</code>)</a></h2>
+<p>You can measure raw network round-trip throughput and latency using the built-in benchmark harness:</p>
+<pre><code class="language-bash"># Run a 100,000-request pipelined benchmark against localhost
+./target/release/kachedb-cli -p 6379 --bench -n 100000
+</code></pre>
+<h3 id="example-benchmark-output"><a class="header" href="#example-benchmark-output">Example Benchmark Output</a></h3>
+<pre><code class="language-text">🔥 Connecting to 127.0.0.1:6379 for live benchmark (100,000 requests)...
+⚡ Pipelining 100,000 PING commands...
+
+══════════════════════════════════════════════════════════════
+  KacheDB Live Benchmark Report
+══════════════════════════════════════════════════════════════
+  Requests:          100,000
+  Total Elapsed:     34.28 ms
+  Throughput:        2,916,742 ops/sec
+  Average Latency:   342.8 ns / op
+══════════════════════════════════════════════════════════════
+</code></pre>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../getting-started/quickstart.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../getting-started/configuration.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../getting-started/quickstart.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../getting-started/configuration.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

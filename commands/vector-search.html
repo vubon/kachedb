@@ -1,0 +1,408 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>SIMD Vector Commands - KacheDB Documentation</title>
+
+
+        <!-- Custom HTML head -->
+        <script type="text/x-mathjax-config">
+          MathJax.Hub.Config({
+            tex2jax: {
+              inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+              displayMath: [ ['$$','$$'], ["\\[","\\]"] ],
+              processEscapes: true
+            }
+          });
+        </script>
+        <script>
+          window.MathJax = {
+            tex: {
+              inlineMath: [['$', '$'], ['\\(', '\\)']],
+              displayMath: [['$$', '$$'], ['\\[', '\\]']],
+              processEscapes: true
+            }
+          };
+        </script>
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "rust";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../index.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="../getting-started/quickstart.html"><strong aria-hidden="true">1.</strong> Quickstart Guide</a></li><li class="chapter-item expanded "><a href="../getting-started/kachedb-cli.html"><strong aria-hidden="true">2.</strong> kachedb-cli User Guide</a></li><li class="chapter-item expanded "><a href="../getting-started/configuration.html"><strong aria-hidden="true">3.</strong> Server Configuration & Tuning</a></li><li class="chapter-item expanded affix "><li class="part-title">Command Reference</li><li class="chapter-item expanded "><a href="../commands/core-kv.html"><strong aria-hidden="true">4.</strong> Core Key-Value Commands</a></li><li class="chapter-item expanded "><a href="../commands/ttl-lifecycle.html"><strong aria-hidden="true">5.</strong> TTL & Key Lifecycle</a></li><li class="chapter-item expanded "><a href="../commands/vector-search.html" class="active"><strong aria-hidden="true">6.</strong> SIMD Vector Commands</a></li><li class="chapter-item expanded "><a href="../commands/server-introspection.html"><strong aria-hidden="true">7.</strong> Server Observability & Introspection</a></li><li class="chapter-item expanded affix "><li class="part-title">System Architecture</li><li class="chapter-item expanded "><a href="../architecture/overview.html"><strong aria-hidden="true">8.</strong> System Architecture Overview</a></li><li class="chapter-item expanded "><a href="../architecture/memory-engine.html"><strong aria-hidden="true">9.</strong> 2 MB Megaslab Memory Engine</a></li><li class="chapter-item expanded "><a href="../architecture/radix-prefix-tree.html"><strong aria-hidden="true">10.</strong> Token Radix Prefix Tree</a></li><li class="chapter-item expanded "><a href="../architecture/zero-copy-ipc.html"><strong aria-hidden="true">11.</strong> Zero-Copy Shared Memory IPC</a></li><li class="chapter-item expanded affix "><li class="part-title">Production Integration Guides</li><li class="chapter-item expanded "><a href="../guides/vllm-integration.html"><strong aria-hidden="true">12.</strong> vLLM Integration</a></li><li class="chapter-item expanded "><a href="../guides/sglang-integration.html"><strong aria-hidden="true">13.</strong> SGLang Integration</a></li><li class="chapter-item expanded "><a href="../guides/semantic-caching.html"><strong aria-hidden="true">14.</strong> Semantic Caching Guide</a></li><li class="chapter-item expanded "><a href="../guides/openai-proxy.html"><strong aria-hidden="true">15.</strong> OpenAI Proxy</a></li><li class="chapter-item expanded affix "><li class="part-title">Performance & Benchmarks</li><li class="chapter-item expanded "><a href="../benchmark_report.html"><strong aria-hidden="true">16.</strong> Consolidated Master Benchmark Report</a></li><li class="chapter-item expanded "><a href="../benchmarks/reproducibility.html"><strong aria-hidden="true">17.</strong> Benchmark Reproducibility</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="kachedb-version-bar" style="display: flex; justify-content: flex-end; align-items: center; padding: 4px 16px; background-color: var(--sidebar-bg); border-bottom: 1px solid var(--sidebar-separator);">
+                  <label for="kachedb-version-select" style="font-size: 0.8rem; font-weight: 600; margin-right: 8px; opacity: 0.85;">Version:</label>
+                  <select id="kachedb-version-select" style="background: var(--bg); color: var(--fg); border: 1px solid var(--theme-hover); border-radius: 4px; padding: 2px 8px; font-size: 0.8rem; cursor: pointer;">
+                    <option value="/kachedb/">v0.1.0 (Stable)</option>
+                    <option value="/kachedb/latest/">latest (edge)</option>
+                  </select>
+                </div>
+                
+                <script>
+                  (function() {
+                    var select = document.getElementById("kachedb-version-select");
+                    if (!select) return;
+                    var path = window.location.pathname;
+                    if (path.indexOf("/kachedb/latest/") !== -1) {
+                      select.value = "/kachedb/latest/";
+                    } else {
+                      select.value = "/kachedb/";
+                    }
+                    select.addEventListener("change", function() {
+                      var targetBase = this.value;
+                      var currentPath = window.location.pathname;
+                      var relative = currentPath.replace(/^\/kachedb\/(latest\/)?/, "");
+                      window.location.href = targetBase + relative;
+                    });
+                  })();
+                </script>
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">KacheDB Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/vubon/kachedb" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/vubon/kachedb/edit/main/docs/commands/vector-search.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="-simd-semantic-vector-commands"><a class="header" href="#-simd-semantic-vector-commands">🧠 SIMD Semantic Vector Commands</a></h1>
+<p>KacheDB features a hardware-accelerated <strong>SIMD Vector Search Engine</strong> (<code>kachedb-vector</code>) built directly into the storage core. It enables sub-microsecond nearest-neighbor vector lookups, semantic caching, and LLM prompt similarity matching with zero external dependencies.</p>
+<hr />
+<h2 id="-hardware-simd-acceleration"><a class="header" href="#-hardware-simd-acceleration">⚡ Hardware SIMD Acceleration</a></h2>
+<ul>
+<li><strong>ARM NEON (<code>aarch64</code>):</strong> 128-bit <code>vfmaq_f32</code> with 4-way loop unrolling (16 floats per loop iteration) delivering $&lt; 120\text{ ns}$ dot products on Apple Silicon and AWS Graviton.</li>
+<li><strong>x86_64 AVX2 / FMA:</strong> 256-bit <code>_mm256_fmadd_ps</code> with 4-way loop unrolling (32 floats per iteration) delivering $&gt; 40\text{ GB/s}$ throughput.</li>
+<li><strong>Normalized Cosine Similarity:</strong> All stored vectors are automatically $L_2$-normalized upon ingestion, transforming cosine distance calculation into a single high-speed inner dot product:
+$$\text{CosineSimilarity}(\vec{u}, \vec{v}) = \sum_{i=1}^{D} u_i \cdot v_i$$</li>
+</ul>
+<hr />
+<h2 id="-command-summary"><a class="header" href="#-command-summary">📋 Command Summary</a></h2>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Command</th><th style="text-align: left">Syntax</th><th style="text-align: center">Complexity</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong><code>VADD</code></strong></td><td style="text-align: left"><code>VADD index id dim vector_bytes [PAYLOAD text] [EX sec]</code></td><td style="text-align: center"><code>O(D)</code></td><td style="text-align: left">Ingests vector embedding into named index with optional payload and TTL.</td></tr>
+<tr><td style="text-align: left"><strong><code>VADD_BATCH</code></strong></td><td style="text-align: left"><code>VADD_BATCH index id1 vec1 payload1 id2 vec2 payload2 ...</code></td><td style="text-align: center"><code>O(B · D)</code></td><td style="text-align: left">Batch ingests multiple vectors into named index in a single operation.</td></tr>
+<tr><td style="text-align: left"><strong><code>VSEARCH</code></strong></td><td style="text-align: left"><code>VSEARCH index query_bytes [TOPK k] [THRESHOLD min_score]</code></td><td style="text-align: center"><code>O(N · D)</code></td><td style="text-align: left">Nearest-neighbor cosine search returning matched IDs, scores, and payloads.</td></tr>
+<tr><td style="text-align: left"><strong><code>VSEARCH_BATCH</code></strong></td><td style="text-align: left"><code>VSEARCH_BATCH index q1 q2 ... [TOPK k] [THRESHOLD min_score]</code></td><td style="text-align: center"><code>O(B · N · D)</code></td><td style="text-align: left">Parallel multi-query batch nearest-neighbor search.</td></tr>
+<tr><td style="text-align: left"><strong><code>VDEL</code></strong></td><td style="text-align: left"><code>VDEL index id</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Deletes vector from named index.</td></tr>
+<tr><td style="text-align: left"><strong><code>VSTATS</code></strong></td><td style="text-align: left"><code>VSTATS index</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Returns index dimension, active vector count, and memory consumption.</td></tr>
+<tr><td style="text-align: left"><strong><code>VINDEX CREATE</code></strong></td><td style="text-align: left"><code>VINDEX CREATE name DIM dim [M m] [EF_CONSTRUCTION ef_c] ...</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Creates and configures a dedicated HNSW vector index.</td></tr>
+<tr><td style="text-align: left"><strong><code>VINDEX DROP</code></strong></td><td style="text-align: left"><code>VINDEX DROP name</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Drops a vector index and frees associated memory slots.</td></tr>
+<tr><td style="text-align: left"><strong><code>VINDEX INFO</code></strong></td><td style="text-align: left"><code>VINDEX INFO name</code></td><td style="text-align: center"><code>O(1)</code></td><td style="text-align: left">Returns configuration and metrics for a named index.</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="-detailed-command-reference--examples"><a class="header" href="#-detailed-command-reference--examples">🛠️ Detailed Command Reference &amp; Examples</a></h2>
+<h3 id="vadd"><a class="header" href="#vadd"><code>VADD</code></a></h3>
+<p>Ingests a single float32 vector into a named index. The vector is provided as raw little-endian IEEE 754 float32 byte buffers.</p>
+<h4 id="syntax"><a class="header" href="#syntax">Syntax</a></h4>
+<pre><code class="language-text">VADD &lt;index&gt; &lt;id&gt; &lt;dim&gt; &lt;vector_bytes&gt; [PAYLOAD &lt;payload&gt;] [EX &lt;seconds&gt;]
+</code></pre>
+<h4 id="kachedb-cli-example"><a class="header" href="#kachedb-cli-example"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text"># Insert a 4-dimensional vector with payload and 1-hour expiration
+127.0.0.1:6379&gt; VADD faq q:101 4 "\x00\x00\x80?\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" PAYLOAD "To reset password, go to Settings -&gt; Security." EX 3600
+OK
+</code></pre>
+<hr />
+<h3 id="vsearch"><a class="header" href="#vsearch"><code>VSEARCH</code></a></h3>
+<p>Performs nearest-neighbor cosine similarity search across all vectors in the index.</p>
+<h4 id="syntax-1"><a class="header" href="#syntax-1">Syntax</a></h4>
+<pre><code class="language-text">VSEARCH &lt;index&gt; &lt;query_bytes&gt; [TOPK &lt;k&gt;] [THRESHOLD &lt;min_similarity&gt;]
+</code></pre>
+<h4 id="kachedb-cli-example-1"><a class="header" href="#kachedb-cli-example-1"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text"># Search index 'faq' for top 1 match with similarity &gt;= 0.80
+127.0.0.1:6379&gt; VSEARCH faq "\x00\x00\x80?\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" TOPK 1 THRESHOLD 0.80
+1) 1) "q:101"
+   2) "1.000000"
+   3) "To reset password, go to Settings -&gt; Security."
+</code></pre>
+<hr />
+<h3 id="vdel--vstats"><a class="header" href="#vdel--vstats"><code>VDEL</code> &amp; <code>VSTATS</code></a></h3>
+<p>Index management and telemetry.</p>
+<h4 id="kachedb-cli-example-2"><a class="header" href="#kachedb-cli-example-2"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text">127.0.0.1:6379&gt; VSTATS faq
+1) "dimension"
+2) (integer) 4
+3) "total_vectors"
+4) (integer) 1
+5) "active_vectors"
+6) (integer) 1
+7) "memory_bytes"
+8) (integer) 64
+
+127.0.0.1:6379&gt; VDEL faq q:101
+(integer) 1
+</code></pre>
+<hr />
+<h3 id="vadd_batch--vsearch_batch"><a class="header" href="#vadd_batch--vsearch_batch"><code>VADD_BATCH</code> &amp; <code>VSEARCH_BATCH</code></a></h3>
+<p>High-throughput bulk ingestion and multi-vector querying.</p>
+<h4 id="syntax-2"><a class="header" href="#syntax-2">Syntax</a></h4>
+<pre><code class="language-text">VADD_BATCH &lt;index&gt; &lt;id1&gt; &lt;vec1_bytes&gt; [payload1] ...
+VSEARCH_BATCH &lt;index&gt; &lt;q1_bytes&gt; &lt;q2_bytes&gt; ... [TOPK &lt;k&gt;] [THRESHOLD &lt;min_similarity&gt;]
+</code></pre>
+<hr />
+<h3 id="vindex-create-vindex-info--vindex-drop"><a class="header" href="#vindex-create-vindex-info--vindex-drop"><code>VINDEX CREATE</code>, <code>VINDEX INFO</code> &amp; <code>VINDEX DROP</code></a></h3>
+<p>Lifecycle management for named HNSW vector index topologies.</p>
+<h4 id="syntax-3"><a class="header" href="#syntax-3">Syntax</a></h4>
+<pre><code class="language-text">VINDEX CREATE &lt;name&gt; DIM &lt;dim&gt; [M &lt;m&gt;] [EF_CONSTRUCTION &lt;ef_c&gt;] [EF_SEARCH &lt;ef_s&gt;] [METRIC &lt;COSINE|L2|IP&gt;] [QUANTIZATION &lt;NONE|SQ8&gt;]
+VINDEX INFO &lt;name&gt;
+VINDEX DROP &lt;name&gt;
+</code></pre>
+<h4 id="kachedb-cli-example-3"><a class="header" href="#kachedb-cli-example-3"><code>kachedb-cli</code> Example</a></h4>
+<pre><code class="language-text"># Create an index for 1536-dimensional OpenAI embeddings
+127.0.0.1:6379&gt; VINDEX CREATE embeddings DIM 1536 METRIC COSINE QUANTIZATION SQ8
+OK
+
+# Inspect index topology
+127.0.0.1:6379&gt; VINDEX INFO embeddings
+1) "name"
+2) "embeddings"
+3) "dimension"
+4) (integer) 1536
+5) "metric"
+6) "COSINE"
+7) "quantization"
+8) "SQ8"
+
+# Drop index when no longer needed
+127.0.0.1:6379&gt; VINDEX DROP embeddings
+OK
+</code></pre>
+<hr />
+<h2 id="-python-sdk-kachedb-py-example"><a class="header" href="#-python-sdk-kachedb-py-example">🐍 Python SDK (<code>kachedb-py</code>) Example</a></h2>
+<p>Using vectors is seamless via <code>kachedb-py</code>:</p>
+<pre><code class="language-python">from kachedb import KacheClient
+
+with KacheClient() as client:
+    # 1. Ingest vector embedding (automatically packs float lists to IEEE-754 bytes)
+    embedding = [0.12, -0.45, 0.88, 0.05]
+    client.vadd(
+        index="products",
+        item_id="item:1001",
+        vector=embedding,
+        payload="Ergonomic Mechanical Keyboard",
+        ex=86400,
+    )
+
+    # 2. Query nearest vectors
+    query_vector = [0.10, -0.40, 0.85, 0.04]
+    results = client.vsearch(
+        index="products",
+        query_vector=query_vector,
+        top_k=3,
+        threshold=0.85,
+    )
+
+    for item_id, score, payload in results:
+        print(f"Matched {item_id} (Score: {score:.4f}): {payload}")
+</code></pre>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../commands/ttl-lifecycle.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../commands/server-introspection.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../commands/ttl-lifecycle.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../commands/server-introspection.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>
