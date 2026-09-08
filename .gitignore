@@ -1,5 +1,6 @@
 # Rust build artifacts
-/target
+target/
+**/target/
 **/*.rs.bk
 
 # OS metadata
@@ -31,3 +32,6 @@ build/
 docker/.bench_tmp/
 .bench_tmp/
 docs/benchmarks/benchmark_comparison_results*.md
+
+# mdBook generated output
+/book/

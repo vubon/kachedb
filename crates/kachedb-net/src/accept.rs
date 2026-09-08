@@ -14,10 +14,38 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crossbeam_channel::Sender;
 use mio::net::TcpStream;
+
+static ACTIVE_CLIENTS: AtomicUsize = AtomicUsize::new(0);
+static MAX_CLIENTS: AtomicUsize = AtomicUsize::new(10_000);
+
+/// Sets the global maximum number of simultaneous client connections.
+pub fn set_max_clients(limit: usize) {
+    MAX_CLIENTS.store(limit, Ordering::Relaxed);
+}
+
+/// Returns the current maximum client limit.
+pub fn get_max_clients() -> usize {
+    MAX_CLIENTS.load(Ordering::Relaxed)
+}
+
+/// Returns the current number of active client connections.
+pub fn get_active_clients() -> usize {
+    ACTIVE_CLIENTS.load(Ordering::Relaxed)
+}
+
+/// Atomically increments the active client counter.
+pub fn inc_active_clients() -> usize {
+    ACTIVE_CLIENTS.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Atomically decrements the active client counter.
+pub fn dec_active_clients() -> usize {
+    ACTIVE_CLIENTS.fetch_sub(1, Ordering::Relaxed)
+}
 
 /// Channel capacity per worker — bounds backpressure.
 /// 256 is generous for connection establishment bursts.
@@ -163,7 +191,20 @@ impl AcceptDispatcher {
                 // Accept all pending connections
                 loop {
                     match listener.accept() {
-                        Ok((stream, peer_addr)) => {
+                        Ok((mut stream, peer_addr)) => {
+                            let active = ACTIVE_CLIENTS.load(Ordering::Relaxed);
+                            let max = MAX_CLIENTS.load(Ordering::Relaxed);
+                            if active >= max {
+                                log::warn!(
+                                    "AcceptDispatcher: maxclients reached ({active}/{max}), rejecting connection from {peer_addr}"
+                                );
+                                use std::io::Write;
+                                let _ = stream.write_all(b"-ERR max number of clients reached\r\n");
+                                let _ = stream.flush();
+                                drop(stream);
+                                continue;
+                            }
+
                             // Set TCP_NODELAY before dispatching
                             let _ = stream.set_nodelay(true);
 
@@ -172,12 +213,15 @@ impl AcceptDispatcher {
                                 peer_addr
                             );
 
+                            inc_active_clients();
+
                             // Round-robin dispatch to workers
                             if self.senders[next_worker].try_send(stream).is_err() {
                                 log::warn!(
                                     "AcceptDispatcher: worker[{next_worker}] channel full, dropping connection from {}",
                                     peer_addr
                                 );
+                                dec_active_clients();
                             }
 
                             next_worker = (next_worker + 1) % num_workers;
@@ -194,5 +238,25 @@ impl AcceptDispatcher {
 
         log::info!("AcceptDispatcher: shut down");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_maxclients_tracking() {
+        set_max_clients(50);
+        assert_eq!(get_max_clients(), 50);
+
+        let initial = get_active_clients();
+        inc_active_clients();
+        assert_eq!(get_active_clients(), initial + 1);
+        dec_active_clients();
+        assert_eq!(get_active_clients(), initial);
+
+        // Reset to default
+        set_max_clients(10_000);
     }
 }

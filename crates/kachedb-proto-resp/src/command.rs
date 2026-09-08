@@ -128,6 +128,14 @@ pub enum Command<'a> {
         username: Option<&'a [u8]>,
         password: &'a [u8],
     },
+    /// `DBSIZE`
+    DBSize,
+    /// `TYPE <key>`
+    Type { key: &'a [u8] },
+    /// `FLUSHDB`
+    FlushDb,
+    /// `FLUSHALL`
+    FlushAll,
     /// `QUIT`
     Quit,
     /// Unrecognized command
@@ -237,6 +245,12 @@ pub fn parse_command<'a>(src: &'a [u8]) -> Result<Option<(Command<'a>, usize)>, 
             Ok(Some((Command::Ping { message: None }, crlf_pos + 2)))
         } else if line.eq_ignore_ascii_case(b"QUIT") {
             Ok(Some((Command::Quit, crlf_pos + 2)))
+        } else if line.eq_ignore_ascii_case(b"DBSIZE") {
+            Ok(Some((Command::DBSize, crlf_pos + 2)))
+        } else if line.eq_ignore_ascii_case(b"FLUSHDB") {
+            Ok(Some((Command::FlushDb, crlf_pos + 2)))
+        } else if line.eq_ignore_ascii_case(b"FLUSHALL") {
+            Ok(Some((Command::FlushAll, crlf_pos + 2)))
         } else {
             let mut parts = line
                 .split(|&b| b == b' ' || b == b'\t')
@@ -253,6 +267,35 @@ pub fn parse_command<'a>(src: &'a [u8]) -> Result<Option<(Command<'a>, usize)>, 
                             command: "GET".into(),
                         })
                     }
+                } else if cmd_name.eq_ignore_ascii_case(b"SET") {
+                    if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                        Ok(Some((
+                            Command::Set {
+                                key,
+                                value,
+                                ttl_ms: None,
+                            },
+                            crlf_pos + 2,
+                        )))
+                    } else {
+                        Err(RespError::WrongArgumentCount {
+                            command: "SET".into(),
+                        })
+                    }
+                } else if cmd_name.eq_ignore_ascii_case(b"DBSIZE") {
+                    Ok(Some((Command::DBSize, crlf_pos + 2)))
+                } else if cmd_name.eq_ignore_ascii_case(b"TYPE") {
+                    if let Some(key) = parts.next() {
+                        Ok(Some((Command::Type { key }, crlf_pos + 2)))
+                    } else {
+                        Err(RespError::WrongArgumentCount {
+                            command: "TYPE".into(),
+                        })
+                    }
+                } else if cmd_name.eq_ignore_ascii_case(b"FLUSHDB") {
+                    Ok(Some((Command::FlushDb, crlf_pos + 2)))
+                } else if cmd_name.eq_ignore_ascii_case(b"FLUSHALL") {
+                    Ok(Some((Command::FlushAll, crlf_pos + 2)))
                 } else {
                     Ok(Some((Command::Unknown { name: cmd_name }, crlf_pos + 2)))
                 }
@@ -852,6 +895,19 @@ impl<'a> Command<'a> {
         } else if cmd_name.eq_ignore_ascii_case(b"INFO") {
             let section = if args.len() >= 2 { Some(args[1]) } else { None };
             Ok(Command::Info { section })
+        } else if cmd_name.eq_ignore_ascii_case(b"DBSIZE") {
+            Ok(Command::DBSize)
+        } else if cmd_name.eq_ignore_ascii_case(b"TYPE") {
+            if args.len() != 2 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "TYPE".into(),
+                });
+            }
+            Ok(Command::Type { key: args[1] })
+        } else if cmd_name.eq_ignore_ascii_case(b"FLUSHDB") {
+            Ok(Command::FlushDb)
+        } else if cmd_name.eq_ignore_ascii_case(b"FLUSHALL") {
+            Ok(Command::FlushAll)
         } else if cmd_name.eq_ignore_ascii_case(b"COMMAND") {
             Ok(Command::CommandDoc)
         } else if cmd_name.eq_ignore_ascii_case(b"QUIT") {
@@ -1559,6 +1615,20 @@ impl<'a> Command<'a> {
                         None
                     };
                     Ok(Command::Info { section })
+                } else if cmd_name.eq_ignore_ascii_case(b"DBSIZE") {
+                    Ok(Command::DBSize)
+                } else if cmd_name.eq_ignore_ascii_case(b"TYPE") {
+                    if args.len() != 2 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "TYPE".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "TYPE")?;
+                    Ok(Command::Type { key })
+                } else if cmd_name.eq_ignore_ascii_case(b"FLUSHDB") {
+                    Ok(Command::FlushDb)
+                } else if cmd_name.eq_ignore_ascii_case(b"FLUSHALL") {
+                    Ok(Command::FlushAll)
                 } else if cmd_name.eq_ignore_ascii_case(b"COMMAND") {
                     Ok(Command::CommandDoc)
                 } else if cmd_name.eq_ignore_ascii_case(b"QUIT") {
@@ -1571,6 +1641,9 @@ impl<'a> Command<'a> {
             Frame::SimpleString(s) if s.eq_ignore_ascii_case(b"PING") => {
                 Ok(Command::Ping { message: None })
             }
+            Frame::SimpleString(s) if s.eq_ignore_ascii_case(b"DBSIZE") => Ok(Command::DBSize),
+            Frame::SimpleString(s) if s.eq_ignore_ascii_case(b"FLUSHDB") => Ok(Command::FlushDb),
+            Frame::SimpleString(s) if s.eq_ignore_ascii_case(b"FLUSHALL") => Ok(Command::FlushAll),
             _ => Err(RespError::InvalidTypeMarker { marker: b'?' }),
         }
     }
@@ -1976,5 +2049,51 @@ mod tests {
             }
             _ => panic!("Expected VSearchBatch"),
         }
+    }
+
+    #[test]
+    fn test_parse_dbsize_type_flush() {
+        // Inline
+        assert_eq!(
+            parse_command(b"DBSIZE\r\n").unwrap().unwrap().0,
+            Command::DBSize
+        );
+        assert_eq!(
+            parse_command(b"TYPE mykey\r\n").unwrap().unwrap().0,
+            Command::Type { key: b"mykey" }
+        );
+        assert_eq!(
+            parse_command(b"FLUSHDB\r\n").unwrap().unwrap().0,
+            Command::FlushDb
+        );
+        assert_eq!(
+            parse_command(b"FLUSHALL\r\n").unwrap().unwrap().0,
+            Command::FlushAll
+        );
+
+        // Multi-bulk
+        let resp_dbsize = b"*1\r\n$6\r\nDBSIZE\r\n";
+        assert_eq!(
+            parse_command(resp_dbsize).unwrap().unwrap().0,
+            Command::DBSize
+        );
+
+        let resp_type = b"*2\r\n$4\r\nTYPE\r\n$5\r\nhello\r\n";
+        assert_eq!(
+            parse_command(resp_type).unwrap().unwrap().0,
+            Command::Type { key: b"hello" }
+        );
+
+        let resp_flushdb = b"*1\r\n$7\r\nFLUSHDB\r\n";
+        assert_eq!(
+            parse_command(resp_flushdb).unwrap().unwrap().0,
+            Command::FlushDb
+        );
+
+        let resp_flushall = b"*1\r\n$8\r\nFLUSHALL\r\n";
+        assert_eq!(
+            parse_command(resp_flushall).unwrap().unwrap().0,
+            Command::FlushAll
+        );
     }
 }

@@ -1,8 +1,8 @@
 # ⏱️ TTL & Key Lifecycle Commands
 
 KacheDB provides high-resolution time-to-live (TTL) expiration support with **dual-engine memory reclamation**:
-1. **Sub-Nanosecond Passive Expiry:** On `GET`/`EXISTS` queries, the Swiss Table verifies the cached second timestamp in $\approx 0.5\text{ ns}$.
-2. **Active $\mathcal{O}(1)$ Background Timing Wheel:** A lock-free 3,600-bucket per-core circular wheel proactively evicts expired keys and returns 2 MB Megaslab slots back to the free-list every second without waiting for read traffic.
+1. **Sub-Nanosecond Passive Expiry:** On `GET`/`EXISTS` queries, the Swiss Table verifies the cached second timestamp in ~0.5 ns.
+2. **Active O(1) Background Timing Wheel:** A lock-free 3,600-bucket per-core circular wheel proactively evicts expired keys and returns 2 MB Megaslab slots back to the free-list every second without waiting for read traffic.
 
 ---
 
@@ -10,13 +10,13 @@ KacheDB provides high-resolution time-to-live (TTL) expiration support with **du
 
 | Command | Syntax | Return Value | Complexity | Description |
 | :--- | :--- | :---: | :---: | :--- |
-| **`EXPIRE`** | `EXPIRE key seconds` | `1` or `0` | $\mathcal{O}(1)$ | Sets timeout on `key` in seconds. |
-| **`PEXPIRE`** | `PEXPIRE key milliseconds` | `1` or `0` | $\mathcal{O}(1)$ | Sets timeout on `key` in milliseconds. |
-| **`EXPIREAT`** | `EXPIREAT key unix_seconds` | `1` or `0` | $\mathcal{O}(1)$ | Sets expiration deadline as an absolute Unix timestamp. |
-| **`PEXPIREAT`** | `PEXPIREAT key unix_millis` | `1` or `0` | $\mathcal{O}(1)$ | Sets expiration deadline as an absolute millisecond timestamp. |
-| **`TTL`** | `TTL key` | `integer` | $\mathcal{O}(1)$ | Returns remaining TTL in seconds (`-2` if missing, `-1` if no TTL). |
-| **`PTTL`** | `PTTL key` | `integer` | $\mathcal{O}(1)$ | Returns remaining TTL in milliseconds (`-2` if missing, `-1` if no TTL). |
-| **`PERSIST`** | `PERSIST key` | `1` or `0` | $\mathcal{O}(1)$ | Removes timeout, persisting the key indefinitely. |
+| **`EXPIRE`** | `EXPIRE key seconds` | `1` or `0` | `O(1)` | Sets timeout on `key` in seconds. |
+| **`PEXPIRE`** | `PEXPIRE key milliseconds` | `1` or `0` | `O(1)` | Sets timeout on `key` in milliseconds. |
+| **`EXPIREAT`** | `EXPIREAT key unix_seconds` | `1` or `0` | `O(1)` | Sets expiration deadline as an absolute Unix timestamp. |
+| **`PEXPIREAT`** | `PEXPIREAT key unix_millis` | `1` or `0` | `O(1)` | Sets expiration deadline as an absolute millisecond timestamp. |
+| **`TTL`** | `TTL key` | `integer` | `O(1)` | Returns remaining TTL in seconds (`-2` if missing, `-1` if no TTL). |
+| **`PTTL`** | `PTTL key` | `integer` | `O(1)` | Returns remaining TTL in milliseconds (`-2` if missing, `-1` if no TTL). |
+| **`PERSIST`** | `PERSIST key` | `1` or `0` | `O(1)` | Removes timeout, persisting the key indefinitely. |
 
 ---
 

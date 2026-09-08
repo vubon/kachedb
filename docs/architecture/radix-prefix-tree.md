@@ -7,7 +7,7 @@ The `kachedb-radix` subsystem implements a hierarchical token prefix tree optimi
 ## ⚡ The LLM Prefill Problem
 
 During LLM inference, requests operate in two phases:
-1. **Prefill Phase:** Computes the Key and Value ($K, V$) attention matrices across all layers for the prompt tokens. Computational complexity is $\mathcal{O}(N^2)$ with respect to sequence length.
+1. **Prefill Phase:** Computes the Key and Value ($K, V$) attention matrices across all layers for the prompt tokens. Computational complexity is `O(N²)` with respect to sequence length.
 2. **Decode Phase:** Autoregressively generates tokens one by one using previously computed $K, V$ states.
 
 For long multi-turn prompts (e.g. system prompts, few-shot examples, large codebases, 16K–128K tokens):
@@ -35,7 +35,7 @@ For long multi-turn prompts (e.g. system prompts, few-shot examples, large codeb
 
 ### 1. Compressed Edge Hops (`[u32; 16]`)
 * Rather than storing 1 token per node hop, KacheDB edges compress **16 tokens per block**.
-* Traversal complexity drops from $\mathcal{O}(L)$ to $\mathcal{O}(L / 16)$.
+* Traversal complexity drops from `O(L)` to `O(L / 16)`.
 * A 1,024-token prompt prefix matches in **$2.45\ \mu\text{s}$** ($> 10,000\times$ faster than GPU recomputation).
 
 ### 2. Epoch-Based RCU Concurrency (`EpochTree`)

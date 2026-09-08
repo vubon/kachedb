@@ -26,10 +26,10 @@
 ---
 
 ### ⚡ Command Reference
-* [**Core Key-Value Commands**](./commands/core-kv.md): `GET`, `SET`, `MGET`, `MSET`, `DEL`, `EXISTS`, `INCR`, `DECR`, `APPEND`, `STRLEN`, `PING`.
+* [**Core Key-Value Commands**](./commands/core-kv.md): `GET`, `SET`, `MGET`, `MSET`, `DEL`, `EXISTS`, `INCR`, `DECR`, `APPEND`, `STRLEN`, `DBSIZE`, `TYPE`, `FLUSHDB`, `FLUSHALL`, `PING`.
 * [**TTL & Key Lifecycle Commands**](./commands/ttl-lifecycle.md): `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST`, and the background Timing Wheel.
-* [**SIMD Semantic Vector Commands**](./commands/vector-search.md): `VADD`, `VSEARCH`, `VDEL`, `VSTATS`, ARM NEON / AVX2 kernels, and similarity thresholds.
-* [**Server Observability & Introspection**](./commands/server-introspection.md): `INFO`, `COMMAND DOCS`, `HELLO 2/3`, `CLIENT SETNAME/GETNAME/ID/LIST`, `QUIT`.
+* [**SIMD Semantic Vector Commands**](./commands/vector-search.md): `VADD`, `VSEARCH`, `VADD_BATCH`, `VSEARCH_BATCH`, `VDEL`, `VSTATS`, `VINDEX`, ARM NEON / AVX2 kernels.
+* [**Server Observability & Introspection**](./commands/server-introspection.md): `INFO`, `COMMAND DOCS`, `HELLO 2/3`, `AUTH`, `CLIENT SETNAME/GETNAME/ID/LIST`, `BGREWRITEAOF`, `QUIT`.
 
 ---
 

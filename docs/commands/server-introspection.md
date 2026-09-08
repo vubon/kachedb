@@ -10,8 +10,10 @@ KacheDB provides self-describing runtime introspection compatible with modern Re
 | :--- | :--- | :--- |
 | **`INFO`** | `INFO [section]` | Returns server, memory, traffic, keyspace, and vector statistics. |
 | **`HELLO`** | `HELLO [protover [AUTH user pass] [SETNAME name]]` | Protocol handshake negotiating RESP2 or RESP3 and returning connection metadata. |
+| **`AUTH`** | `AUTH [username] <password>` | Authenticates the connection when `requirepass` is configured. |
 | **`CLIENT`** | `CLIENT <SETNAME \| GETNAME \| ID \| LIST>` | Inspects and configures client connection state. |
 | **`COMMAND`** | `COMMAND [DOCS]` | Returns server capability descriptors for client auto-discovery. |
+| **`BGREWRITEAOF`** | `BGREWRITEAOF` | Triggers asynchronous compaction and rewrite of the Append-Only File. |
 | **`QUIT`** | `QUIT` | Gracefully closes the client connection. |
 
 ---
@@ -124,3 +126,40 @@ Provides capability introspection so GUI tools and drivers can discover supporte
 127.0.0.1:6379> COMMAND DOCS
 OK
 ```
+
+---
+
+### `AUTH`
+Authenticates a client connection when password protection is enabled with `requirepass`.
+
+#### Syntax
+```text
+AUTH [username] <password>
+```
+
+#### `kachedb-cli` Example
+```text
+127.0.0.1:6379> GET secret_key
+(error) NOAUTH Authentication required.
+127.0.0.1:6379> AUTH my_secure_password
+OK
+127.0.0.1:6379> GET secret_key
+"confidential_data"
+```
+
+---
+
+### `BGREWRITEAOF`
+Instructs the server to compact and rewrite the Append-Only File (`kachedb.aof`) to remove redundant commands and minimize disk space.
+
+#### Syntax
+```text
+BGREWRITEAOF
+```
+
+#### `kachedb-cli` Example
+```text
+127.0.0.1:6379> BGREWRITEAOF
+Background append only file rewriting started
+```
+

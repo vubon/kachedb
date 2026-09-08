@@ -7,10 +7,10 @@ The `kachedb-shm` subsystem implements high-throughput, zero-copy inter-process 
 ## ⚡ The Socket Serialization Bottleneck
 
 Transferring large attention tensors (50 MB – 2 GB) over standard TCP loopback sockets suffers from severe throughput degradation:
-1. Python creates a socket payload $\rightarrow$ serializes tensor buffers.
-2. Kernel performs socket `send()` / context switch into kernel space $\rightarrow$ copies into socket ring buffers.
-3. Daemon `recv()` / context switch into user space $\rightarrow$ deserializes data into memory.
-4. Total latency penalty: **$15\text{--}40\text{ ms}$**, completely negating prefill savings.
+1. Python creates a socket payload → serializes tensor buffers.
+2. Kernel performs socket `send()` / context switch into kernel space → copies into socket ring buffers.
+3. Daemon `recv()` / context switch into user space → deserializes data into memory.
+4. Total latency penalty: **15–40 ms**, completely negating prefill savings.
 
 ---
 

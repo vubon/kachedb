@@ -1206,6 +1206,24 @@ impl Connection {
                     encode_error(write_buf, "ERR Client sent AUTH, but no password is set");
                 }
             }
+            Command::DBSize => {
+                encode_integer(write_buf, table.len() as i64);
+            }
+            Command::Type { key } => {
+                let h = hash_key(key);
+                if table.lookup_checked(h, now_sec).is_some() {
+                    encode_simple_string(write_buf, "string");
+                } else {
+                    encode_simple_string(write_buf, "none");
+                }
+            }
+            Command::FlushDb | Command::FlushAll => {
+                let removed_blocks = table.clear();
+                for id in removed_blocks {
+                    let _ = pool.deallocate(id);
+                }
+                encode_simple_string(write_buf, "OK");
+            }
             Command::Quit => {
                 encode_simple_string(write_buf, "OK");
                 return Ok(false);
@@ -2235,6 +2253,155 @@ mod tests {
         )
         .unwrap();
         assert_eq!(conn.write_buf, b"+PONG\r\n");
+        conn.write_buf.clear();
+    }
+
+    #[test]
+    fn execute_dbsize_type_flush_flow() {
+        let mut pool = SlabPool::new(0, 16 * 1024 * 1024).unwrap();
+        let table = ShardedSwissTable::new();
+        let mut conn = Connection::new();
+
+        // 1. Initial DBSIZE -> 0
+        Connection::execute_command_full(
+            Command::DBSize,
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b":0\r\n");
+        conn.write_buf.clear();
+
+        // 2. TYPE on non-existent key -> +none
+        Connection::execute_command_full(
+            Command::Type {
+                key: b"nonexistent",
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b"+none\r\n");
+        conn.write_buf.clear();
+
+        // 3. SET two keys
+        Connection::execute_command_full(
+            Command::Set {
+                key: b"k1",
+                value: b"v1",
+                ttl_ms: None,
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        conn.write_buf.clear();
+
+        Connection::execute_command_full(
+            Command::Set {
+                key: b"k2",
+                value: b"v2",
+                ttl_ms: None,
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        conn.write_buf.clear();
+
+        // 4. DBSIZE -> 2
+        Connection::execute_command_full(
+            Command::DBSize,
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b":2\r\n");
+        conn.write_buf.clear();
+
+        // 5. TYPE on existing key -> +string
+        Connection::execute_command_full(
+            Command::Type { key: b"k1" },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b"+string\r\n");
+        conn.write_buf.clear();
+
+        // 6. FLUSHDB -> +OK
+        Connection::execute_command_full(
+            Command::FlushDb,
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b"+OK\r\n");
+        conn.write_buf.clear();
+
+        // 7. DBSIZE -> 0
+        Connection::execute_command_full(
+            Command::DBSize,
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b":0\r\n");
+        conn.write_buf.clear();
+
+        // 8. TYPE on flushed key -> +none
+        Connection::execute_command_full(
+            Command::Type { key: b"k1" },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b"+none\r\n");
         conn.write_buf.clear();
     }
 }

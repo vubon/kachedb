@@ -1,0 +1,26 @@
+<div id="kachedb-version-bar" style="display: flex; justify-content: flex-end; align-items: center; padding: 4px 16px; background-color: var(--sidebar-bg); border-bottom: 1px solid var(--sidebar-separator);">
+  <label for="kachedb-version-select" style="font-size: 0.8rem; font-weight: 600; margin-right: 8px; opacity: 0.85;">Version:</label>
+  <select id="kachedb-version-select" style="background: var(--bg); color: var(--fg); border: 1px solid var(--theme-hover); border-radius: 4px; padding: 2px 8px; font-size: 0.8rem; cursor: pointer;">
+    <option value="/kachedb/">v0.1.0 (Stable)</option>
+    <option value="/kachedb/latest/">latest (edge)</option>
+  </select>
+</div>
+
+<script>
+  (function() {
+    var select = document.getElementById("kachedb-version-select");
+    if (!select) return;
+    var path = window.location.pathname;
+    if (path.indexOf("/kachedb/latest/") !== -1) {
+      select.value = "/kachedb/latest/";
+    } else {
+      select.value = "/kachedb/";
+    }
+    select.addEventListener("change", function() {
+      var targetBase = this.value;
+      var currentPath = window.location.pathname;
+      var relative = currentPath.replace(/^\/kachedb\/(latest\/)?/, "");
+      window.location.href = targetBase + relative;
+    });
+  })();
+</script>

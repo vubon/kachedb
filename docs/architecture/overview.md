@@ -41,7 +41,7 @@ Traditional in-memory engines (e.g. Redis, Memcached) struggle when scaling to t
 
 ### 1. The Generality Tax (Heap Fragmentation & Pointer Chasing)
 * General-purpose databases support variable-size dynamic keys and polymorphic data structures, relying on standard dynamic allocators (`jemalloc`, `malloc`).
-* Every non-contiguous pointer chase incurs an **L1/L2/L3 CPU cache miss** ($\sim 50\text{--}100\text{ ns}$ stall), degrading memory bandwidth.
+* Every non-contiguous pointer chase incurs an **L1/L2/L3 CPU cache miss** (~50–100 ns stall), degrading memory bandwidth.
 * **KacheDB Solution:** Pre-allocates uniform **2 MB Megaslabs** with fixed size classes and 64-byte cache line alignment, eliminating runtime malloc overhead down to **3.84 ns**.
 
 ### 2. Kernel Context-Switching Overhead

@@ -26,17 +26,17 @@ A high-performance in-memory cache requires deterministic expiration semantics f
 
 | Strategy | Write Cost | Read Hot-Path Cost | Background Scan Cost | Memory Contention | Verdict |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Global Min-Heap** | $\mathcal{O}(\log N)$ | Zero | $\mathcal{O}(1)$ top check | **High** (Global locks / CAS) | ❌ Rejected |
-| **Probabilistic Sampling** | $\mathcal{O}(1)$ | Zero | $\mathcal{O}(K)$ random sample | **Medium** (CPU probing) | ❌ Rejected |
-| **Lazy Expiration Only** | $\mathcal{O}(1)$ | $<0.5\text{ ns}$ | None | **Zero** | ❌ Rejected (Memory leaks) |
-| **Dual Engine: Lazy + Timing Wheel** | **$\mathcal{O}(1)$** | **$<0.5\text{ ns}$** | **$\mathcal{O}(1)$ per bucket** | **Zero (Thread-isolated)** | ✅ **Selected for KacheDB** |
+| **Global Min-Heap** | `O(log N)` | Zero | `O(1)` top check | **High** (Global locks / CAS) | ❌ Rejected |
+| **Probabilistic Sampling** | `O(1)` | Zero | `O(K)` random sample | **Medium** (CPU probing) | ❌ Rejected |
+| **Lazy Expiration Only** | `O(1)` | `<0.5 ns` | None | **Zero** | ❌ Rejected (Memory leaks) |
+| **Dual Engine: Lazy + Timing Wheel** | **`O(1)`** | **`<0.5 ns`** | **`O(1)` per bucket** | **Zero (Thread-isolated)** | ✅ **Selected for KacheDB** |
 
 ---
 
 ## 4. Detailed Design
 
 ### 4.1 Memory Layout & 64-Byte Cache-Line Invariant
-`expire_at_secs: u32` is packed directly into `HashEntry` padding (47B $\rightarrow$ 43B):
+`expire_at_secs: u32` is packed directly into `HashEntry` padding (47B → 43B):
 
 ```rust
 #[repr(C, align(64))]
@@ -54,7 +54,7 @@ const _: () = assert!(std::mem::size_of::<HashEntry>() == 64);
 
 ### 4.2 Per-Core Hashed Timing Wheel (`kachedb-core`)
 - 3,600 one-second circular buckets (`WHEEL_BUCKETS = 3600`) representing a 1-hour circular resolution ring.
-- `schedule(slot_id, expire_at_sec)` places handles in $\mathcal{O}(1)$ time.
+- `schedule(slot_id, expire_at_sec)` places handles in `O(1)` time.
 - `advance_to(now_sec, &mut slab_pool)` batch-reclaims expired slots during idle event-loop ticks.
 
 ---

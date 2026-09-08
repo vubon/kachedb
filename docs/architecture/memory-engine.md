@@ -36,7 +36,7 @@ The `kachedb-core` memory subsystem completely eliminates runtime `malloc` and `
 
 Allocation in KacheDB occurs in two stages:
 1. **Fast-Path Bump Allocation:** If the active 2 MB arena has unallocated capacity, it increments a local cursor in **$\approx 3.84\text{ ns}$**.
-2. **Free-List Slot Recycling:** When keys are overwritten, deleted, or expired, their `BlockId` is pushed to a lock-free LIFO free-list for immediate $\mathcal{O}(1)$ slot reuse.
+2. **Free-List Slot Recycling:** When keys are overwritten, deleted, or expired, their `BlockId` is pushed to a lock-free LIFO free-list for immediate `O(1)` slot reuse.
 
 ---
 

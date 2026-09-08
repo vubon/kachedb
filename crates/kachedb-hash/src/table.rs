@@ -597,6 +597,13 @@ impl SwissTable {
         self.ctrl.iter().filter(|&&c| c == CTRL_DELETED).count()
     }
 
+    /// Clears all entries from the table.
+    pub fn clear(&mut self) {
+        self.ctrl.fill(CTRL_EMPTY);
+        self.count = 0;
+        self.compact_cursor = 0;
+    }
+
     /// Finds a live entry after `tombstone_idx` in the probe chain that can
     /// be back-shifted into the tombstone's position without breaking its
     /// own lookup invariant.

@@ -1,4 +1,4 @@
-.PHONY: all build release test bench bench-live bench-live-set bench-live-get benchmark-reproduce server cli python-test clean fmt check lint
+.PHONY: all build release test bench bench-live bench-live-set bench-live-get benchmark-reproduce server cli python-test clean fmt check lint docs docs-serve
 
 all: build test
 
@@ -44,8 +44,29 @@ benchmark-reproduce:
 benchmark-compare:
 	./docker/run_benchmark.sh
 
+docs:
+	@if command -v mdbook >/dev/null 2>&1; then \
+		mdbook build; \
+	else \
+		docker run --rm -v "$$(pwd):/book" -w /book peaceiris/mdbook:v0.4.40 build; \
+	fi
+
+docs-serve:
+	@if command -v mdbook >/dev/null 2>&1; then \
+		mdbook serve --open; \
+	else \
+		echo "Starting mdBook local server via Docker on http://localhost:3000 ..."; \
+		docker run --rm -it --init -v "$$(pwd):/book" -w /book -p 3000:3000 peaceiris/mdbook:v0.4.40 serve --hostname 0.0.0.0; \
+	fi
+
 python-test:
 	PYTHONPATH=bindings/python python3 bindings/python/tests/test_client.py
+
+coverage:
+	cargo llvm-cov --workspace --summary-only
+
+coverage-html:
+	cargo llvm-cov --workspace --open
 
 fmt:
 	cargo fmt --all

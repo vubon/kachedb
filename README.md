@@ -9,9 +9,10 @@
 </p>
 
 <p align="center">
+  <a href="https://vubon.github.io/kachedb/"><img src="https://img.shields.io/badge/docs-vubon.github.io%2Fkachedb-blue.svg" alt="Documentation"/></a>
   <a href="#-benchmark-performance"><img src="https://img.shields.io/badge/benchmark-sub--4ns%20alloc-brightgreen.svg" alt="Benchmark"/></a>
   <a href="#-benchmark-performance"><img src="https://img.shields.io/badge/throughput-3.56M%20QPS%20(epoll)-blue.svg" alt="Throughput"/></a>
-  <a href="https://github.com/vubon/kachedb/actions"><img src="https://img.shields.io/badge/tests-110%20passed%2C%200%20failed-success.svg" alt="Tests"/></a>
+  <a href="https://github.com/vubon/kachedb/actions"><img src="https://img.shields.io/badge/tests-120%2B%20passed%2C%200%20failed-success.svg" alt="Tests"/></a>
   <a href="#-license"><img src="https://img.shields.io/badge/license-Apache--2.0%20%2F%20MIT-blue.svg" alt="License"/></a>
 </p>
 
@@ -64,7 +65,10 @@ docker compose -f docker/docker-compose.yml up -d --build
 ```bash
 cargo build --release --workspace
 
-# Start multi-worker daemon on port 6379 (4 pinned CPU cores)
+# Start multi-worker daemon with canonical config
+./target/release/kachedb-server -c kachedb.conf
+
+# Or override via CLI flags directly
 ./target/release/kachedb-server -p 6379 -w 4
 ```
 
@@ -74,9 +78,12 @@ $ redis-cli -p 6379 SET user:100 "alice" EX 60
 OK
 $ redis-cli -p 6379 GET user:100
 "alice"
-$ redis-cli -p 6379 MGET user:100 non_existent
-1) "alice"
-2) (nil)
+$ redis-cli -p 6379 DBSIZE
+(integer) 1
+$ redis-cli -p 6379 TYPE user:100
+string
+$ redis-cli -p 6379 FLUSHDB
+OK
 ```
 
 ---
@@ -93,6 +100,10 @@ KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can 
 | **`MGET`** | `MGET key [key ...]` | Batch retrieves multiple keys in a single pipelined operation. | $\mathcal{O}(N)$ |
 | **`DEL`** | `DEL key [key ...]` | Removes keys and immediately returns slab slots to the free-list. | $\mathcal{O}(N)$ |
 | **`EXISTS`** | `EXISTS key [key ...]` | Returns the count of existing, unexpired keys. | $\mathcal{O}(N)$ |
+| **`DBSIZE`** | `DBSIZE` | Returns the total count of keys in the current database. | $\mathcal{O}(1)$ |
+| **`TYPE`** | `TYPE key` | Returns the data type (`string` or `none` if missing). | $\mathcal{O}(1)$ |
+| **`FLUSHDB`** | `FLUSHDB` | Clears all keys and recycles slab pool memory blocks. | $\mathcal{O}(N)$ |
+| **`FLUSHALL`** | `FLUSHALL` | Clears all keys across all database instances. | $\mathcal{O}(N)$ |
 | **`QUIT`** | `QUIT` | Closes the client connection gracefully. | $\mathcal{O}(1)$ |
 | **`COMMAND`** | `COMMAND DOCS` | Returns Redis protocol capability metadata. | $\mathcal{O}(1)$ |
 

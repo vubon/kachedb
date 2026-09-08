@@ -1,0 +1,29 @@
+[Unit]
+Description=KacheDB High-Performance Cache & Vector Daemon
+Documentation=https://vubon.github.io/kachedb
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kachedb
+Group=kachedb
+ExecStart=/usr/local/bin/kachedb-server -c /etc/kachedb/kachedb.conf
+Restart=always
+RestartSec=3s
+
+# Resource Limits
+LimitNOFILE=65535
+LimitMEMLOCK=infinity
+
+# Hardening / Isolation
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kachedb /dev/shm
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

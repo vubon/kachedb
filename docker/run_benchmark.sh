@@ -16,16 +16,21 @@ RESULTS_FILE="${RESULTS_DIR}/benchmark_comparison_results.md"
 
 mkdir -p "${RESULTS_DIR}"
 
-CLIENTS=50
-THREADS=4
-REQUESTS=100000
-PIPELINE=16
-DATA_SIZE=64
+CLIENTS=${CLIENTS:-50}
+THREADS=${THREADS:-4}
+REQUESTS=${REQUESTS:-100000}
+PIPELINE=${PIPELINE:-16}
+DATA_SIZE=${DATA_SIZE:-64}
 
-TARGETS=("redis" "valkey" "dragonfly" "kachedb")
+if [ $# -gt 0 ]; then
+  TARGETS=("$@")
+else
+  TARGETS=("redis" "valkey" "dragonfly" "kachedb")
+fi
 
 echo "======================================================================"
 echo "🏎️  Starting In-Memory Cache Benchmark Suite (Sequential Mode)"
+echo "   - Targets:    ${TARGETS[*]}"
 echo "   - Clients:    ${CLIENTS}"
 echo "   - Threads:    ${THREADS}"
 echo "   - Requests:   ${REQUESTS} per client"
@@ -47,7 +52,7 @@ wait_for_server() {
   
   echo -n "   Waiting for server readiness on port ${port}..."
   while [ $retry -lt $max_retries ]; do
-    if docker run --rm --network host redis:7.4-alpine redis-cli -h 127.0.0.1 -p ${port} ping 2>/dev/null | grep -q "PONG"; then
+    if printf "PING\r\n" | nc -w 1 127.0.0.1 ${port} 2>/dev/null | grep -q "PONG"; then
       echo " READY!"
       return 0
     fi

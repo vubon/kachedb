@@ -5,6 +5,30 @@ All notable changes to **KacheDB** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.1.0] — 2026-09-08 (Official Production Stable Release)
+
+### 🚀 Production Stabilization & Single-Node Core Lock
+- **Canonical Configuration File & CLI Flags (`kachedb.conf`):**
+  - Introduced canonical configuration template `kachedb.conf` documenting production defaults for network, memory pools, persistence, and TLS.
+  - Implemented `-c` / `--config <path>` flag support in `kachedb-server` with clean CLI override precedence.
+- **Connection Limiting & Quota Management (`maxclients`):**
+  - Added global atomic client tracking and limit enforcement (`maxclients`, default: 10,000).
+  - Automatically rejects over-capacity connections with `-ERR max number of clients reached\r\n` and immediate graceful disconnect.
+- **Extended Redis Command Compatibility (`DBSIZE`, `TYPE`, `FLUSHDB`, `FLUSHALL`):**
+  - Added `DBSIZE`: returns exact count of active keys across all 256 shards in $O(1)$.
+  - Added `TYPE <key>`: returns `+string\r\n` or `+none\r\n` matching Redis specifications.
+  - Added `FLUSHDB` and `FLUSHALL`: clears in-memory tables and instantly recycles slab blocks back into core memory pools without memory leaks.
+- **Hyper-Optimized Distroless Docker Image (< 20 MB):**
+  - Transitioned runtime image to `gcr.io/distroless/cc-debian12:nonroot` with automatic binary debug symbol stripping (`strip`).
+  - Slashed production image size from 108 MB down to < 20 MB ($2.2\times$ smaller than `redis:alpine`).
+- **Production Systemd Service Unit (`docker/kachedb.service`):**
+  - Added hardened systemd unit file with security sandboxing (`ProtectSystem=strict`, `ProtectHome=true`, `LimitNOFILE=65535`).
+- **mdBook Official Documentation Site:**
+  - Configured mdBook documentation build with multi-version dropdown switcher (`v0.1.0 (Stable)` and `latest`) deployed to `https://vubon.github.io/kachedb/`.
+  - Added automated GitHub Actions documentation deployment workflow (`.github/workflows/docs.yml`).
+
+---
+
 ## [v0.1.0-beta.3] — 2026-09-06
 
 ### 🏆 Milestone Benchmark Victory: Lowest Memory Footprint & 3.56M QPS

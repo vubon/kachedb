@@ -30,7 +30,10 @@ fn main() {
 "#
     );
 
-    println!("⚡ KacheDB Daemon v0.1.0 starting...");
+    println!("⚡ KacheDB Daemon v0.1.0 (Production Stable) starting...");
+    if let Some(ref path) = config.config_path {
+        println!("   └─ Config File:        {}", path.display());
+    }
     println!("   └─ TCP Listener:       {}", config.bind_addr);
     println!(
         "   └─ Worker Threads:     {} cores (Thread-Per-Core topology)",
@@ -42,6 +45,7 @@ fn main() {
         config.num_workers * config.pool_mb_per_core
     );
     println!("   └─ Connection Dispatch: Accept-Dispatch (round-robin crossbeam channels)");
+    println!("   └─ Max Clients:        {}", config.maxclients);
     println!(
         "   └─ POSIX SHM IPC:      {}",
         if config.shm_enabled {
@@ -54,6 +58,9 @@ fn main() {
     println!("   └─ I/O Engine:         epoll + TCP_NODELAY (Linux)");
     #[cfg(not(target_os = "linux"))]
     println!("   └─ I/O Engine:         mio/kqueue (macOS/BSD)");
+
+    // Configure Max Clients limit
+    kachedb_net::set_max_clients(config.maxclients);
 
     // Configure AUTH requirepass
     if let Some(ref pass) = config.requirepass {

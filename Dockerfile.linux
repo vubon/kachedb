@@ -1,6 +1,5 @@
 # ─── Dockerfile.linux ────────────────────────────────────────────────────────
-# Standalone Linux image for manual testing and deployment.
-# For the structured benchmark suite use docker/Dockerfile + docker-compose.benchmark.yml instead.
+# Standalone Linux image for manual testing and production deployment (<20 MB).
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── Stage 1: Build ──────────────────────────────────────────────────────────
@@ -9,6 +8,7 @@ FROM rust:1.97-slim-bookworm AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
+    binutils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -18,23 +18,25 @@ COPY . .
 RUN cargo build --release \
     -p kachedb-server \
     -p kachedb-cli \
-    -p kachedb-bench \
-    2>&1
+    -p kachedb-bench
+
+# Strip debug symbols
+RUN strip /build/target/release/kachedb-server \
+          /build/target/release/kachedb-cli \
+          /build/target/release/kachedb-bench
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM debian:bookworm-slim
+FROM gcr.io/distroless/cc-debian12:nonroot
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /data
 
 COPY --from=builder /build/target/release/kachedb-server /usr/local/bin/kachedb-server
 COPY --from=builder /build/target/release/kachedb-cli    /usr/local/bin/kachedb-cli
 COPY --from=builder /build/target/release/kachedb-bench  /usr/local/bin/kachedb-bench
+COPY --from=builder /build/kachedb.conf                 /etc/kachedb/kachedb.conf
 
 # KacheDB default port
 EXPOSE 6379
 
-# Run with 4 worker threads by default.
-# Use --privileged when running to enable SQPOLL (CAP_SYS_NICE required).
-CMD ["kachedb-server", "-w", "4", "-p", "6379"]
+ENTRYPOINT ["kachedb-server"]
+CMD ["-c", "/etc/kachedb/kachedb.conf"]

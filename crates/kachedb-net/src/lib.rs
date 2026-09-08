@@ -21,7 +21,10 @@ pub mod tls;
 #[cfg(target_os = "linux")]
 pub mod engine_uring;
 
-pub use accept::{AcceptDispatcher, create_dispatch_channels};
+pub use accept::{
+    AcceptDispatcher, create_dispatch_channels, dec_active_clients, get_active_clients,
+    get_max_clients, inc_active_clients, set_max_clients,
+};
 pub use aof_encode::{AofOp, emit_aof, encode_frame, set_aof_channel};
 pub use connection::{Connection, DEFAULT_VECTORS, get_requirepass, set_requirepass};
 pub use engine::WorkerThread;

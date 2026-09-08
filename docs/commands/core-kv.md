@@ -8,19 +8,23 @@ KacheDB implements the standard **Redis / Valkey RESP2 and RESP3** binary wire p
 
 | Command | Syntax | Complexity | Description |
 | :--- | :--- | :---: | :--- |
-| **`PING`** | `PING [message]` | $\mathcal{O}(1)$ | Tests server liveness; returns `PONG` or echoed message. |
-| **`GET`** | `GET key` | $\mathcal{O}(1)$ | Retrieves binary value; returns `nil` if missing or expired. |
-| **`SET`** | `SET key value [EX seconds] [PX millis]` | $\mathcal{O}(1)$ | Stores binary value with optional TTL expiration. |
-| **`MGET`** | `MGET key [key ...]` | $\mathcal{O}(N)$ | Batch retrieves multiple keys in a single pipelined operation. |
-| **`MSET`** | `MSET key value [key value ...]` | $\mathcal{O}(N)$ | Atomically stores multiple key-value pairs. |
-| **`DEL`** | `DEL key [key ...]` | $\mathcal{O}(N)$ | Deletes keys and immediately frees Megaslab slots. |
-| **`EXISTS`** | `EXISTS key [key ...]` | $\mathcal{O}(N)$ | Returns the count of existing, unexpired keys. |
-| **`INCR`** | `INCR key` | $\mathcal{O}(1)$ | Atomically increments string integer value by 1. |
-| **`DECR`** | `DECR key` | $\mathcal{O}(1)$ | Atomically decrements string integer value by 1. |
-| **`INCRBY`** | `INCRBY key delta` | $\mathcal{O}(1)$ | Atomically increments string integer value by `delta`. |
-| **`DECRBY`** | `DECRBY key delta` | $\mathcal{O}(1)$ | Atomically decrements string integer value by `delta`. |
-| **`APPEND`** | `APPEND key value` | $\mathcal{O}(1)$ | Appends `value` to existing string, returning new byte length. |
-| **`STRLEN`** | `STRLEN key` | $\mathcal{O}(1)$ | Returns length of string value in bytes (0 if missing). |
+| **`PING`** | `PING [message]` | `O(1)` | Tests server liveness; returns `PONG` or echoed message. |
+| **`GET`** | `GET key` | `O(1)` | Retrieves binary value; returns `nil` if missing or expired. |
+| **`SET`** | `SET key value [EX seconds] [PX millis]` | `O(1)` | Stores binary value with optional TTL expiration. |
+| **`MGET`** | `MGET key [key ...]` | `O(N)` | Batch retrieves multiple keys in a single pipelined operation. |
+| **`MSET`** | `MSET key value [key value ...]` | `O(N)` | Atomically stores multiple key-value pairs. |
+| **`DEL`** | `DEL key [key ...]` | `O(N)` | Deletes keys and immediately frees Megaslab slots. |
+| **`EXISTS`** | `EXISTS key [key ...]` | `O(N)` | Returns the count of existing, unexpired keys. |
+| **`INCR`** | `INCR key` | `O(1)` | Atomically increments string integer value by 1. |
+| **`DECR`** | `DECR key` | `O(1)` | Atomically decrements string integer value by 1. |
+| **`INCRBY`** | `INCRBY key delta` | `O(1)` | Atomically increments string integer value by `delta`. |
+| **`DECRBY`** | `DECRBY key delta` | `O(1)` | Atomically decrements string integer value by `delta`. |
+| **`APPEND`** | `APPEND key value` | `O(1)` | Appends `value` to existing string, returning new byte length. |
+| **`STRLEN`** | `STRLEN key` | `O(1)` | Returns length of string value in bytes (0 if missing). |
+| **`DBSIZE`** | `DBSIZE` | `O(1)` | Returns the total number of stored keys in the database. |
+| **`TYPE`** | `TYPE key` | `O(1)` | Returns the string representation of the key's type (`string`, `vector`, or `none`). |
+| **`FLUSHDB`** | `FLUSHDB` | `O(N)` | Removes all keys from the currently selected database. |
+| **`FLUSHALL`** | `FLUSHALL` | `O(N)` | Removes all keys from all databases and resets Megaslab allocators. |
 
 ---
 
@@ -156,3 +160,66 @@ EXISTS key [key ...]
 127.0.0.1:6379> EXISTS user:1
 (integer) 0
 ```
+
+---
+
+### `DBSIZE`
+Returns the count of active, unexpired keys stored in the database.
+
+#### Syntax
+```text
+DBSIZE
+```
+
+#### `kachedb-cli` Example
+```text
+127.0.0.1:6379> SET k1 "v1"
+OK
+127.0.0.1:6379> SET k2 "v2"
+OK
+127.0.0.1:6379> DBSIZE
+(integer) 2
+```
+
+---
+
+### `TYPE`
+Returns the underlying data structure type of the specified key.
+
+#### Syntax
+```text
+TYPE key
+```
+
+#### `kachedb-cli` Example
+```text
+127.0.0.1:6379> SET greeting "hello"
+OK
+127.0.0.1:6379> TYPE greeting
+string
+
+127.0.0.1:6379> TYPE nonexistent
+none
+```
+
+---
+
+### `FLUSHDB` & `FLUSHALL`
+Deletes all keys in the database and recycles Megaslab blocks back to the free-list.
+
+#### Syntax
+```text
+FLUSHDB
+FLUSHALL
+```
+
+#### `kachedb-cli` Example
+```text
+127.0.0.1:6379> DBSIZE
+(integer) 1000
+127.0.0.1:6379> FLUSHDB
+OK
+127.0.0.1:6379> DBSIZE
+(integer) 0
+```
+

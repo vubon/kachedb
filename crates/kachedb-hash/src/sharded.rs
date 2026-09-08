@@ -184,6 +184,19 @@ impl ShardedSwissTable {
         self.shards.len()
     }
 
+    /// Clears all entries across all shards and returns all removed slab block IDs.
+    pub fn clear(&self) -> Vec<SlabBlockId> {
+        let mut removed_blocks = Vec::new();
+        for shard in self.shards.iter() {
+            let mut table = shard.table.write();
+            for (_, entry) in table.live_entries() {
+                removed_blocks.push(entry.slab_block_id);
+            }
+            table.clear();
+        }
+        removed_blocks
+    }
+
     /// Returns a snapshot of all live entries in the specified shard.
     pub fn snapshot_shard(&self, shard_idx: usize) -> Vec<(u64, TableEntry)> {
         if shard_idx < self.shards.len() {
@@ -299,5 +312,26 @@ mod tests {
         let missing = hash_key(b"missing");
         assert_eq!(table.get_ttl(missing, 100), -2);
         assert!(!table.update_ttl(missing, 500, 100));
+    }
+
+    #[test]
+    fn test_sharded_clear() {
+        let table = ShardedSwissTable::new();
+        assert_eq!(table.len(), 0);
+        assert!(table.is_empty());
+
+        for i in 0..100 {
+            let k = format!("key_{i}");
+            let h = hash_key(k.as_bytes());
+            table.insert(h, SlabBlockId::new(1, i as u16), 64);
+        }
+
+        assert_eq!(table.len(), 100);
+        assert!(!table.is_empty());
+
+        let cleared = table.clear();
+        assert_eq!(cleared.len(), 100);
+        assert_eq!(table.len(), 0);
+        assert!(table.is_empty());
     }
 }

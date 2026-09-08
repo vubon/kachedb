@@ -321,6 +321,11 @@ impl WorkerThread {
             }
         }
 
+        let remaining = connections.len();
+        for _ in 0..remaining {
+            crate::accept::dec_active_clients();
+        }
+
         log::info!(
             "Worker [{core}]: shut down successfully",
             core = self.core_id
@@ -360,6 +365,21 @@ impl WorkerThread {
                     loop {
                         match listener.accept() {
                             Ok((mut stream, peer_addr)) => {
+                                let active = crate::accept::get_active_clients();
+                                let max = crate::accept::get_max_clients();
+                                if active >= max {
+                                    log::warn!(
+                                        "Worker [{core}]: maxclients reached ({active}/{max}), rejecting {peer_addr}",
+                                        core = self.core_id
+                                    );
+                                    use std::io::Write;
+                                    let _ =
+                                        stream.write_all(b"-ERR max number of clients reached\r\n");
+                                    let _ = stream.flush();
+                                    drop(stream);
+                                    continue;
+                                }
+
                                 log::debug!(
                                     "Worker [{core}]: accepted conn from {peer_addr}",
                                     core = self.core_id
@@ -378,6 +398,8 @@ impl WorkerThread {
                                     );
                                     continue;
                                 }
+
+                                crate::accept::inc_active_clients();
 
                                 let tls_state = self
                                     .tls_config
@@ -432,6 +454,11 @@ impl WorkerThread {
                     self.pool.reclaim_empty_arenas();
                 }
             }
+        }
+
+        let remaining = connections.len();
+        for _ in 0..remaining {
+            crate::accept::dec_active_clients();
         }
 
         log::info!(
@@ -543,6 +570,7 @@ impl WorkerThread {
             if should_remove {
                 if let Some((mut stream, _, _)) = connections.remove(&token) {
                     let _ = poll.registry().deregister(&mut stream);
+                    crate::accept::dec_active_clients();
                 }
             }
         }
