@@ -176,7 +176,7 @@ fn apply_frame(
                             let _ = hnsw.insert(id, &floats, payload, None, 0);
                         } else {
                             let flat = vectors.get_or_create(index_name);
-                            let _ = flat.insert(id, &floats, payload, None, 0);
+                            let _ = flat.insert(id, &floats, payload, None, 0, 0, None);
                         }
                     }
                 }

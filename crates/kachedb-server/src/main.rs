@@ -4,6 +4,7 @@ mod aof;
 mod aof_recovery;
 mod aof_rewrite;
 mod config;
+mod snapshot;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -100,6 +101,17 @@ fn main() {
         }
     );
     println!(
+        "   └─ Snapshot Engine:    {}",
+        if config.snapshot_enabled {
+            format!(
+                "Enabled ({:?}, interval: {}s)",
+                config.snapshot_path, config.snapshot_interval_secs
+            )
+        } else {
+            "Disabled".to_string()
+        }
+    );
+    println!(
         "   └─ TLS 1.3 / mTLS:     {}",
         if tls_config.is_some() {
             "Enabled"
@@ -128,9 +140,32 @@ fn main() {
         cleanup_stale_shm(config.num_workers);
     }
 
-    // If AOF is enabled, replay existing mutations to restore in-memory state
+    // 1. If snapshot exists, hydrate in-memory state from snapshot binary first
     let mut initial_pool =
         kachedb_core::SlabPool::new(0, config.pool_mb_per_core * 1024 * 1024).ok();
+    if config.snapshot_enabled
+        && config.snapshot_path.exists()
+        && let Some(ref mut pool) = initial_pool
+    {
+        match snapshot::load_snapshot(
+            &config.snapshot_path,
+            &shared_table,
+            pool,
+            &kachedb_net::DEFAULT_VECTORS,
+        ) {
+            Ok(Some(stats)) => println!(
+                "💾 Hydrated snapshot successfully: {} vectors across {} indexes, {} KV keys from {:?}",
+                stats.total_vectors,
+                stats.vector_indexes,
+                stats.total_kv_entries,
+                config.snapshot_path
+            ),
+            Ok(None) => {}
+            Err(e) => eprintln!("⚠️ Snapshot hydration error: {e}"),
+        }
+    }
+
+    // 2. If AOF is enabled, replay delta mutations to restore in-memory state
     if config.aof_enabled {
         let aof_path = &config.aof_path;
         if aof_path.exists()
@@ -159,6 +194,19 @@ fn main() {
                 None
             }
         }
+    } else {
+        None
+    };
+
+    // Launch background snapshot worker thread
+    let _snapshot_worker = if config.snapshot_enabled {
+        Some(snapshot::SnapshotWorker::start(
+            config.snapshot_path.clone(),
+            shared_table.clone(),
+            &kachedb_net::DEFAULT_VECTORS,
+            config.snapshot_interval_secs,
+            shutdown.clone(),
+        ))
     } else {
         None
     };

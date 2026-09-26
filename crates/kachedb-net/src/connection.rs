@@ -431,6 +431,8 @@ impl Connection {
                 vector_bytes,
                 payload,
                 ttl_sec,
+                tag_mask,
+                parent_key,
             } => {
                 if vector_bytes.len() != dim * 4 {
                     encode_error(
@@ -464,7 +466,9 @@ impl Connection {
                     }
                 } else {
                     let vec_idx = vectors.get_or_create(index);
-                    match vec_idx.insert(id, &floats, payload, ttl_sec, now_sec) {
+                    match vec_idx
+                        .insert(id, &floats, payload, ttl_sec, now_sec, tag_mask, parent_key)
+                    {
                         Ok(()) => {
                             encode_integer(write_buf, 1);
                             true
@@ -495,6 +499,7 @@ impl Connection {
                 query_bytes,
                 top_k,
                 threshold,
+                filter_mask,
             } => {
                 if query_bytes.len() % 4 != 0 {
                     encode_error(
@@ -531,18 +536,31 @@ impl Connection {
                         }
                     }
                 } else if let Some(vec_idx) = vectors.get(index) {
-                    match vec_idx.search(&query_floats, top_k, threshold, now_sec) {
+                    match vec_idx.search(&query_floats, top_k, threshold, now_sec, filter_mask) {
                         Ok(results) => {
                             encode_array_header(write_buf, results.len());
                             for r in results {
-                                encode_array_header(write_buf, 3);
-                                encode_bulk_string(write_buf, &r.key);
-                                let score_str = format!("{:.6}", r.similarity);
-                                encode_bulk_string(write_buf, score_str.as_bytes());
-                                if let Some(ref p) = r.payload {
-                                    encode_bulk_string(write_buf, p);
+                                if let Some(ref pk) = r.parent_key {
+                                    encode_array_header(write_buf, 4);
+                                    encode_bulk_string(write_buf, &r.key);
+                                    let score_str = format!("{:.6}", r.similarity);
+                                    encode_bulk_string(write_buf, score_str.as_bytes());
+                                    if let Some(ref p) = r.payload {
+                                        encode_bulk_string(write_buf, p);
+                                    } else {
+                                        encode_null(write_buf);
+                                    }
+                                    encode_bulk_string(write_buf, pk);
                                 } else {
-                                    encode_null(write_buf);
+                                    encode_array_header(write_buf, 3);
+                                    encode_bulk_string(write_buf, &r.key);
+                                    let score_str = format!("{:.6}", r.similarity);
+                                    encode_bulk_string(write_buf, score_str.as_bytes());
+                                    if let Some(ref p) = r.payload {
+                                        encode_bulk_string(write_buf, p);
+                                    } else {
+                                        encode_null(write_buf);
+                                    }
                                 }
                             }
                         }
@@ -590,7 +608,15 @@ impl Connection {
                                 .collect();
 
                             if vec_idx
-                                .insert(item.id, &floats, item.payload, item.ttl_sec, now_sec)
+                                .insert(
+                                    item.id,
+                                    &floats,
+                                    item.payload,
+                                    item.ttl_sec,
+                                    now_sec,
+                                    0,
+                                    None,
+                                )
                                 .is_ok()
                             {
                                 inserted_count += 1;
@@ -655,7 +681,7 @@ impl Connection {
                             })
                             .collect();
 
-                        match vec_idx.search(&query_floats, top_k, threshold, now_sec) {
+                        match vec_idx.search(&query_floats, top_k, threshold, now_sec, 0) {
                             Ok(results) => {
                                 encode_array_header(write_buf, results.len());
                                 for r in results {
@@ -1615,6 +1641,8 @@ mod tests {
                 vector_bytes: &v1_bytes,
                 payload: Some(b"answer1"),
                 ttl_sec: None,
+                tag_mask: 0,
+                parent_key: None,
             },
             &mut conn.write_buf,
             &table,
@@ -1633,6 +1661,7 @@ mod tests {
                 query_bytes: &v1_bytes,
                 top_k: 1,
                 threshold: 0.8,
+                filter_mask: 0,
             },
             &mut conn.write_buf,
             &table,
@@ -1646,6 +1675,68 @@ mod tests {
         let resp_str = String::from_utf8_lossy(&conn.write_buf);
         assert!(resp_str.contains("*1\r\n*3\r\n$4\r\ndoc1\r\n"));
         assert!(resp_str.contains("answer1"));
+        conn.write_buf.clear();
+
+        // 2b. VADD faq doc2 3 <v1_bytes> TAGS 2 PARENT parent:faq
+        Connection::execute_command_with_vectors(
+            Command::VAdd {
+                index: b"faq",
+                id: b"doc2",
+                dim: 3,
+                vector_bytes: &v1_bytes,
+                payload: Some(b"answer2"),
+                ttl_sec: None,
+                tag_mask: 0b10,
+                parent_key: Some(b"parent:faq"),
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &vectors,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b":1\r\n");
+        conn.write_buf.clear();
+
+        // 2c. VSEARCH faq with FILTER 2 (matches doc2 only)
+        Connection::execute_command_with_vectors(
+            Command::VSearch {
+                index: b"faq",
+                query_bytes: &v1_bytes,
+                top_k: 5,
+                threshold: 0.8,
+                filter_mask: 0b10,
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &vectors,
+        )
+        .unwrap();
+        let filtered_str = String::from_utf8_lossy(&conn.write_buf);
+        assert!(filtered_str.contains("doc2"));
+        assert!(!filtered_str.contains("doc1"));
+        conn.write_buf.clear();
+
+        // 2d. VSEARCH faq with FILTER 1 (matches neither doc1 nor doc2)
+        Connection::execute_command_with_vectors(
+            Command::VSearch {
+                index: b"faq",
+                query_bytes: &v1_bytes,
+                top_k: 5,
+                threshold: 0.8,
+                filter_mask: 0b01,
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            0,
+            &vectors,
+        )
+        .unwrap();
+        assert_eq!(conn.write_buf, b"*0\r\n");
         conn.write_buf.clear();
 
         // 3. VSTATS faq
@@ -2128,6 +2219,8 @@ mod tests {
                 vector_bytes: &v1_bytes,
                 payload: Some(b"doc1_payload"),
                 ttl_sec: None,
+                tag_mask: 0,
+                parent_key: None,
             },
             &mut conn.write_buf,
             &table,
@@ -2144,6 +2237,7 @@ mod tests {
                 query_bytes: &v1_bytes,
                 top_k: 1,
                 threshold: 0.8,
+                filter_mask: 0,
             },
             &mut conn.write_buf,
             &table,

@@ -556,6 +556,7 @@ impl HnswIndex {
                         key: node.key.clone(),
                         similarity,
                         payload: node.payload.clone(),
+                        parent_key: None,
                     });
                 }
             }

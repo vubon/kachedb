@@ -34,6 +34,12 @@ pub struct ServerConfig {
     pub tls_ca_path: Option<PathBuf>,
     /// Optional password required to authenticate via AUTH command.
     pub requirepass: Option<String>,
+    /// Enable periodic background snapshotting (dump.kdb).
+    pub snapshot_enabled: bool,
+    /// Path to the binary snapshot file.
+    pub snapshot_path: PathBuf,
+    /// Snapshot interval in seconds (default: 300).
+    pub snapshot_interval_secs: u64,
 }
 
 impl Default for ServerConfig {
@@ -46,7 +52,7 @@ impl Default for ServerConfig {
             config_path: None,
             bind_addr: "127.0.0.1:6379".parse().unwrap(),
             num_workers: default_cores,
-            pool_mb_per_core: 4,
+            pool_mb_per_core: 64,
             maxclients: 10_000,
             shm_enabled: true,
             aof_enabled: false,
@@ -56,6 +62,9 @@ impl Default for ServerConfig {
             tls_key_path: None,
             tls_ca_path: None,
             requirepass: None,
+            snapshot_enabled: true,
+            snapshot_path: PathBuf::from("dump.kdb"),
+            snapshot_interval_secs: 300,
         }
     }
 }
@@ -127,7 +136,13 @@ impl ServerConfig {
                 }
                 "workers" => {
                     if let Ok(w) = value.parse::<usize>() {
-                        self.num_workers = w;
+                        self.num_workers = if w == 0 {
+                            std::thread::available_parallelism()
+                                .map(|p| p.get())
+                                .unwrap_or(1)
+                        } else {
+                            w
+                        };
                     } else {
                         return Err(format!(
                             "Invalid workers '{value}' on line {}",
@@ -190,6 +205,23 @@ impl ServerConfig {
                         self.requirepass = Some(value);
                     }
                 }
+                "snapshot" | "snapshot-enabled" | "snapshot_enabled" => {
+                    self.snapshot_enabled =
+                        matches!(value.to_lowercase().as_str(), "yes" | "true" | "1");
+                }
+                "dbfilename" | "snapshot-file" | "snapshot_file" | "snapshot-path" => {
+                    self.snapshot_path = PathBuf::from(&value);
+                }
+                "snapshot-interval" | "snapshot_interval" | "save-interval" => {
+                    if let Ok(interval) = value.parse::<u64>() {
+                        self.snapshot_interval_secs = interval;
+                    } else {
+                        return Err(format!(
+                            "Invalid snapshot-interval '{value}' on line {}",
+                            line_num + 1
+                        ));
+                    }
+                }
                 other => {
                     log::warn!(
                         "Unknown config directive '{other}' on line {}",
@@ -241,8 +273,14 @@ impl ServerConfig {
                     i += 2;
                 }
                 "--workers" | "-w" if i + 1 < args.len() => {
-                    if let Ok(w) = args[i + 1].parse() {
-                        config.num_workers = w;
+                    if let Ok(w) = args[i + 1].parse::<usize>() {
+                        config.num_workers = if w == 0 {
+                            std::thread::available_parallelism()
+                                .map(|p| p.get())
+                                .unwrap_or(1)
+                        } else {
+                            w
+                        };
                     }
                     i += 2;
                 }
@@ -290,6 +328,24 @@ impl ServerConfig {
                 }
                 "--requirepass" if i + 1 < args.len() => {
                     config.requirepass = Some(args[i + 1].clone());
+                    i += 2;
+                }
+                "--no-snapshot" => {
+                    config.snapshot_enabled = false;
+                    i += 1;
+                }
+                "--snapshot" => {
+                    config.snapshot_enabled = true;
+                    i += 1;
+                }
+                "--dbfilename" | "--snapshot-file" if i + 1 < args.len() => {
+                    config.snapshot_path = PathBuf::from(&args[i + 1]);
+                    i += 2;
+                }
+                "--snapshot-interval" if i + 1 < args.len() => {
+                    if let Ok(sec) = args[i + 1].parse() {
+                        config.snapshot_interval_secs = sec;
+                    }
                     i += 2;
                 }
                 "--help" | "-h" => {
@@ -350,7 +406,7 @@ mod tests {
         let cfg = ServerConfig::default();
         assert_eq!(cfg.bind_addr.port(), 6379);
         assert_eq!(cfg.maxclients, 10_000);
-        assert_eq!(cfg.pool_mb_per_core, 4);
+        assert_eq!(cfg.pool_mb_per_core, 64);
         assert!(cfg.shm_enabled);
         assert!(!cfg.aof_enabled);
     }

@@ -33,7 +33,7 @@ pub enum Command<'a> {
     Del { keys: SmallVec<[&'a [u8]; 8]> },
     /// `EXISTS <key1> <key2> ...`
     Exists { keys: SmallVec<[&'a [u8]; 8]> },
-    /// `VADD <index> <id> <dim> <vector_bytes> [PAYLOAD <payload>] [EX <seconds>]`
+    /// `VADD <index> <id> <dim> <vector_bytes> [PAYLOAD <payload>] [EX <seconds>] [TAGS <bitmask:u64>] [PARENT <parent_key>]`
     VAdd {
         index: &'a [u8],
         id: &'a [u8],
@@ -41,13 +41,19 @@ pub enum Command<'a> {
         vector_bytes: &'a [u8],
         payload: Option<&'a [u8]>,
         ttl_sec: Option<u32>,
+        /// 64-bit tag bitmask for pre-filtering. 0 = untagged.
+        tag_mask: u64,
+        /// Optional parent document key (present when this is a hierarchical chunk).
+        parent_key: Option<&'a [u8]>,
     },
-    /// `VSEARCH <index> <query_vector_bytes> [TOPK <k>] [THRESHOLD <min_similarity>]`
+    /// `VSEARCH <index> <query_vector_bytes> [TOPK <k>] [THRESHOLD <min_similarity>] [FILTER <bitmask:u64>]`
     VSearch {
         index: &'a [u8],
         query_bytes: &'a [u8],
         top_k: usize,
         threshold: f32,
+        /// Only evaluate vectors whose tag_mask contains all bits in filter_mask. 0 = no filter.
+        filter_mask: u64,
     },
     /// `VADD_BATCH <index> <id1> <vec1_bytes> <payload1> <id2> <vec2_bytes> <payload2> ...`
     VAddBatch {
@@ -419,6 +425,8 @@ impl<'a> Command<'a> {
 
             let mut payload = None;
             let mut ttl_sec = None;
+            let mut tag_mask: u64 = 0;
+            let mut parent_key = None;
             let mut i = 5;
             while i < args.len() {
                 let opt = args[i];
@@ -434,6 +442,15 @@ impl<'a> Command<'a> {
                         ttl_sec = Some(sec);
                     }
                     i += 2;
+                } else if opt.eq_ignore_ascii_case(b"TAGS") && i + 1 < args.len() {
+                    tag_mask = std::str::from_utf8(args[i + 1])
+                        .unwrap_or("0")
+                        .parse::<u64>()
+                        .unwrap_or(0);
+                    i += 2;
+                } else if opt.eq_ignore_ascii_case(b"PARENT") && i + 1 < args.len() {
+                    parent_key = Some(args[i + 1]);
+                    i += 2;
                 } else {
                     i += 1;
                 }
@@ -446,6 +463,8 @@ impl<'a> Command<'a> {
                 vector_bytes,
                 payload,
                 ttl_sec,
+                tag_mask,
+                parent_key,
             })
         } else if cmd_name.eq_ignore_ascii_case(b"VSEARCH") {
             if args.len() < 3 {
@@ -457,6 +476,7 @@ impl<'a> Command<'a> {
             let query_bytes = args[2];
             let mut top_k = 1usize;
             let mut threshold = 0.0f32;
+            let mut filter_mask: u64 = 0;
 
             let mut i = 3;
             while i < args.len() {
@@ -474,6 +494,12 @@ impl<'a> Command<'a> {
                         .parse::<f32>()
                         .unwrap_or(0.0);
                     i += 2;
+                } else if opt.eq_ignore_ascii_case(b"FILTER") && i + 1 < args.len() {
+                    filter_mask = std::str::from_utf8(args[i + 1])
+                        .unwrap_or("0")
+                        .parse::<u64>()
+                        .unwrap_or(0);
+                    i += 2;
                 } else {
                     i += 1;
                 }
@@ -484,6 +510,7 @@ impl<'a> Command<'a> {
                 query_bytes,
                 top_k,
                 threshold,
+                filter_mask,
             })
         } else if cmd_name.eq_ignore_ascii_case(b"VADD_BATCH") {
             if args.len() < 5 {
@@ -1040,6 +1067,8 @@ impl<'a> Command<'a> {
 
                     let mut payload = None;
                     let mut ttl_sec = None;
+                    let mut tag_mask: u64 = 0;
+                    let mut parent_key = None;
                     let mut i = 5;
                     while i < args.len() {
                         if let Ok(opt) = extract_required_bytes(&args[i], "VADD") {
@@ -1062,6 +1091,22 @@ impl<'a> Command<'a> {
                                 }
                                 i += 2;
                                 continue;
+                            } else if opt.eq_ignore_ascii_case(b"TAGS") && i + 1 < args.len() {
+                                if let Ok(mask_bytes) = extract_required_bytes(&args[i + 1], "VADD")
+                                {
+                                    tag_mask = std::str::from_utf8(mask_bytes)
+                                        .unwrap_or("0")
+                                        .parse::<u64>()
+                                        .unwrap_or(0);
+                                }
+                                i += 2;
+                                continue;
+                            } else if opt.eq_ignore_ascii_case(b"PARENT") && i + 1 < args.len() {
+                                if let Ok(pk) = extract_required_bytes(&args[i + 1], "VADD") {
+                                    parent_key = Some(pk);
+                                }
+                                i += 2;
+                                continue;
                             }
                         }
                         i += 1;
@@ -1074,6 +1119,8 @@ impl<'a> Command<'a> {
                         vector_bytes,
                         payload,
                         ttl_sec,
+                        tag_mask,
+                        parent_key,
                     })
                 } else if cmd_name.eq_ignore_ascii_case(b"VSEARCH") {
                     if args.len() < 3 {
@@ -1085,6 +1132,7 @@ impl<'a> Command<'a> {
                     let query_bytes = extract_required_bytes(&args[2], "VSEARCH")?;
                     let mut top_k = 1usize;
                     let mut threshold = 0.0f32;
+                    let mut filter_mask: u64 = 0;
 
                     let mut i = 3;
                     while i < args.len() {
@@ -1112,6 +1160,17 @@ impl<'a> Command<'a> {
                                 }
                                 i += 2;
                                 continue;
+                            } else if opt.eq_ignore_ascii_case(b"FILTER") && i + 1 < args.len() {
+                                if let Ok(mask_bytes) =
+                                    extract_required_bytes(&args[i + 1], "VSEARCH")
+                                {
+                                    filter_mask = std::str::from_utf8(mask_bytes)
+                                        .unwrap_or("0")
+                                        .parse::<u64>()
+                                        .unwrap_or(0);
+                                }
+                                i += 2;
+                                continue;
                             }
                         }
                         i += 1;
@@ -1122,6 +1181,7 @@ impl<'a> Command<'a> {
                         query_bytes,
                         top_k,
                         threshold,
+                        filter_mask,
                     })
                 } else if cmd_name.eq_ignore_ascii_case(b"VADD_BATCH") {
                     if args.len() < 5 {
@@ -1773,6 +1833,63 @@ mod tests {
                 vector_bytes: &vec_bytes,
                 payload: Some(b"my answer"),
                 ttl_sec: Some(3600),
+                tag_mask: 0,
+                parent_key: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_vadd_command_with_tags_and_parent() {
+        // VADD faq doc1 3 <bytes> PAYLOAD "my answer" EX 3600 TAGS 42 PARENT doc:main
+        let vec_bytes = [0u8; 12];
+        let mut input = Vec::new();
+        input.extend_from_slice(
+            b"*13\r\n$4\r\nVADD\r\n$3\r\nfaq\r\n$4\r\ndoc1\r\n$1\r\n3\r\n$12\r\n",
+        );
+        input.extend_from_slice(&vec_bytes);
+        input.extend_from_slice(
+            b"\r\n$7\r\nPAYLOAD\r\n$9\r\nmy answer\r\n$2\r\nEX\r\n$4\r\n3600\r\n$4\r\nTAGS\r\n$2\r\n42\r\n$6\r\nPARENT\r\n$8\r\ndoc:main\r\n",
+        );
+
+        let (cmd, consumed) = parse_command(&input).unwrap().unwrap();
+        assert_eq!(consumed, input.len());
+        assert_eq!(
+            cmd,
+            Command::VAdd {
+                index: b"faq",
+                id: b"doc1",
+                dim: 3,
+                vector_bytes: &vec_bytes,
+                payload: Some(b"my answer"),
+                ttl_sec: Some(3600),
+                tag_mask: 42,
+                parent_key: Some(b"doc:main"),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_vsearch_command_with_filter() {
+        // VSEARCH faq <bytes> TOPK 5 THRESHOLD 0.88 FILTER 42
+        let vec_bytes = [0u8; 12];
+        let mut input = Vec::new();
+        input.extend_from_slice(b"*9\r\n$7\r\nVSEARCH\r\n$3\r\nfaq\r\n$12\r\n");
+        input.extend_from_slice(&vec_bytes);
+        input.extend_from_slice(
+            b"\r\n$4\r\nTOPK\r\n$1\r\n5\r\n$9\r\nTHRESHOLD\r\n$4\r\n0.88\r\n$6\r\nFILTER\r\n$2\r\n42\r\n",
+        );
+
+        let (cmd, consumed) = parse_command(&input).unwrap().unwrap();
+        assert_eq!(consumed, input.len());
+        assert_eq!(
+            cmd,
+            Command::VSearch {
+                index: b"faq",
+                query_bytes: &vec_bytes,
+                top_k: 5,
+                threshold: 0.88,
+                filter_mask: 42,
             }
         );
     }
@@ -1795,6 +1912,7 @@ mod tests {
                 query_bytes: &vec_bytes,
                 top_k: 5,
                 threshold: 0.88,
+                filter_mask: 0,
             }
         );
     }
