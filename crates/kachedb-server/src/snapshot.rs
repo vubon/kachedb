@@ -606,8 +606,14 @@ fn hydrate_payload(
                 return Err(SnapshotError::UnexpectedEof);
             }
             let mut vector = Vec::with_capacity(entry_dim);
-            for chunk in payload[cursor..cursor + vec_bytes_len].chunks_exact(4) {
-                vector.push(f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+            for i in 0..entry_dim {
+                let offset = cursor + i * 4;
+                vector.push(f32::from_ne_bytes([
+                    payload[offset],
+                    payload[offset + 1],
+                    payload[offset + 2],
+                    payload[offset + 3],
+                ]));
             }
             cursor += vec_bytes_len;
 
