@@ -180,6 +180,7 @@ kachedb/
 │   ├── kachedb-core/             # 64-byte aligned Megaslab allocator, SlabPool & HashedTimingWheel
 │   ├── kachedb-hash/             # SIMD Swiss Table hash index with S3-FIFO & TTL lookup
 │   ├── kachedb-radix/            # Token prefix tree with lock-free EpochTree RCU concurrency
+│   ├── kachedb-vector/           # SIMD vector indexing, SQ8 quantization & HNSW search
 │   ├── kachedb-proto-tensor/     # 64-byte TensorBlockDescriptor & PagedAttention layouts
 │   ├── kachedb-shm/              # Zero-copy POSIX /dev/shm SPSC ring buffer IPC
 │   ├── kachedb-proto-resp/       # Zero-allocation streaming RESP2/RESP3 wire parser
@@ -226,7 +227,8 @@ Complete documentation, command references, and integration guides are available
 * 🧠 [**SIMD Vector Search Commands**](docs/commands/vector-search.md)
 * 📊 [**Server Observability & Introspection**](docs/commands/server-introspection.md)
 * 🏛️ [**System Architecture Overview**](docs/architecture/overview.md)
-* 🤖 [**vLLM**](docs/guides/vllm-integration.md), [**SGLang**](docs/guides/sglang-integration.md), and [**Semantic Caching**](docs/guides/semantic-caching.md) Guides
+* 🔐 [**Snapshot Encryption-at-Rest**](docs/architecture/snapshot-encryption.md)
+* 🤖 [**vLLM**](docs/guides/vllm-integration.md), [**SGLang**](docs/guides/sglang-integration.md), [**Semantic Caching**](docs/guides/semantic-caching.md), and [**Antigravity IDE**](docs/guides/agentic-ide-integration.md) Guides
 
 ---
 

@@ -4,6 +4,7 @@ mod aof;
 mod aof_recovery;
 mod aof_rewrite;
 mod config;
+pub mod crypto;
 mod snapshot;
 
 use std::sync::Arc;
@@ -31,7 +32,7 @@ fn main() {
 "#
     );
 
-    println!("⚡ KacheDB Daemon v0.1.0 (Production Stable) starting...");
+    println!("⚡ KacheDB Daemon v0.2.0 (Production Stable) starting...");
     if let Some(ref path) = config.config_path {
         println!("   └─ Config File:        {}", path.display());
     }
@@ -112,6 +113,14 @@ fn main() {
         }
     );
     println!(
+        "   └─ Snapshot Encryption:{}",
+        if config.snapshot_encryption_enabled {
+            format!("Enabled ({})", config.snapshot_encryption_cipher.as_str())
+        } else {
+            "Disabled (Plaintext)".to_string()
+        }
+    );
+    println!(
         "   └─ TLS 1.3 / mTLS:     {}",
         if tls_config.is_some() {
             "Enabled"
@@ -140,6 +149,8 @@ fn main() {
         cleanup_stale_shm(config.num_workers);
     }
 
+    let enc_config = config.snapshot_encryption_config();
+
     // 1. If snapshot exists, hydrate in-memory state from snapshot binary first
     let mut initial_pool =
         kachedb_core::SlabPool::new(0, config.pool_mb_per_core * 1024 * 1024).ok();
@@ -152,6 +163,7 @@ fn main() {
             &shared_table,
             pool,
             &kachedb_net::DEFAULT_VECTORS,
+            Some(&enc_config),
         ) {
             Ok(Some(stats)) => println!(
                 "💾 Hydrated snapshot successfully: {} vectors across {} indexes, {} KV keys from {:?}",
@@ -206,6 +218,7 @@ fn main() {
             &kachedb_net::DEFAULT_VECTORS,
             config.snapshot_interval_secs,
             shutdown.clone(),
+            Some(enc_config),
         ))
     } else {
         None

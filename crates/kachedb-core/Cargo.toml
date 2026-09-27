@@ -1,6 +1,6 @@
 [package]
 name        = "kachedb-core"
-version     = "0.1.0"
+version     = "0.2.0"
 edition     = "2024"
 description = "KacheDB core slab memory arena allocator and per-core pool manager"
 license     = "Apache-2.0 OR MIT"

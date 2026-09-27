@@ -1,6 +1,6 @@
 [package]
 name        = "kachedb-server"
-version     = "0.1.0"
+version     = "0.2.0"
 edition     = "2024"
 description = "KacheDB unified high-performance multi-core daemon runtime"
 license     = "Apache-2.0 OR MIT"
@@ -27,3 +27,4 @@ crossbeam-channel    = { workspace = true }
 rustls               = { workspace = true }
 rustls-pki-types     = { workspace = true }
 rustls-pemfile       = { workspace = true }
+ring                 = { workspace = true }

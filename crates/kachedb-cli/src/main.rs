@@ -8,6 +8,18 @@ use kachedb_proto_resp::{Frame, encode_array_header, encode_bulk_string, parse_f
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    // Check for offline diagnostic subcommands
+    if args.len() > 1 && (args[1] == "snapshot-info" || args[1] == "--snapshot-info") {
+        if args.len() > 2 {
+            inspect_snapshot(&args[2]);
+            return;
+        } else {
+            eprintln!("Usage: kachedb-cli snapshot-info <snapshot_file.kdb>");
+            std::process::exit(1);
+        }
+    }
+
     let mut host = "127.0.0.1".to_string();
     let mut port = 6379u16;
     let mut bench_mode = false;
@@ -16,6 +28,10 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "snapshot-info" | "--snapshot-info" if i + 1 < args.len() => {
+                inspect_snapshot(&args[i + 1]);
+                return;
+            }
             "-h" | "--host" if i + 1 < args.len() => {
                 host = args[i + 1].clone();
                 i += 2;
@@ -58,10 +74,14 @@ fn main() {
 fn print_help() {
     println!(
         r#"
-  KacheDB CLI - Interactive Client & Live Benchmark Tool
+  KacheDB CLI - Interactive Client, Live Benchmark & Diagnostic Tool
 
   USAGE:
       kachedb-cli [OPTIONS]
+      kachedb-cli snapshot-info <FILE.kdb>
+
+  COMMANDS:
+      snapshot-info <FILE>   Inspect header, cipher suite, encryption status, and CRC32 of snapshot
 
   OPTIONS:
       -h, --host <HOST>      Server hostname (default: 127.0.0.1)
@@ -71,6 +91,107 @@ fn print_help() {
           --help             Print this help message
 "#
     );
+}
+
+fn inspect_snapshot(path_str: &str) {
+    let path = std::path::Path::new(path_str);
+    if !path.exists() {
+        eprintln!("❌ Snapshot file not found: {:?}", path);
+        std::process::exit(1);
+    }
+
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("❌ Failed to read snapshot file: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if data.len() < 20 {
+        eprintln!(
+            "❌ Corrupt or truncated snapshot file (too small: {} bytes)",
+            data.len()
+        );
+        std::process::exit(1);
+    }
+
+    // CRC32 verification
+    let content_len = data.len() - 4;
+    let expected_crc = u32::from_le_bytes([
+        data[content_len],
+        data[content_len + 1],
+        data[content_len + 2],
+        data[content_len + 3],
+    ]);
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(&data[..content_len]);
+    let calculated_crc = hasher.finalize();
+    let crc_valid = expected_crc == calculated_crc;
+
+    let magic = &data[0..4];
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("📦 KacheDB Snapshot Inspection: {:?}", path);
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!(
+        "File Size:          {} bytes ({:.2} KB)",
+        data.len(),
+        data.len() as f64 / 1024.0
+    );
+    println!(
+        "Checksum (CRC32):   {:#010x} [{}]",
+        calculated_crc,
+        if crc_valid { "VALID" } else { "CORRUPTED!" }
+    );
+
+    if magic == b"KDB\x02" {
+        let ts = u64::from_le_bytes([
+            data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+        ]);
+        println!("Format Version:     v2 (Plaintext Legacy)");
+        println!("Created Timestamp:  {} (Unix Epoch)", ts);
+        println!("Encryption:         Disabled (Plaintext)");
+    } else if magic == b"KDB\x03" {
+        let ts = u64::from_le_bytes([
+            data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+        ]);
+        let flags = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
+        let is_encrypted = (flags & 0x01) != 0;
+        let cipher_code = (flags >> 1) & 0x07;
+        let cipher_str = match cipher_code {
+            0 => "AES-256-GCM (Hardware Accelerated)",
+            1 => "ChaCha20-Poly1305 (Streaming AEAD)",
+            _ => "Unknown Cipher Code",
+        };
+
+        println!("Format Version:     v3 (Authenticated Snapshot)");
+        println!("Created Timestamp:  {} (Unix Epoch)", ts);
+        println!("Flags:              {:#010x}", flags);
+        println!(
+            "Encryption:         {}",
+            if is_encrypted {
+                "ENABLED"
+            } else {
+                "Disabled (Plaintext)"
+            }
+        );
+        if is_encrypted {
+            println!("Cipher Suite:       {}", cipher_str);
+            if content_len >= 16 + 32 + 12 {
+                let salt = &data[16..48];
+                let nonce = &data[48..60];
+                println!("Salt (256-bit):     {}", hex_encode(salt));
+                println!("Master Nonce:       {}", hex_encode(nonce));
+            }
+        }
+    } else {
+        println!("Format Version:     Unknown Magic Header: {:?}", magic);
+    }
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 fn run_benchmark(addr: &str, requests: usize) {

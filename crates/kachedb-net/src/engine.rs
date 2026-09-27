@@ -906,12 +906,12 @@ mod tests {
         let n = client.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"$10\r\nnew-worker\r\n");
 
-        // 5. INFO -> contains "# Server" and "kachedb_version:0.1.0"
+        // 5. INFO -> contains "# Server" and "kachedb_version:0.2.0"
         client.write_all(b"*1\r\n$4\r\nINFO\r\n").unwrap();
         let n = client.read(&mut buf).unwrap();
         let info_resp = std::str::from_utf8(&buf[..n]).unwrap();
         assert!(info_resp.contains("# Server"));
-        assert!(info_resp.contains("kachedb_version:0.1.0"));
+        assert!(info_resp.contains("kachedb_version:0.2.0"));
         assert!(info_resp.contains("# Memory"));
 
         // Shut down worker

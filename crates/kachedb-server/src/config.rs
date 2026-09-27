@@ -40,6 +40,14 @@ pub struct ServerConfig {
     pub snapshot_path: PathBuf,
     /// Snapshot interval in seconds (default: 300).
     pub snapshot_interval_secs: u64,
+    /// Enable snapshot encryption-at-rest.
+    pub snapshot_encryption_enabled: bool,
+    /// Cipher suite for snapshot encryption (aes-256-gcm or chacha20-poly1305).
+    pub snapshot_encryption_cipher: crate::crypto::CipherSuite,
+    /// Plaintext passphrase or 64-char hex key for snapshot encryption.
+    pub snapshot_encryption_key: Option<String>,
+    /// Path to a 32-byte raw binary key or key file for snapshot encryption.
+    pub snapshot_encryption_key_path: Option<PathBuf>,
 }
 
 impl Default for ServerConfig {
@@ -65,11 +73,25 @@ impl Default for ServerConfig {
             snapshot_enabled: true,
             snapshot_path: PathBuf::from("dump.kdb"),
             snapshot_interval_secs: 300,
+            snapshot_encryption_enabled: false,
+            snapshot_encryption_cipher: crate::crypto::CipherSuite::Aes256Gcm,
+            snapshot_encryption_key: None,
+            snapshot_encryption_key_path: None,
         }
     }
 }
 
 impl ServerConfig {
+    /// Returns the active `SnapshotEncryptionConfig` from these server settings.
+    pub fn snapshot_encryption_config(&self) -> crate::snapshot::SnapshotEncryptionConfig {
+        crate::snapshot::SnapshotEncryptionConfig {
+            enabled: self.snapshot_encryption_enabled,
+            cipher: self.snapshot_encryption_cipher,
+            key: self.snapshot_encryption_key.clone(),
+            key_file: self.snapshot_encryption_key_path.clone(),
+        }
+    }
+
     /// Loads directives from a configuration file into this `ServerConfig`.
     pub fn load_file(&mut self, path: &std::path::Path) -> Result<(), String> {
         let content = std::fs::read_to_string(path)
@@ -222,6 +244,33 @@ impl ServerConfig {
                         ));
                     }
                 }
+                "snapshot-encryption" | "snapshot_encryption" => {
+                    self.snapshot_encryption_enabled =
+                        matches!(value.to_lowercase().as_str(), "yes" | "true" | "1");
+                }
+                "snapshot-encryption-cipher" | "snapshot_encryption_cipher" | "snapshot-cipher" => {
+                    if let Ok(c) = crate::crypto::CipherSuite::from_str_name(&value) {
+                        self.snapshot_encryption_cipher = c;
+                    } else {
+                        return Err(format!(
+                            "Invalid snapshot cipher '{value}' on line {}",
+                            line_num + 1
+                        ));
+                    }
+                }
+                "snapshot-encryption-key" | "snapshot_encryption_key" | "snapshot-key" => {
+                    if !value.is_empty() {
+                        self.snapshot_encryption_key = Some(value);
+                    }
+                }
+                "snapshot-encryption-key-file"
+                | "snapshot_encryption_key_file"
+                | "snapshot-key-file"
+                | "snapshot-key-path" => {
+                    if !value.is_empty() {
+                        self.snapshot_encryption_key_path = Some(PathBuf::from(&value));
+                    }
+                }
                 other => {
                     log::warn!(
                         "Unknown config directive '{other}' on line {}",
@@ -348,6 +397,28 @@ impl ServerConfig {
                     }
                     i += 2;
                 }
+                "--snapshot-encryption" => {
+                    config.snapshot_encryption_enabled = true;
+                    i += 1;
+                }
+                "--no-snapshot-encryption" => {
+                    config.snapshot_encryption_enabled = false;
+                    i += 1;
+                }
+                "--snapshot-cipher" if i + 1 < args.len() => {
+                    if let Ok(c) = crate::crypto::CipherSuite::from_str_name(&args[i + 1]) {
+                        config.snapshot_encryption_cipher = c;
+                    }
+                    i += 2;
+                }
+                "--snapshot-key" if i + 1 < args.len() => {
+                    config.snapshot_encryption_key = Some(args[i + 1].clone());
+                    i += 2;
+                }
+                "--snapshot-key-file" if i + 1 < args.len() => {
+                    config.snapshot_encryption_key_path = Some(PathBuf::from(&args[i + 1]));
+                    i += 2;
+                }
                 "--help" | "-h" => {
                     print_help();
                     std::process::exit(0);
@@ -388,6 +459,11 @@ fn print_help() {
          --aof                     Enable Append-Only File (AOF) persistence
          --aof-file <PATH>         Path to AOF log file (default: kachedb.aof)
          --appendfsync <POLICY>    AOF fsync policy: always, everysec, no (default: everysec)
+         --snapshot-encryption     Enable snapshot encryption-at-rest
+         --no-snapshot-encryption  Disable snapshot encryption-at-rest
+         --snapshot-cipher <CIPH>  Cipher suite: aes-256-gcm or chacha20-poly1305
+         --snapshot-key <KEY>      Passphrase or 64-char hex key for snapshot encryption
+         --snapshot-key-file <PTH> Path to 32-byte key file for snapshot encryption
          --tls-cert <PATH>         Path to TLS certificate PEM file
          --tls-key <PATH>          Path to TLS private key PEM file
          --tls-ca <PATH>           Path to TLS CA PEM file (enables mTLS)
@@ -463,5 +539,34 @@ requirepass "supersecret"
             assert!(cfg.shm_enabled);
             assert!(!cfg.aof_enabled);
         }
+    }
+
+    #[test]
+    fn test_snapshot_encryption_config_parsing() {
+        let conf = r#"
+snapshot-encryption yes
+snapshot-encryption-cipher chacha20-poly1305
+snapshot-encryption-key "super_secret_test_pass"
+snapshot-encryption-key-file /tmp/kachedb.key
+"#;
+        let mut cfg = ServerConfig::default();
+        cfg.load_str(conf).unwrap();
+        assert!(cfg.snapshot_encryption_enabled);
+        assert_eq!(
+            cfg.snapshot_encryption_cipher,
+            crate::crypto::CipherSuite::ChaCha20Poly1305
+        );
+        assert_eq!(
+            cfg.snapshot_encryption_key.as_deref(),
+            Some("super_secret_test_pass")
+        );
+        assert_eq!(
+            cfg.snapshot_encryption_key_path.as_deref(),
+            Some(std::path::Path::new("/tmp/kachedb.key"))
+        );
+
+        let enc_cfg = cfg.snapshot_encryption_config();
+        assert!(enc_cfg.enabled);
+        assert_eq!(enc_cfg.cipher, crate::crypto::CipherSuite::ChaCha20Poly1305);
     }
 }

@@ -38,6 +38,7 @@
 * [**2 MB Megaslab Memory Engine**](./architecture/memory-engine.md): Slotted slab bump allocator, 64-byte cache-line alignment, and S3-FIFO quota manager.
 * [**Token Radix Prefix Tree**](./architecture/radix-prefix-tree.md): Hierarchical `&[u32]` token prefix tree, sub-microsecond prefill lookup, and Epoch RCU concurrency.
 * [**Zero-Copy Shared Memory IPC**](./architecture/zero-copy-ipc.md): POSIX `/dev/shm` lock-free ring buffers and PCIe line-rate tensor sharing.
+* [**Snapshot Encryption-at-Rest**](./architecture/snapshot-encryption.md): Hardware-accelerated AES-256-GCM / ChaCha20-Poly1305 streaming AEAD encryption, HKDF key derivation, and `KDB\x03` format.
 
 ---
 
@@ -45,6 +46,7 @@
 * [**vLLM Integration Guide**](./guides/vllm-integration.md): Drop-in PagedAttention KV connector for vLLM inference servers.
 * [**SGLang Integration Guide**](./guides/sglang-integration.md): RadixAttention tree-branching prefill offloading with SGLang.
 * [**Semantic Caching Guide**](./guides/semantic-caching.md): High-throughput sync and async prompt caching with `kachedb-py` and FastEmbed/HuggingFace.
+* [**Antigravity IDE Integration Guide**](./guides/agentic-ide-integration.md): Autonomous agent memory and semantic caching for Antigravity IDE coding agents.
 
 ---
 

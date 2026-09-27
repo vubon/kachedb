@@ -22,6 +22,13 @@ The `kachedb-server` binary accepts several command-line flags to control hardwa
 | | `--pool-mb <MB>` | Megaslab memory pool allocated per core in megabytes | `64` | `256` or `1024` |
 | | `--maxclients <NUM>` | Maximum simultaneous client connections | `10000` | `10000`–`65535` |
 | | `--requirepass <PASS>` | Password required for client authentication via `AUTH` | None | Set strong password |
+| | `--snapshot` / `--no-snapshot` | Enable or disable periodic binary snapshotting | `true` | `true` |
+| | `--snapshot-file <PATH>` | Path to binary snapshot file (`dbfilename`) | `dump.kdb` | `/var/lib/kachedb/dump.kdb` |
+| | `--snapshot-interval <SECS>` | Interval in seconds between snapshots | `300` | `300`–`900` |
+| | `--snapshot-encryption` | Enable AES-256-GCM / ChaCha20 streaming encryption | `false` | `true` (for sensitive/KV data) |
+| | `--snapshot-cipher <CIPHER>` | AEAD cipher (`aes-256-gcm` or `chacha20-poly1305`) | `aes-256-gcm` | `aes-256-gcm` |
+| | `--snapshot-key <KEY>` | Secret passphrase or 64-character hex key | None | Passphrase or hex string |
+| | `--snapshot-key-file <PATH>` | Path to 32-byte raw binary master key file | None | `/etc/kachedb/snapshot.key` |
 | | `--aof <true\|false>` | Enable Append-Only File (AOF) persistence | `false` | `true` (if durability needed) |
 | | `--aof-path <PATH>` | Path to Append-Only File log | `kachedb.aof` | `/var/lib/kachedb/kachedb.aof` |
 | | `--appendfsync <POLICY>` | AOF disk sync policy (`always`, `everysec`, `no`) | `everysec` | `everysec` |
@@ -47,11 +54,20 @@ workers 4
 pool_mb_per_core 256
 
 # IPC & LLM Tensor Streaming
-shm_enabled true
+shm yes
+
+# Binary Snapshotting & Encryption-at-Rest
+snapshot yes
+dbfilename dump.kdb
+snapshot-interval 300
+snapshot-encryption yes
+snapshot-encryption-cipher aes-256-gcm
+# snapshot-encryption-key-file /etc/kachedb/snapshot.key
+snapshot-encryption-key "your_secret_passphrase_here"
 
 # Persistence (Append-Only File)
-aof_enabled false
-aof_path kachedb.aof
+appendonly no
+appendfilename kachedb.aof
 appendfsync everysec
 
 # Security
@@ -87,6 +103,32 @@ Memory is managed through uniform **2 MB Megaslabs**:
 * Rather than calling `malloc()` on every request, KacheDB pre-allocates contiguous megaslab page frames.
 * **Per-Core Sizing:** If `--pool-mb` is set to `256` on a 4-core machine, total initial memory allocated across the daemon is $4 \times 256\text{ MB} = 1.024\text{ GB}$.
 * **Elastic Borrowing:** The dynamic `WorkloadQuota` manager elastically allocates megaslabs between application key-value cache and tensor memory based on current demand.
+
+---
+
+## 🔐 Snapshot Encryption-at-Rest Configuration
+
+KacheDB provides zero hot-path overhead streaming AEAD encryption for on-disk snapshots (`dump.kdb`).
+
+### Configuration Directives & CLI Flags
+
+| `kachedb.conf` Directive | CLI Flag Equivalent | Default | Description |
+| :--- | :--- | :---: | :--- |
+| `snapshot-encryption yes\|no` | `--snapshot-encryption`, `--no-snapshot-encryption` | `no` | Enable or disable authenticated streaming encryption for snapshots. |
+| `snapshot-encryption-cipher <name>` | `--snapshot-cipher <cipher>` | `aes-256-gcm` | AEAD cipher suite: `aes-256-gcm` (hardware-accelerated) or `chacha20-poly1305`. |
+| `snapshot-encryption-key-file <path>` | `--snapshot-key-file <path>` | *None* | Path to a 32-byte binary master key file (recommended for production). |
+| `snapshot-encryption-key <string>` | `--snapshot-key <key>` | *None* | 64-character hexadecimal key or variable-length passphrase (derived via HKDF-SHA256). |
+
+### Example CLI Launch
+```bash
+# Start daemon with hardware AES-256-GCM encryption using a binary key file
+./target/release/kachedb-server -c kachedb.conf \
+  --snapshot-encryption \
+  --snapshot-cipher aes-256-gcm \
+  --snapshot-key-file /etc/kachedb/snapshot.key
+```
+
+For the comprehensive wire format (`KDB\x03`) and security architecture, see [Snapshot Encryption-at-Rest](../architecture/snapshot-encryption.md).
 
 ---
 

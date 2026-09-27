@@ -359,21 +359,22 @@ dependencies = [
 
 [[package]]
 name = "kachedb-bench"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "kachedb-proto-resp",
 ]
 
 [[package]]
 name = "kachedb-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "crc32fast",
  "kachedb-proto-resp",
 ]
 
 [[package]]
 name = "kachedb-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cfg-if",
  "core_affinity",
@@ -386,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-hash"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ahash",
  "cfg-if",
@@ -399,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-net"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cfg-if",
  "crc32fast",
@@ -422,7 +423,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-proto-resp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "log",
@@ -432,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-proto-tensor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "kachedb-core",
  "log",
@@ -441,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-radix"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -453,7 +454,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cfg-if",
  "crc32fast",
@@ -468,6 +469,7 @@ dependencies = [
  "kachedb-vector",
  "libc",
  "log",
+ "ring",
  "rustls",
  "rustls-pemfile",
  "rustls-pki-types",
@@ -476,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-shm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cfg-if",
  "criterion",
@@ -489,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-vector"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ahash",
  "cfg-if",

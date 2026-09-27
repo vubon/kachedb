@@ -18,11 +18,13 @@
 - [2 MB Megaslab Memory Engine](architecture/memory-engine.md)
 - [Token Radix Prefix Tree](architecture/radix-prefix-tree.md)
 - [Zero-Copy Shared Memory IPC](architecture/zero-copy-ipc.md)
+- [Snapshot Encryption-at-Rest](architecture/snapshot-encryption.md)
 
 # Production Integration Guides
 - [vLLM Integration](guides/vllm-integration.md)
 - [SGLang Integration](guides/sglang-integration.md)
 - [Semantic Caching Guide](guides/semantic-caching.md)
+- [Antigravity IDE Integration](guides/agentic-ide-integration.md)
 - [OpenAI Proxy](guides/openai-proxy.md)
 
 # Performance & Benchmarks

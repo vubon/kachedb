@@ -1045,7 +1045,7 @@ impl Connection {
                 encode_bulk_string(write_buf, b"server");
                 encode_bulk_string(write_buf, b"kachedb");
                 encode_bulk_string(write_buf, b"version");
-                encode_bulk_string(write_buf, b"0.1.0");
+                encode_bulk_string(write_buf, b"0.2.0");
                 encode_bulk_string(write_buf, b"proto");
                 encode_integer(write_buf, ver);
                 encode_bulk_string(write_buf, b"id");
@@ -1100,7 +1100,7 @@ impl Connection {
             Command::Info { section: _ } => {
                 let info_text = format!(
                     "# Server\r\n\
-                     kachedb_version:0.1.0\r\n\
+                     kachedb_version:0.2.0\r\n\
                      os:{os}\r\n\
                      arch_bits:64\r\n\
                      process_id:{pid}\r\n\
@@ -2175,7 +2175,7 @@ mod tests {
         .unwrap();
         let resp_str = std::str::from_utf8(&conn.write_buf).unwrap();
         assert!(resp_str.contains("# Server"));
-        assert!(resp_str.contains("kachedb_version:0.1.0"));
+        assert!(resp_str.contains("kachedb_version:0.2.0"));
         assert!(resp_str.contains("# Memory"));
         conn.write_buf.clear();
     }

@@ -5,6 +5,34 @@ All notable changes to **KacheDB** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.2.0] — 2026-09-27
+
+### 🔐 Snapshot Encryption-at-Rest (`dump.kdb`)
+- **Hardware-Accelerated Streaming AEAD Encryption:**
+  - Implemented zero-overhead snapshot encryption using **AES-256-GCM** (AES-NI / ARMv8 Crypto Extensions) and **ChaCha20-Poly1305** streaming AEAD fallback.
+  - Zero hot-path overhead: in-memory SwissTable lookups and SIMD vector dot products operate on plaintext in memory; encryption and decryption stream through 64 KiB buffers out-of-band during background snapshot disk writes and boot hydration.
+  - Per-chunk 96-bit nonces ($Nonce_i = MasterNonce \oplus i$) and index-bound AAD ($AAD = i$) prevent chunk reordering, substitution, or truncation.
+- **Wire Format `KDB\x03` & Seamless Backward Compatibility:**
+  - Added `KDB\x03` wire format containing 32-byte HKDF salt, 12-byte master nonce, encrypted 64 KiB chunks, and EOF sentinel `0u32` before the IEEE 802.3 CRC32 trailer.
+  - Automatically loads unencrypted legacy `KDB\x02` and unencrypted `KDB\x03` snapshots with zero key prompts or configuration.
+- **Key Ingestion & Zeroization:**
+  - Supports 32-byte raw binary master key files (`snapshot-encryption-key-file`), 64-character hex keys, or passphrases derived with HKDF-SHA256 (`snapshot-encryption-key`).
+  - Volatile memory zeroization upon drop (`std::ptr::write_volatile`).
+- **Offline Snapshot Diagnostics (`kachedb-cli`):**
+  - Added `kachedb-cli snapshot-info <FILE.kdb>` subcommand to inspect format version, timestamp, encryption status, cipher suite, salt, master nonce, and verify full CRC32 checksum integrity.
+
+### 🧠 Hybrid Context Engine & Vector Upgrades
+- **64-Bit Tag Bitmask Pre-Filtering:**
+  - High-speed bitwise pre-filtering skipping irrelevant vectors before SIMD dot product computation.
+- **Hierarchical Document Chunking & Parent Pointers:**
+  - Added `parent_key` linkage in vector entries to seamlessly retrieve full parent context documents from SwissTable.
+- **Automatic Multi-Core Auto-Parallelism:**
+  - Setting `workers 0` in `kachedb.conf` automatically detects available physical/logical CPU cores.
+- **Antigravity IDE Integration Guide:**
+  - Added comprehensive guide and production-tested `.agents/AGENTS.md` rule template (`docs/guides/agentic-ide-integration.md`) for configuring KacheDB as an autonomous persistent memory layer for Antigravity IDE coding agents.
+
+---
+
 ## [v0.1.0] — 2026-09-08 (Official Production Stable Release)
 
 ### 🚀 Production Stabilization & Single-Node Core Lock

@@ -8,6 +8,7 @@
 
 ```bash
 kachedb-cli [OPTIONS]
+kachedb-cli snapshot-info <FILE.kdb>
 ```
 
 ### Options Reference
@@ -18,6 +19,7 @@ kachedb-cli [OPTIONS]
 | `-p` | `--port <PORT>` | Target KacheDB server TCP port | `6379` |
 | `-b` | `--bench` | Execute a high-speed throughput benchmark | `false` |
 | `-n` | `-n <NUM>` | Total number of requests in benchmark mode | `10,000` |
+| | `snapshot-info <FILE>` | Offline inspection of binary snapshot format, cipher, and CRC32 | |
 | | `--help` | Display command help and usage flags | |
 
 ---
@@ -127,7 +129,7 @@ OK
 ```text
 127.0.0.1:6379> INFO
 # Server
-kachedb_version:0.1.0
+kachedb_version:0.2.0
 os:macos
 arch_bits:64
 process_id:48123
@@ -179,4 +181,39 @@ You can measure raw network round-trip throughput and latency using the built-in
   Throughput:        2,916,742 ops/sec
   Average Latency:   342.8 ns / op
 ══════════════════════════════════════════════════════════════
+```
+
+---
+
+## 🔍 Offline Snapshot Inspection Mode (`snapshot-info`)
+
+`kachedb-cli` provides an offline diagnostic subcommand to inspect KacheDB binary snapshots (`dump.kdb`) without launching a server or connecting over TCP:
+
+```bash
+./target/release/kachedb-cli snapshot-info /var/lib/kachedb/dump.kdb
+```
+
+### What `snapshot-info` Inspects:
+* **File Size & Integrity:** Reads and verifies IEEE 802.3 CRC32 checksum trailer over the entire snapshot file.
+* **Format Version:** Identifies `KDB\x02` (legacy unencrypted) or `KDB\x03` (authenticated snapshot format).
+* **Creation Timestamp:** Displays the Unix epoch creation timestamp.
+* **Encryption Status:** Checks whether encryption is active (`ENABLED` vs `Disabled (Plaintext)`).
+* **Cipher Suite:** Identifies `AES-256-GCM` or `ChaCha20-Poly1305`.
+* **Cryptographic Metadata:** Displays the 256-bit random HKDF salt and 96-bit master nonce in hexadecimal format.
+
+### Example Inspection Output
+```text
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📦 KacheDB Snapshot Inspection: "dump.kdb"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+File Size:          430 bytes (0.42 KB)
+Checksum (CRC32):   0x295f2f0d [VALID]
+Format Version:     v3 (Authenticated Snapshot)
+Created Timestamp:  1790481552 (Unix Epoch)
+Flags:              0x00000001
+Encryption:         ENABLED
+Cipher Suite:       AES-256-GCM (Hardware Accelerated)
+Salt (256-bit):     dafd90590dc19b358f8e76fd11a0430b07dc0b5881c063987a3c7619379147ff
+Master Nonce:       b8fe98eb980ea4d551497618
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
