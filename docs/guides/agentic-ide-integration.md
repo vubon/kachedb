@@ -67,7 +67,7 @@ Add KacheDB to your Antigravity IDE MCP configuration file (`mcp_config.json`):
   "mcpServers": {
     "kachedb": {
       "command": "uvx",
-      "args": ["kachedb-mcp"],
+      "args": ["--refresh", "kachedb-mcp"],
       "env": {
         "KACHEDB_HOST": "127.0.0.1",
         "KACHEDB_PORT": "6379",
