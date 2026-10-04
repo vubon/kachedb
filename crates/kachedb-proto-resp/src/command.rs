@@ -958,9 +958,7 @@ impl<'a> Command<'a> {
             let key = args[1];
             let pair_count = (args.len() - 2) / 2;
             let mut pairs = SmallVec::with_capacity(pair_count.min(8));
-            for chunk in args[2..].chunks_exact(2) {
-                let field = chunk[0];
-                let val = chunk[1];
+            for &[field, val] in args[2..].as_chunks::<2>().0 {
                 if field.len() > 4096 || val.len() > 4096 {
                     return Err(RespError::FrameTooLarge {
                         size: field.len().max(val.len()),
@@ -1778,9 +1776,9 @@ impl<'a> Command<'a> {
                     let key = extract_required_bytes(&args[1], "HSET")?;
                     let pair_count = (args.len() - 2) / 2;
                     let mut pairs = SmallVec::with_capacity(pair_count.min(8));
-                    for chunk in args[2..].chunks_exact(2) {
-                        let field = extract_required_bytes(&chunk[0], "HSET")?;
-                        let val = extract_required_bytes(&chunk[1], "HSET")?;
+                    for [field_elem, val_elem] in args[2..].as_chunks::<2>().0 {
+                        let field = extract_required_bytes(field_elem, "HSET")?;
+                        let val = extract_required_bytes(val_elem, "HSET")?;
                         if field.len() > 4096 || val.len() > 4096 {
                             return Err(RespError::FrameTooLarge {
                                 size: field.len().max(val.len()),
@@ -2421,11 +2419,64 @@ mod tests {
         let (cmd, _) = parse_command(raw_hgetall).unwrap().unwrap();
         assert_eq!(cmd, Command::HGetAll { key: b"my_hash" });
 
-        // Malformed HSET (odd argument count)
+        // Multi-pair HSET (zero-alloc)
+        let raw_hset_multi = b"*6\r\n$4\r\nHSET\r\n$7\r\nmy_hash\r\n$2\r\nf1\r\n$2\r\nv1\r\n$2\r\nf2\r\n$2\r\nv2\r\n";
+        let (cmd_multi, _) = parse_command(raw_hset_multi).unwrap().unwrap();
+        assert_eq!(
+            cmd_multi,
+            Command::HSet {
+                key: b"my_hash",
+                pairs: smallvec::smallvec![
+                    (b"f1".as_slice(), b"v1".as_slice()),
+                    (b"f2".as_slice(), b"v2".as_slice()),
+                ],
+            }
+        );
+
+        // Multi-pair HSET via Command::from_frame
+        let (frame_multi, _) = parse_frame(raw_hset_multi).unwrap().unwrap();
+        let cmd_from_frame = Command::from_frame(frame_multi).unwrap();
+        assert_eq!(
+            cmd_from_frame,
+            Command::HSet {
+                key: b"my_hash",
+                pairs: smallvec::smallvec![
+                    (b"f1".as_slice(), b"v1".as_slice()),
+                    (b"f2".as_slice(), b"v2".as_slice()),
+                ],
+            }
+        );
+
+        // Malformed HSET (odd argument count) in parse_command
         let malformed = b"*3\r\n$4\r\nHSET\r\n$7\r\nmy_hash\r\n$5\r\nfield\r\n";
         assert!(matches!(
             parse_command(malformed),
             Err(RespError::WrongArgumentCount { .. })
+        ));
+
+        // Malformed HSET (odd argument count) in Command::from_frame
+        let (malformed_frame, _) = parse_frame(malformed).unwrap().unwrap();
+        assert!(matches!(
+            Command::from_frame(malformed_frame),
+            Err(RespError::WrongArgumentCount { .. })
+        ));
+
+        // Too few arguments (< 4) in parse_command
+        let too_few = b"*2\r\n$4\r\nHSET\r\n$7\r\nmy_hash\r\n";
+        assert!(matches!(
+            parse_command(too_few),
+            Err(RespError::WrongArgumentCount { .. })
+        ));
+
+        // Field or value too large (> 4096 bytes)
+        let large_val = vec![b'a'; 4097];
+        let mut large_raw =
+            b"*4\r\n$4\r\nHSET\r\n$7\r\nmy_hash\r\n$5\r\nfield\r\n$4097\r\n".to_vec();
+        large_raw.extend_from_slice(&large_val);
+        large_raw.extend_from_slice(b"\r\n");
+        assert!(matches!(
+            parse_command(&large_raw),
+            Err(RespError::FrameTooLarge { .. })
         ));
     }
 }
