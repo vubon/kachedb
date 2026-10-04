@@ -395,6 +395,7 @@ dependencies = [
  "kachedb-core",
  "log",
  "parking_lot",
+ "smallvec",
  "thiserror",
 ]
 
@@ -473,6 +474,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "rustls-pki-types",
+ "smallvec",
  "thiserror",
 ]
 

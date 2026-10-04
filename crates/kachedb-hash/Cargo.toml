@@ -12,6 +12,7 @@ log          = { workspace = true }
 thiserror    = { workspace = true }
 cfg-if       = { workspace = true }
 parking_lot  = { workspace = true }
+smallvec     = { workspace = true }
 
 [[bench]]
 name    = "swiss_table"

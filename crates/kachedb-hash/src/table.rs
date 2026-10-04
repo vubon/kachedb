@@ -201,12 +201,34 @@ impl SwissTable {
     ///
     /// Single-pass probe: Returns `Ok(Some(old_block_id))` if updated in place,
     /// or `Ok(None)` if inserted as a new entry.
+    #[inline]
     pub fn insert_with_ttl(
         &mut self,
         key_hash: u64,
         slab_block_id: SlabBlockId,
         value_len: u32,
         expire_at_secs: u32,
+    ) -> Result<Option<SlabBlockId>, ()> {
+        self.insert_typed(
+            key_hash,
+            slab_block_id,
+            value_len,
+            expire_at_secs,
+            crate::entry::VALUE_TYPE_STRING,
+        )
+    }
+
+    /// Inserts a key-hash, slab descriptor, expiration timestamp, and explicit value type.
+    ///
+    /// Single-pass probe: Returns `Ok(Some(old_block_id))` if updated in place,
+    /// or `Ok(None)` if inserted as a new entry.
+    pub fn insert_typed(
+        &mut self,
+        key_hash: u64,
+        slab_block_id: SlabBlockId,
+        value_len: u32,
+        expire_at_secs: u32,
+        value_type: u8,
     ) -> Result<Option<SlabBlockId>, ()> {
         // Grow before exceeding the 87.5% load threshold.
         if self.count * LOAD_FACTOR_DEN >= self.capacity * LOAD_FACTOR_NUM {
@@ -226,8 +248,13 @@ impl SwissTable {
                     if self.entries[idx].matches(key_hash) {
                         let old_block_id = self.entries[idx].slab_block_id;
                         // Update in place without heap allocation.
-                        self.entries[idx] =
-                            HashEntry::with_ttl(key_hash, slab_block_id, value_len, expire_at_secs);
+                        self.entries[idx] = HashEntry::with_type(
+                            key_hash,
+                            slab_block_id,
+                            value_len,
+                            expire_at_secs,
+                            value_type,
+                        );
                         return Ok(Some(old_block_id)); // updated
                     }
                 }
@@ -237,8 +264,13 @@ impl SwissTable {
             if group.has_empty() {
                 let slot = group.first_available().ok_or(())?;
                 self.ctrl[slot] = fingerprint;
-                self.entries[slot] =
-                    HashEntry::with_ttl(key_hash, slab_block_id, value_len, expire_at_secs);
+                self.entries[slot] = HashEntry::with_type(
+                    key_hash,
+                    slab_block_id,
+                    value_len,
+                    expire_at_secs,
+                    value_type,
+                );
                 self.count += 1;
                 return Ok(None); // newly inserted
             }

@@ -27,9 +27,11 @@
 //! ```
 
 pub mod entry;
+pub mod hash_frame;
 pub mod sharded;
 pub mod table;
 
-pub use entry::{HashEntry, TableEntry};
+pub use entry::{ACCESS_BIT_ACCESSED, HashEntry, TableEntry, VALUE_TYPE_HASH, VALUE_TYPE_STRING};
+pub use hash_frame::{FrameError, HashSlotFrame, hash_field};
 pub use sharded::{NUM_SHARDS, ShardedSwissTable};
 pub use table::{SwissTable, hash_key};

@@ -12,7 +12,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.benchmark.yml"
 RESULTS_DIR="${REPO_ROOT}/docs/benchmarks"
-RESULTS_FILE="${RESULTS_DIR}/benchmark_comparison_results.md"
+
+# Derive version dynamically from server Cargo.toml (or allow env override)
+DETECTED_VERSION=$(grep -m1 '^version' "${REPO_ROOT}/crates/kachedb-server/Cargo.toml" 2>/dev/null | awk -F'"' '{print $2}')
+VERSION="${VERSION:-${DETECTED_VERSION:-unknown}}"
+BENCH_SUFFIX="${BENCH_SUFFIX:-}"
+if [ -n "${BENCH_SUFFIX}" ]; then
+  RESULTS_FILE="${RESULTS_DIR}/benchmark_comparison_results_v${VERSION}_${BENCH_SUFFIX}.md"
+else
+  RESULTS_FILE="${RESULTS_DIR}/benchmark_comparison_results_v${VERSION}.md"
+fi
 
 mkdir -p "${RESULTS_DIR}"
 

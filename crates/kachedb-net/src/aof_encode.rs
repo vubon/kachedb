@@ -17,6 +17,8 @@ pub enum AofOp {
     VAdd = 0x04,
     VIndexCreate = 0x05,
     VIndexDrop = 0x06,
+    HSet = 0x07,
+    HDel = 0x08,
 }
 
 impl TryFrom<u8> for AofOp {
@@ -30,6 +32,8 @@ impl TryFrom<u8> for AofOp {
             0x04 => Ok(Self::VAdd),
             0x05 => Ok(Self::VIndexCreate),
             0x06 => Ok(Self::VIndexDrop),
+            0x07 => Ok(Self::HSet),
+            0x08 => Ok(Self::HDel),
             _ => Err(()),
         }
     }

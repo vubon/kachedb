@@ -138,6 +138,24 @@ pub enum Command<'a> {
     DBSize,
     /// `TYPE <key>`
     Type { key: &'a [u8] },
+    /// `HSET <key> <field> <value> [<field> <value> ...]`
+    HSet {
+        key: &'a [u8],
+        pairs: SmallVec<[(&'a [u8], &'a [u8]); 8]>,
+    },
+    /// `HGET <key> <field>`
+    HGet { key: &'a [u8], field: &'a [u8] },
+    /// `HDEL <key> <field> [<field> ...]`
+    HDel {
+        key: &'a [u8],
+        fields: SmallVec<[&'a [u8]; 8]>,
+    },
+    /// `HEXISTS <key> <field>`
+    HExists { key: &'a [u8], field: &'a [u8] },
+    /// `HLEN <key>`
+    HLen { key: &'a [u8] },
+    /// `HGETALL <key>`
+    HGetAll { key: &'a [u8] },
     /// `FLUSHDB`
     FlushDb,
     /// `FLUSHALL`
@@ -931,6 +949,72 @@ impl<'a> Command<'a> {
                 });
             }
             Ok(Command::Type { key: args[1] })
+        } else if cmd_name.eq_ignore_ascii_case(b"HSET") {
+            if args.len() < 4 || !(args.len() - 2).is_multiple_of(2) {
+                return Err(RespError::WrongArgumentCount {
+                    command: "HSET".into(),
+                });
+            }
+            let key = args[1];
+            let pair_count = (args.len() - 2) / 2;
+            let mut pairs = SmallVec::with_capacity(pair_count.min(8));
+            for chunk in args[2..].chunks_exact(2) {
+                let field = chunk[0];
+                let val = chunk[1];
+                if field.len() > 4096 || val.len() > 4096 {
+                    return Err(RespError::FrameTooLarge {
+                        size: field.len().max(val.len()),
+                    });
+                }
+                pairs.push((field, val));
+            }
+            Ok(Command::HSet { key, pairs })
+        } else if cmd_name.eq_ignore_ascii_case(b"HGET") {
+            if args.len() != 3 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "HGET".into(),
+                });
+            }
+            Ok(Command::HGet {
+                key: args[1],
+                field: args[2],
+            })
+        } else if cmd_name.eq_ignore_ascii_case(b"HDEL") {
+            if args.len() < 3 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "HDEL".into(),
+                });
+            }
+            let key = args[1];
+            let mut fields = SmallVec::with_capacity((args.len() - 2).min(8));
+            for &arg in &args[2..] {
+                fields.push(arg);
+            }
+            Ok(Command::HDel { key, fields })
+        } else if cmd_name.eq_ignore_ascii_case(b"HEXISTS") {
+            if args.len() != 3 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "HEXISTS".into(),
+                });
+            }
+            Ok(Command::HExists {
+                key: args[1],
+                field: args[2],
+            })
+        } else if cmd_name.eq_ignore_ascii_case(b"HLEN") {
+            if args.len() != 2 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "HLEN".into(),
+                });
+            }
+            Ok(Command::HLen { key: args[1] })
+        } else if cmd_name.eq_ignore_ascii_case(b"HGETALL") {
+            if args.len() != 2 {
+                return Err(RespError::WrongArgumentCount {
+                    command: "HGETALL".into(),
+                });
+            }
+            Ok(Command::HGetAll { key: args[1] })
         } else if cmd_name.eq_ignore_ascii_case(b"FLUSHDB") {
             Ok(Command::FlushDb)
         } else if cmd_name.eq_ignore_ascii_case(b"FLUSHALL") {
@@ -1685,6 +1769,72 @@ impl<'a> Command<'a> {
                     }
                     let key = extract_required_bytes(&args[1], "TYPE")?;
                     Ok(Command::Type { key })
+                } else if cmd_name.eq_ignore_ascii_case(b"HSET") {
+                    if args.len() < 4 || (args.len() - 2) % 2 != 0 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "HSET".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "HSET")?;
+                    let pair_count = (args.len() - 2) / 2;
+                    let mut pairs = SmallVec::with_capacity(pair_count.min(8));
+                    for chunk in args[2..].chunks_exact(2) {
+                        let field = extract_required_bytes(&chunk[0], "HSET")?;
+                        let val = extract_required_bytes(&chunk[1], "HSET")?;
+                        if field.len() > 4096 || val.len() > 4096 {
+                            return Err(RespError::FrameTooLarge {
+                                size: field.len().max(val.len()),
+                            });
+                        }
+                        pairs.push((field, val));
+                    }
+                    Ok(Command::HSet { key, pairs })
+                } else if cmd_name.eq_ignore_ascii_case(b"HGET") {
+                    if args.len() != 3 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "HGET".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "HGET")?;
+                    let field = extract_required_bytes(&args[2], "HGET")?;
+                    Ok(Command::HGet { key, field })
+                } else if cmd_name.eq_ignore_ascii_case(b"HDEL") {
+                    if args.len() < 3 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "HDEL".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "HDEL")?;
+                    let mut fields = SmallVec::with_capacity((args.len() - 2).min(8));
+                    for arg in &args[2..] {
+                        fields.push(extract_required_bytes(arg, "HDEL")?);
+                    }
+                    Ok(Command::HDel { key, fields })
+                } else if cmd_name.eq_ignore_ascii_case(b"HEXISTS") {
+                    if args.len() != 3 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "HEXISTS".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "HEXISTS")?;
+                    let field = extract_required_bytes(&args[2], "HEXISTS")?;
+                    Ok(Command::HExists { key, field })
+                } else if cmd_name.eq_ignore_ascii_case(b"HLEN") {
+                    if args.len() != 2 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "HLEN".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "HLEN")?;
+                    Ok(Command::HLen { key })
+                } else if cmd_name.eq_ignore_ascii_case(b"HGETALL") {
+                    if args.len() != 2 {
+                        return Err(RespError::WrongArgumentCount {
+                            command: "HGETALL".into(),
+                        });
+                    }
+                    let key = extract_required_bytes(&args[1], "HGETALL")?;
+                    Ok(Command::HGetAll { key })
                 } else if cmd_name.eq_ignore_ascii_case(b"FLUSHDB") {
                     Ok(Command::FlushDb)
                 } else if cmd_name.eq_ignore_ascii_case(b"FLUSHALL") {
@@ -2213,5 +2363,69 @@ mod tests {
             parse_command(resp_flushall).unwrap().unwrap().0,
             Command::FlushAll
         );
+    }
+
+    #[test]
+    fn parse_hash_commands() {
+        // HSET
+        let raw_hset = b"*4\r\n$4\r\nHSET\r\n$7\r\nmy_hash\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
+        let (cmd, _) = parse_command(raw_hset).unwrap().unwrap();
+        assert_eq!(
+            cmd,
+            Command::HSet {
+                key: b"my_hash",
+                pairs: smallvec::smallvec![(b"field".as_slice(), b"value".as_slice())],
+            }
+        );
+
+        // HGET
+        let raw_hget = b"*3\r\n$4\r\nHGET\r\n$7\r\nmy_hash\r\n$5\r\nfield\r\n";
+        let (cmd, _) = parse_command(raw_hget).unwrap().unwrap();
+        assert_eq!(
+            cmd,
+            Command::HGet {
+                key: b"my_hash",
+                field: b"field",
+            }
+        );
+
+        // HDEL
+        let raw_hdel = b"*4\r\n$4\r\nHDEL\r\n$7\r\nmy_hash\r\n$2\r\nf1\r\n$2\r\nf2\r\n";
+        let (cmd, _) = parse_command(raw_hdel).unwrap().unwrap();
+        assert_eq!(
+            cmd,
+            Command::HDel {
+                key: b"my_hash",
+                fields: smallvec::smallvec![b"f1".as_slice(), b"f2".as_slice()],
+            }
+        );
+
+        // HEXISTS
+        let raw_hexists = b"*3\r\n$7\r\nHEXISTS\r\n$7\r\nmy_hash\r\n$5\r\nfield\r\n";
+        let (cmd, _) = parse_command(raw_hexists).unwrap().unwrap();
+        assert_eq!(
+            cmd,
+            Command::HExists {
+                key: b"my_hash",
+                field: b"field",
+            }
+        );
+
+        // HLEN
+        let raw_hlen = b"*2\r\n$4\r\nHLEN\r\n$7\r\nmy_hash\r\n";
+        let (cmd, _) = parse_command(raw_hlen).unwrap().unwrap();
+        assert_eq!(cmd, Command::HLen { key: b"my_hash" });
+
+        // HGETALL
+        let raw_hgetall = b"*2\r\n$7\r\nHGETALL\r\n$7\r\nmy_hash\r\n";
+        let (cmd, _) = parse_command(raw_hgetall).unwrap().unwrap();
+        assert_eq!(cmd, Command::HGetAll { key: b"my_hash" });
+
+        // Malformed HSET (odd argument count)
+        let malformed = b"*3\r\n$4\r\nHSET\r\n$7\r\nmy_hash\r\n$5\r\nfield\r\n";
+        assert!(matches!(
+            parse_command(malformed),
+            Err(RespError::WrongArgumentCount { .. })
+        ));
     }
 }

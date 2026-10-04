@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use kachedb_core::{SlabClassType, SlabPool, resolve_slot_ptr};
-use kachedb_hash::{ShardedSwissTable, hash_key};
+use kachedb_hash::{HashSlotFrame, ShardedSwissTable, VALUE_TYPE_HASH, hash_key};
 use kachedb_vector::{QuantizationMode, VectorIndexRegistry, VectorMetric};
 
 use crate::aof::{AofError, AofOp, decode_frame};
@@ -84,6 +84,19 @@ pub fn replay(
     Ok(count)
 }
 
+#[inline]
+fn hash_slab_class(needed_bytes: usize) -> Option<SlabClassType> {
+    if needed_bytes <= 128 {
+        Some(SlabClassType::AppSmall)
+    } else if needed_bytes <= 512 {
+        Some(SlabClassType::AppMedium)
+    } else if needed_bytes <= 4096 {
+        Some(SlabClassType::AppLarge)
+    } else {
+        None
+    }
+}
+
 fn apply_frame(
     frame: &crate::aof::AofFrame,
     table: &ShardedSwissTable,
@@ -119,6 +132,197 @@ fn apply_frame(
             {
                 let h = hash_key(&frame.key);
                 table.update_ttl(h, expire_at, 0);
+            }
+        }
+        AofOp::HSet => {
+            if frame.value.len() < 2 {
+                return;
+            }
+            let count = u16::from_le_bytes([frame.value[0], frame.value[1]]) as usize;
+            let mut offset = 2;
+            let mut pairs = Vec::with_capacity(count);
+            for _ in 0..count {
+                if offset + 2 > frame.value.len() {
+                    return;
+                }
+                let f_len =
+                    u16::from_le_bytes([frame.value[offset], frame.value[offset + 1]]) as usize;
+                offset += 2;
+                if offset + f_len > frame.value.len() {
+                    return;
+                }
+                let f = &frame.value[offset..offset + f_len];
+                offset += f_len;
+
+                if offset + 2 > frame.value.len() {
+                    return;
+                }
+                let v_len =
+                    u16::from_le_bytes([frame.value[offset], frame.value[offset + 1]]) as usize;
+                offset += 2;
+                if offset + v_len > frame.value.len() {
+                    return;
+                }
+                let v = &frame.value[offset..offset + v_len];
+                offset += v_len;
+
+                pairs.push((f, v));
+            }
+
+            let h = hash_key(&frame.key);
+            let needed_bytes = table.with_shard(h, |shard| {
+                let old_slot = shard.lookup_checked(h, 0).and_then(|e| {
+                    if e.value_type == VALUE_TYPE_HASH {
+                        unsafe {
+                            resolve_slot_ptr(e.slab_block_id)
+                                .map(|ptr| std::slice::from_raw_parts(ptr, e.value_len as usize))
+                        }
+                    } else {
+                        None
+                    }
+                });
+                HashSlotFrame::needed_bytes(old_slot, &pairs)
+            });
+
+            let target_class = match hash_slab_class(needed_bytes) {
+                Some(c) => c,
+                None => return,
+            };
+
+            table.with_shard_mut(h, |shard| {
+                if let Some(entry) = shard.lookup_checked(h, 0) {
+                    if entry.value_type != VALUE_TYPE_HASH {
+                        return;
+                    }
+                    let cur_class = SlabClassType::for_size(entry.value_len as usize);
+                    if cur_class.map(|c| c.slot_bytes()).unwrap_or(0) >= target_class.slot_bytes()
+                        && let Some(ptr) = unsafe { resolve_slot_ptr(entry.slab_block_id) }
+                    {
+                        let slot = unsafe {
+                            std::slice::from_raw_parts_mut(ptr, entry.value_len as usize)
+                        };
+                        for (f, v) in &pairs {
+                            let _ = HashSlotFrame::upsert(slot, f, v);
+                        }
+                        return;
+                    }
+
+                    // Expand slot
+                    if let Ok(new_block_id) = pool.allocate(target_class)
+                        && let Some(new_ptr) = unsafe { resolve_slot_ptr(new_block_id) }
+                    {
+                        let new_slot = unsafe {
+                            std::slice::from_raw_parts_mut(new_ptr, target_class.slot_bytes())
+                        };
+                        if HashSlotFrame::init(new_slot).is_ok() {
+                            if let Some(old_ptr) = unsafe { resolve_slot_ptr(entry.slab_block_id) }
+                            {
+                                let old_slot = unsafe {
+                                    std::slice::from_raw_parts(old_ptr, entry.value_len as usize)
+                                };
+                                for (f, v) in HashSlotFrame::iter_pairs(old_slot) {
+                                    let _ = HashSlotFrame::upsert(new_slot, f, v);
+                                }
+                            }
+                            for (f, v) in &pairs {
+                                let _ = HashSlotFrame::upsert(new_slot, f, v);
+                            }
+                            let old_id = entry.slab_block_id;
+                            let expire_at = entry.expire_at_secs;
+                            if shard
+                                .insert_typed(
+                                    h,
+                                    new_block_id,
+                                    target_class.slot_bytes() as u32,
+                                    expire_at,
+                                    VALUE_TYPE_HASH,
+                                )
+                                .is_ok()
+                            {
+                                let _ = pool.deallocate(old_id);
+                            } else {
+                                let _ = pool.deallocate(new_block_id);
+                            }
+                        } else {
+                            let _ = pool.deallocate(new_block_id);
+                        }
+                    }
+                } else {
+                    // New key
+                    if let Ok(block_id) = pool.allocate(target_class)
+                        && let Some(ptr) = unsafe { resolve_slot_ptr(block_id) }
+                    {
+                        let slot = unsafe {
+                            std::slice::from_raw_parts_mut(ptr, target_class.slot_bytes())
+                        };
+                        if HashSlotFrame::init(slot).is_ok() {
+                            for (f, v) in &pairs {
+                                let _ = HashSlotFrame::upsert(slot, f, v);
+                            }
+                            if shard
+                                .insert_typed(
+                                    h,
+                                    block_id,
+                                    target_class.slot_bytes() as u32,
+                                    0,
+                                    VALUE_TYPE_HASH,
+                                )
+                                .is_err()
+                            {
+                                let _ = pool.deallocate(block_id);
+                            }
+                        } else {
+                            let _ = pool.deallocate(block_id);
+                        }
+                    }
+                }
+            });
+        }
+        AofOp::HDel => {
+            if frame.value.len() < 2 {
+                return;
+            }
+            let count = u16::from_le_bytes([frame.value[0], frame.value[1]]) as usize;
+            let mut offset = 2;
+            let mut fields = Vec::with_capacity(count);
+            for _ in 0..count {
+                if offset + 2 > frame.value.len() {
+                    return;
+                }
+                let f_len =
+                    u16::from_le_bytes([frame.value[offset], frame.value[offset + 1]]) as usize;
+                offset += 2;
+                if offset + f_len > frame.value.len() {
+                    return;
+                }
+                let f = &frame.value[offset..offset + f_len];
+                offset += f_len;
+                fields.push(f);
+            }
+
+            let h = hash_key(&frame.key);
+            let mut block_to_free = None;
+            table.with_shard_mut(h, |shard| {
+                if let Some(entry) = shard.lookup_checked(h, 0) {
+                    if entry.value_type != VALUE_TYPE_HASH {
+                        return;
+                    }
+                    if let Some(ptr) = unsafe { resolve_slot_ptr(entry.slab_block_id) } {
+                        let slot = unsafe {
+                            std::slice::from_raw_parts_mut(ptr, entry.value_len as usize)
+                        };
+                        for f in fields {
+                            let _ = HashSlotFrame::delete(slot, f);
+                        }
+                        if HashSlotFrame::live_count(slot) == 0 {
+                            block_to_free = Some(entry.slab_block_id);
+                            shard.remove(h);
+                        }
+                    }
+                }
+            });
+            if let Some(id) = block_to_free {
+                let _ = pool.deallocate(id);
             }
         }
         AofOp::VIndexCreate => {

@@ -120,6 +120,38 @@ impl ShardedSwissTable {
         self.insert_with_ttl(hash, block_id, value_len, 0)
     }
 
+    /// Inserts or updates a key entry with explicit expiration timestamp and value type.
+    #[inline(always)]
+    #[allow(clippy::result_unit_err)]
+    pub fn insert_typed(
+        &self,
+        hash: u64,
+        block_id: SlabBlockId,
+        value_len: u32,
+        expire_at_secs: u32,
+        value_type: u8,
+    ) -> Result<Option<SlabBlockId>, ()> {
+        let idx = Self::shard_idx(hash);
+        let mut shard = self.shards[idx].table.write();
+        shard.insert_typed(hash, block_id, value_len, expire_at_secs, value_type)
+    }
+
+    /// Executes a closure holding the read lock on the shard responsible for `hash`.
+    #[inline(always)]
+    pub fn with_shard<R>(&self, hash: u64, f: impl FnOnce(&SwissTable) -> R) -> R {
+        let idx = Self::shard_idx(hash);
+        let shard = self.shards[idx].table.read();
+        f(&shard)
+    }
+
+    /// Executes a closure holding the write lock on the shard responsible for `hash`.
+    #[inline(always)]
+    pub fn with_shard_mut<R>(&self, hash: u64, f: impl FnOnce(&mut SwissTable) -> R) -> R {
+        let idx = Self::shard_idx(hash);
+        let mut shard = self.shards[idx].table.write();
+        f(&mut shard)
+    }
+
     /// Removes an entry by its 64-bit hash.
     ///
     /// Returns the removed `TableEntry` if found.

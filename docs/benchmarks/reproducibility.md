@@ -79,6 +79,11 @@ sleep 1
 # Run GET benchmark
 ./target/release/kachedb-bench -p 6379 -n 100000 -c 50 --pipeline 16 --command GET
 
+# Run Redis Hash benchmarks (v0.3.0+)
+./target/release/kachedb-bench -p 6379 -n 100000 -c 50 --pipeline 16 -t HSET
+./target/release/kachedb-bench -p 6379 -n 100000 -c 50 --pipeline 16 -t HGET
+./target/release/kachedb-bench -p 6379 -n 100000 -c 50 --pipeline 16 -t HMIX
+
 # Terminate server
 kill $SERVER_PID
 ```

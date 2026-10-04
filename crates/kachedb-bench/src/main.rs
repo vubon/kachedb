@@ -30,6 +30,9 @@ enum BenchCommand {
     Ping,
     Set,
     Get,
+    HSet,
+    HGet,
+    HMix,
 }
 
 impl Default for BenchConfig {
@@ -86,6 +89,9 @@ fn parse_args() -> BenchConfig {
                 cfg.command = match args[i + 1].to_uppercase().as_str() {
                     "SET" => BenchCommand::Set,
                     "GET" => BenchCommand::Get,
+                    "HSET" => BenchCommand::HSet,
+                    "HGET" => BenchCommand::HGet,
+                    "HMIX" => BenchCommand::HMix,
                     _ => BenchCommand::Ping,
                 };
                 i += 2;
@@ -116,9 +122,9 @@ fn print_help() {
       -n, --requests <N>        Total number of requests (default: 100,000)
       -c, --clients <N>         Number of concurrent TCP connections (default: 50)
           --pipeline <N>        In-flight requests per connection (default: 16)
-          --command <CMD>       Command: PING | SET | GET (default: PING)
+          --command <CMD>       Command: PING | SET | GET | HSET | HGET | HMIX (default: PING)
           --key-size <N>        Key length in bytes (default: 16)
-          --value-size <N>      Value length in bytes for SET (default: 64)
+          --value-size <N>      Value length in bytes for SET/HSET (default: 64)
           --help                Print this help message
 "#
     );
@@ -196,6 +202,25 @@ fn build_get_frame(key: &[u8]) -> Vec<u8> {
     buf
 }
 
+fn build_hset_frame(key: &[u8], field: &[u8], value: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(64 + key.len() + field.len() + value.len());
+    encode_array_header(&mut buf, 4);
+    encode_bulk_string(&mut buf, b"HSET");
+    encode_bulk_string(&mut buf, key);
+    encode_bulk_string(&mut buf, field);
+    encode_bulk_string(&mut buf, value);
+    buf
+}
+
+fn build_hget_frame(key: &[u8], field: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(48 + key.len() + field.len());
+    encode_array_header(&mut buf, 3);
+    encode_bulk_string(&mut buf, b"HGET");
+    encode_bulk_string(&mut buf, key);
+    encode_bulk_string(&mut buf, field);
+    buf
+}
+
 // ── Worker Thread ─────────────────────────────────────────────────────────────
 
 fn run_worker(
@@ -232,6 +257,15 @@ fn run_worker(
                 BenchCommand::Ping => build_ping_frame(),
                 BenchCommand::Set => build_set_frame(key.as_bytes(), &value),
                 BenchCommand::Get => build_get_frame(key.as_bytes()),
+                BenchCommand::HSet => build_hset_frame(key.as_bytes(), b"field1", &value),
+                BenchCommand::HGet => build_hget_frame(key.as_bytes(), b"field1"),
+                BenchCommand::HMix => {
+                    if j % 5 == 0 {
+                        build_hset_frame(key.as_bytes(), b"field1", &value)
+                    } else {
+                        build_hget_frame(key.as_bytes(), b"field1")
+                    }
+                }
             }
         })
         .collect();
@@ -335,7 +369,7 @@ fn main() {
     println!("   └─ Concurrent Clients: {:>12}", cfg.clients);
     println!("   └─ Pipeline Depth:     {:>12}", cfg.pipeline);
     println!("   └─ Key Size:           {:>9} bytes", cfg.key_size);
-    if cfg.command == BenchCommand::Set {
+    if cfg.command != BenchCommand::Ping && cfg.command != BenchCommand::Get {
         println!("   └─ Value Size:         {:>9} bytes", cfg.value_size);
     }
     println!();

@@ -12,10 +12,16 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use kachedb_core::SlabBlockId;
 
 /// Atomic S3-FIFO frequency tag embedded in every hash entry.
+/// Atomic S3-FIFO frequency tag embedded in every hash entry.
 ///
 /// - `0` — not accessed since last eviction sweep.
 /// - `1` — accessed at least once; entry is promotion candidate.
 pub const ACCESS_BIT_ACCESSED: u8 = 1;
+
+/// Value type tag indicating standard Redis string payload.
+pub const VALUE_TYPE_STRING: u8 = 0;
+/// Value type tag indicating Redis Hash structure encoded in a slotted Megaslab frame.
+pub const VALUE_TYPE_HASH: u8 = 1;
 
 /// Copyable snapshot of key metadata retrieved from a Swiss Table lookup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +32,8 @@ pub struct TableEntry {
     pub value_len: u32,
     /// Absolute expiration timestamp in epoch seconds (0 = persistent).
     pub expire_at_secs: u32,
+    /// Type descriptor for stored value (0 = String, 1 = Hash).
+    pub value_type: u8,
 }
 
 /// An occupied slot in the KacheDB Swiss Table hash index.
@@ -39,7 +47,8 @@ pub struct TableEntry {
 /// | 12     | `value_len`      | 4 B  | Byte length of the stored value     |
 /// | 16     | `expire_at_secs` | 4 B  | Absolute expiration epoch seconds   |
 /// | 20     | `access_flags`   | 1 B  | S3-FIFO atomic access frequency bit |
-/// | 21–63  | `_pad`           | 43 B | Cache-line padding                  |
+/// | 21     | `value_type`     | 1 B  | Type descriptor (0 = String, 1=Hash)|
+/// | 22–63  | `_pad`           | 42 B | Cache-line padding                  |
 #[repr(C, align(64))]
 pub struct HashEntry {
     /// Full 64-bit hash of the key used for fingerprint verification.
@@ -53,8 +62,10 @@ pub struct HashEntry {
     /// S3-FIFO single-bit frequency counter.
     /// Updated with a lock-free `fetch_or(1, Relaxed)` on every GET.
     pub access_flags: AtomicU8,
+    /// Type descriptor for stored value (0 = String, 1 = Hash).
+    pub value_type: u8,
     /// Padding to fill the 64-byte cache line.
-    _pad: [u8; 43],
+    _pad: [u8; 42],
 }
 
 const _: () = assert!(
@@ -71,19 +82,20 @@ impl Default for HashEntry {
             value_len: 0,
             expire_at_secs: 0,
             access_flags: AtomicU8::new(0),
-            _pad: [0u8; 43],
+            value_type: VALUE_TYPE_STRING,
+            _pad: [0u8; 42],
         }
     }
 }
 
 impl HashEntry {
-    /// Constructs a new persistent `HashEntry` (no TTL) from a key hash and slab descriptor.
+    /// Constructs a new persistent `HashEntry` (no TTL, string type) from a key hash and slab descriptor.
     #[inline]
     pub fn new(key_hash: u64, slab_block_id: SlabBlockId, value_len: u32) -> Self {
         Self::with_ttl(key_hash, slab_block_id, value_len, 0)
     }
 
-    /// Constructs a new `HashEntry` with an explicit expiration timestamp in epoch seconds.
+    /// Constructs a new `HashEntry` (string type) with an explicit expiration timestamp in epoch seconds.
     #[inline]
     pub fn with_ttl(
         key_hash: u64,
@@ -91,13 +103,32 @@ impl HashEntry {
         value_len: u32,
         expire_at_secs: u32,
     ) -> Self {
+        Self::with_type(
+            key_hash,
+            slab_block_id,
+            value_len,
+            expire_at_secs,
+            VALUE_TYPE_STRING,
+        )
+    }
+
+    /// Constructs a new `HashEntry` with explicit value type and expiration timestamp.
+    #[inline]
+    pub fn with_type(
+        key_hash: u64,
+        slab_block_id: SlabBlockId,
+        value_len: u32,
+        expire_at_secs: u32,
+        value_type: u8,
+    ) -> Self {
         Self {
             key_hash,
             slab_block_id,
             value_len,
             expire_at_secs,
             access_flags: AtomicU8::new(0),
-            _pad: [0u8; 43],
+            value_type,
+            _pad: [0u8; 42],
         }
     }
 
@@ -133,6 +164,7 @@ impl HashEntry {
             slab_block_id: self.slab_block_id,
             value_len: self.value_len,
             expire_at_secs: self.expire_at_secs,
+            value_type: self.value_type,
         }
     }
 

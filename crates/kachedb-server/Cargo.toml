@@ -28,3 +28,4 @@ rustls               = { workspace = true }
 rustls-pki-types     = { workspace = true }
 rustls-pemfile       = { workspace = true }
 ring                 = { workspace = true }
+smallvec             = { workspace = true }
