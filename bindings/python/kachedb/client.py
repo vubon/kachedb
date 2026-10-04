@@ -80,6 +80,78 @@ class KacheClient:
         res = self._read_response()
         return int(res) if isinstance(res, (int, str)) and str(res).isdigit() else 0
 
+    # ── Redis Hash Commands ───────────────────────────────────────────────────
+
+    def hset(
+        self,
+        key: Union[str, bytes],
+        field: Optional[Union[str, bytes]] = None,
+        value: Optional[Union[str, bytes]] = None,
+        mapping: Optional[dict[Union[str, bytes], Union[str, bytes]]] = None,
+    ) -> int:
+        """
+        Sets field(s) in a hash stored at key.
+        Supports single field-value pairs or a mapping dict:
+            client.hset("myhash", "field1", "val1")
+            client.hset("myhash", mapping={"field1": "val1", "field2": "val2"})
+        """
+        args: list[Union[str, bytes]] = ["HSET", key]
+        if mapping:
+            for k, v in mapping.items():
+                args.extend([k, v])
+        elif field is not None and value is not None:
+            args.extend([field, value])
+        else:
+            raise ValueError("Must provide either (field, value) or mapping")
+
+        self._send_command(args)
+        res = self._read_response()
+        return int(res) if isinstance(res, (int, str)) and str(res).isdigit() else 0
+
+    def hget(self, key: Union[str, bytes], field: Union[str, bytes]) -> Optional[bytes]:
+        """Gets value of a hash field. Returns None if field or key does not exist."""
+        self._send_command(["HGET", key, field])
+        res = self._read_response()
+        return res if isinstance(res, bytes) else None
+
+    def hdel(self, key: Union[str, bytes], *fields: Union[str, bytes]) -> int:
+        """Deletes one or more fields from a hash. Returns the number of fields removed."""
+        if not fields:
+            raise ValueError("At least one field must be specified")
+        args: list[Union[str, bytes]] = ["HDEL", key]
+        args.extend(fields)
+        self._send_command(args)
+        res = self._read_response()
+        return int(res) if isinstance(res, (int, str)) and str(res).isdigit() else 0
+
+    def hexists(self, key: Union[str, bytes], field: Union[str, bytes]) -> bool:
+        """Returns True if the hash field exists, False otherwise."""
+        self._send_command(["HEXISTS", key, field])
+        res = self._read_response()
+        return res == 1 or res == "1"
+
+    def hlen(self, key: Union[str, bytes]) -> int:
+        """Returns the number of fields contained in the hash."""
+        self._send_command(["HLEN", key])
+        res = self._read_response()
+        return int(res) if isinstance(res, (int, str)) and str(res).isdigit() else 0
+
+    def hgetall(self, key: Union[str, bytes]) -> dict[bytes, bytes]:
+        """
+        Returns all fields and values of the hash stored at key as a dictionary of bytes.
+        """
+        self._send_command(["HGETALL", key])
+        res = self._read_response()
+        if not isinstance(res, list):
+            return {}
+        result: dict[bytes, bytes] = {}
+        for i in range(0, len(res), 2):
+            if i + 1 < len(res):
+                f = res[i] if isinstance(res[i], bytes) else str(res[i]).encode("utf-8")
+                v = res[i + 1] if isinstance(res[i + 1], bytes) else str(res[i + 1]).encode("utf-8")
+                result[f] = v
+        return result
+
     # ── Zero-Copy Shared Memory KV-Cache Extraction ───────────────────────────
 
     def attach_shm(self, core_id: int, size_bytes: int = 64 * 1024 * 1024) -> mmap.mmap:
@@ -176,6 +248,14 @@ class KacheClient:
             data = self._read_exact(length)
             self._read_exact(2)  # consume trailing \r\n
             return data
+        elif marker == b"*":
+            num_elements = int(payload)
+            if num_elements == -1:
+                return None
+            elements = []
+            for _ in range(num_elements):
+                elements.append(self._read_response())
+            return elements
         else:
             return payload.decode("utf-8", errors="replace")
 

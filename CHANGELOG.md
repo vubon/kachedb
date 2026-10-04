@@ -5,6 +5,20 @@ All notable changes to **KacheDB** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.3.1] — 2026-10-05
+
+### 🐍 Python SDK Redis Hash Methods & Array Parsing
+- **Redis Hash Commands in `KacheClient` (`bindings/python`):**
+  - Added native hash methods: `hset` (with single-pair and dict mapping support), `hget`, `hdel`, `hexists`, `hlen`, and `hgetall`.
+  - Implemented recursive RESP array (`*`) decoding in `_read_response()`.
+  - Added mock socket unit tests and live hash roundtrip tests in `test_client.py`.
+
+### ⚙️ CI & CLI Enhancements
+- **Toolchain Determinism:** Pinned workspace and CI Rust toolchain to `1.97.1` via `rust-toolchain.toml` and GitHub Actions workflows.
+- **One-Shot CLI Execution:** Added `kachedb-cli -p <PORT> <COMMAND> [ARGS...]` for one-shot command execution and Docker healthchecks.
+
+---
+
 ## [v0.3.0] — 2026-10-04
 
 ### 📦 Redis Hash Primitives (`HSET`, `HGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`)

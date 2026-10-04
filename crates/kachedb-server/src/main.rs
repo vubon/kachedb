@@ -32,7 +32,7 @@ fn main() {
 "#
     );
 
-    println!("⚡ KacheDB Daemon v0.3.0 (Production Stable) starting...");
+    println!("⚡ KacheDB Daemon v0.3.1 (Production Stable) starting...");
     if let Some(ref path) = config.config_path {
         println!("   └─ Config File:        {}", path.display());
     }
