@@ -5,7 +5,7 @@ mod repl;
 mod snapshot;
 
 use bench::run_benchmark;
-use repl::run_repl;
+use repl::{run_one_shot, run_repl};
 use snapshot::inspect_snapshot;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -13,6 +13,11 @@ pub enum Subcommand {
     Repl {
         host: String,
         port: u16,
+    },
+    Exec {
+        host: String,
+        port: u16,
+        command: Vec<String>,
     },
     Bench {
         host: String,
@@ -48,6 +53,7 @@ pub fn parse_args(args: &[String]) -> Result<Subcommand, String> {
     let mut bench_mode = false;
     let mut bench_requests = 10_000usize;
     let mut snapshot_path: Option<String> = None;
+    let mut command_args: Vec<String> = Vec::new();
 
     let mut i = 1;
     while i < args.len() {
@@ -96,11 +102,15 @@ pub fn parse_args(args: &[String]) -> Result<Subcommand, String> {
                 print_help();
                 std::process::exit(0);
             }
-            unknown => {
+            arg if arg.starts_with('-') => {
                 return Err(format!(
                     "Unknown argument: {}\nRun with --help for usage.",
-                    unknown
+                    arg
                 ));
+            }
+            _ => {
+                command_args.extend_from_slice(&args[i..]);
+                break;
             }
         }
     }
@@ -113,6 +123,12 @@ pub fn parse_args(args: &[String]) -> Result<Subcommand, String> {
             port,
             requests: bench_requests,
         })
+    } else if !command_args.is_empty() {
+        Ok(Subcommand::Exec {
+            host,
+            port,
+            command: command_args,
+        })
     } else {
         Ok(Subcommand::Repl { host, port })
     }
@@ -124,11 +140,12 @@ pub fn print_help() {
   KacheDB CLI - Interactive Client, Live Benchmark & Diagnostic Tool
 
   USAGE:
-      kachedb-cli [OPTIONS]
+      kachedb-cli [OPTIONS] [COMMAND [ARGS...]]
       kachedb-cli snapshot-info <FILE.kdb>
 
   COMMANDS:
       snapshot-info <FILE>   Inspect header, cipher suite, encryption status, and CRC32 of snapshot (v2, v3, v4)
+      <COMMAND> [ARGS...]    Execute a single command (e.g. ping, get key, set key val) and exit
 
   OPTIONS:
       -h, --host <HOST>      Server hostname (default: 127.0.0.1)
@@ -147,6 +164,17 @@ fn main() {
         Ok(Subcommand::Repl { host, port }) => {
             let addr = format!("{}:{}", host, port);
             run_repl(&addr);
+        }
+        Ok(Subcommand::Exec {
+            host,
+            port,
+            command,
+        }) => {
+            let addr = format!("{}:{}", host, port);
+            if let Err(err) = run_one_shot(&addr, &command) {
+                eprintln!("❌ {}", err);
+                std::process::exit(1);
+            }
         }
         Ok(Subcommand::Bench {
             host,
@@ -245,5 +273,47 @@ mod tests {
             "not_a_port".to_string(),
         ];
         assert!(parse_args(&args).is_err());
+    }
+
+    #[test]
+    fn test_parse_args_exec_ping() {
+        let args = vec![
+            "kachedb-cli".to_string(),
+            "-p".to_string(),
+            "6379".to_string(),
+            "ping".to_string(),
+        ];
+        let cmd = parse_args(&args).expect("should parse ping exec");
+        assert_eq!(
+            cmd,
+            Subcommand::Exec {
+                host: "127.0.0.1".to_string(),
+                port: 6379,
+                command: vec!["ping".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_args_exec_with_host_and_args() {
+        let args = vec![
+            "kachedb-cli".to_string(),
+            "-h".to_string(),
+            "127.0.0.1".to_string(),
+            "-p".to_string(),
+            "6380".to_string(),
+            "SET".to_string(),
+            "foo".to_string(),
+            "bar".to_string(),
+        ];
+        let cmd = parse_args(&args).expect("should parse SET exec");
+        assert_eq!(
+            cmd,
+            Subcommand::Exec {
+                host: "127.0.0.1".to_string(),
+                port: 6380,
+                command: vec!["SET".to_string(), "foo".to_string(), "bar".to_string()],
+            }
+        );
     }
 }

@@ -105,6 +105,46 @@ pub fn run_repl(addr: &str) {
     }
 }
 
+pub fn run_one_shot(addr: &str, command: &[String]) -> Result<(), String> {
+    if command.is_empty() {
+        return Ok(());
+    }
+
+    let mut stream = TcpStream::connect(addr)
+        .map_err(|e| format!("Failed to connect to KacheDB at {addr}: {e}"))?;
+
+    let mut req_buf = Vec::new();
+    encode_array_header(&mut req_buf, command.len());
+    for part in command {
+        encode_bulk_string(&mut req_buf, part.as_bytes());
+    }
+
+    stream
+        .write_all(&req_buf)
+        .map_err(|e| format!("Error sending command: {e}"))?;
+
+    let mut read_buf = vec![0u8; 64 * 1024];
+    let n = stream
+        .read(&mut read_buf)
+        .map_err(|e| format!("Error reading response: {e}"))?;
+
+    if n == 0 {
+        return Err("Connection closed by server.".to_string());
+    }
+
+    match parse_frame(&read_buf[..n]) {
+        Ok(Some((frame, _))) => {
+            print_frame(&frame, 0);
+            if matches!(frame, Frame::Error(_)) {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Ok(None) => Err("(Incomplete response from server)".to_string()),
+        Err(e) => Err(format!("(Protocol error: {e})")),
+    }
+}
+
 pub fn tokenize_command(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
