@@ -22,7 +22,7 @@ KacheDB implements the standard **Redis / Valkey RESP2 and RESP3** binary wire p
 | **`APPEND`** | `APPEND key value` | `O(1)` | Appends `value` to existing string, returning new byte length. |
 | **`STRLEN`** | `STRLEN key` | `O(1)` | Returns length of string value in bytes (0 if missing). |
 | **`DBSIZE`** | `DBSIZE` | `O(1)` | Returns the total number of stored keys in the database. |
-| **`TYPE`** | `TYPE key` | `O(1)` | Returns the string representation of the key's type (`string`, `vector`, or `none`). |
+| **`TYPE`** | `TYPE key` | `O(1)` | Returns the string representation of the key's type (`string`, `hash`, `vector`, or `none`). |
 | **`FLUSHDB`** | `FLUSHDB` | `O(N)` | Removes all keys from the currently selected database. |
 | **`FLUSHALL`** | `FLUSHALL` | `O(N)` | Removes all keys from all databases and resets Megaslab allocators. |
 
@@ -184,7 +184,7 @@ OK
 ---
 
 ### `TYPE`
-Returns the underlying data structure type of the specified key.
+Returns the underlying data structure type of the specified key (`string`, `hash`, `vector`, or `none`).
 
 #### Syntax
 ```text
@@ -198,9 +198,16 @@ OK
 127.0.0.1:6379> TYPE greeting
 string
 
+127.0.0.1:6379> HSET user:100 name "Alice"
+(integer) 1
+127.0.0.1:6379> TYPE user:100
+hash
+
 127.0.0.1:6379> TYPE nonexistent
 none
 ```
+
+> **Type Safety & Type Guards:** KacheDB enforces strict type checking. Executing string operations (`GET`, `APPEND`, `STRLEN`, `INCR`, etc.) against a key holding a hash will return `(error) WRONGTYPE Operation against a key holding the wrong kind of value`. In batch reads, `MGET` returns `(nil)` for non-string keys. See [Redis Hash Primitives](hashes.md) for full details on hash operations.
 
 ---
 

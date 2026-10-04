@@ -101,7 +101,33 @@ OK
 (integer) -1
 ```
 
-### 4. Vector Ingestion & Nearest Neighbor Search
+### 4. Redis Hash Primitives
+```text
+127.0.0.1:6379> HSET user:100 name "Alice Smith" role "admin" email "alice@example.com"
+(integer) 3
+
+127.0.0.1:6379> HGET user:100 name
+"Alice Smith"
+
+127.0.0.1:6379> HEXISTS user:100 role
+(integer) 1
+
+127.0.0.1:6379> HLEN user:100
+(integer) 3
+
+127.0.0.1:6379> HGETALL user:100
+1) "name"
+2) "Alice Smith"
+3) "role"
+4) "admin"
+5) "email"
+6) "alice@example.com"
+
+127.0.0.1:6379> HDEL user:100 role
+(integer) 1
+```
+
+### 5. Vector Ingestion & Nearest Neighbor Search
 ```text
 # Store a 4-dimensional vector in index 'docs' with ID 'doc:1'
 127.0.0.1:6379> VADD docs doc:1 4 "\x00\x00\x80?\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" PAYLOAD "Introduction to KacheDB" EX 3600
@@ -125,7 +151,7 @@ OK
 8) (integer) 64
 ```
 
-### 5. Introspection & Diagnostics
+### 6. Introspection & Diagnostics
 ```text
 127.0.0.1:6379> INFO
 # Server
@@ -152,7 +178,7 @@ keyspace_hits:14200
 keyspace_misses:1034
 ```
 
-### 6. Built-in REPL Helper Commands
+### 7. Built-in REPL Helper Commands
 * `help`: Displays a quick command reference card.
 * `clear`: Clears the terminal screen.
 * `quit` / `exit`: Closes the connection and exits the CLI.
@@ -195,7 +221,7 @@ You can measure raw network round-trip throughput and latency using the built-in
 
 ### What `snapshot-info` Inspects:
 * **File Size & Integrity:** Reads and verifies IEEE 802.3 CRC32 checksum trailer over the entire snapshot file.
-* **Format Version:** Identifies `KDB\x02` (legacy unencrypted) or `KDB\x03` (authenticated snapshot format).
+* **Format Version:** Identifies `KDB\x02` (legacy unencrypted), `KDB\x03` (authenticated snapshot format), or `KDB\x04` (typed KV records + Redis Hash entries).
 * **Creation Timestamp:** Displays the Unix epoch creation timestamp.
 * **Encryption Status:** Checks whether encryption is active (`ENABLED` vs `Disabled (Plaintext)`).
 * **Cipher Suite:** Identifies `AES-256-GCM` or `ChaCha20-Poly1305`.
@@ -208,7 +234,7 @@ You can measure raw network round-trip throughput and latency using the built-in
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 File Size:          430 bytes (0.42 KB)
 Checksum (CRC32):   0x295f2f0d [VALID]
-Format Version:     v3 (Authenticated Snapshot)
+Format Version:     v4 (Typed KV + Redis Hashes)
 Created Timestamp:  1790481552 (Unix Epoch)
 Flags:              0x00000001
 Encryption:         ENABLED

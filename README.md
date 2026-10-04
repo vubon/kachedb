@@ -78,10 +78,14 @@ $ redis-cli -p 6379 SET user:100 "alice" EX 60
 OK
 $ redis-cli -p 6379 GET user:100
 "alice"
+$ redis-cli -p 6379 HSET user:100:profile name "alice" role "admin"
+(integer) 2
+$ redis-cli -p 6379 HGET user:100:profile name
+"alice"
+$ redis-cli -p 6379 TYPE user:100:profile
+hash
 $ redis-cli -p 6379 DBSIZE
-(integer) 1
-$ redis-cli -p 6379 TYPE user:100
-string
+(integer) 2
 $ redis-cli -p 6379 FLUSHDB
 OK
 ```
@@ -92,22 +96,42 @@ OK
 
 KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can use any existing Redis/Valkey client library (`redis-py`, `ioredis`, `go-redis`, `redis-rs`, `jedis`) without code modifications:
 
+### Core Key-Value & Strings
 | Command | Syntax | Description | Time Complexity |
 | :--- | :--- | :--- | :---: |
 | **`PING`** | `PING [message]` | Tests server liveness; returns `PONG` or echoed message. | $\mathcal{O}(1)$ |
 | **`SET`** | `SET key value [EX seconds] [PX millis]` | Stores binary-safe value with optional high-resolution TTL expiration. | $\mathcal{O}(1)$ |
 | **`GET`** | `GET key` | Retrieves binary-safe value, returning `nil` if missing or expired. | $\mathcal{O}(1)$ |
+| **`MSET`** | `MSET key value [key value ...]` | Atomically stores multiple key-value pairs. | $\mathcal{O}(N)$ |
 | **`MGET`** | `MGET key [key ...]` | Batch retrieves multiple keys in a single pipelined operation. | $\mathcal{O}(N)$ |
 | **`DEL`** | `DEL key [key ...]` | Removes keys and immediately returns slab slots to the free-list. | $\mathcal{O}(N)$ |
 | **`EXISTS`** | `EXISTS key [key ...]` | Returns the count of existing, unexpired keys. | $\mathcal{O}(N)$ |
+| **`INCR` / `DECR`** | `INCR key` / `DECR key` | Increments or decrements string integer value by 1. | $\mathcal{O}(1)$ |
+| **`INCRBY` / `DECRBY`** | `INCRBY key delta` / `DECRBY key delta` | Atomically adds/subtracts integer delta to/from value. | $\mathcal{O}(1)$ |
+| **`APPEND`** | `APPEND key value` | Appends value to existing string, returning new byte length. | $\mathcal{O}(1)$ |
+| **`STRLEN`** | `STRLEN key` | Returns byte length of string value (0 if missing). | $\mathcal{O}(1)$ |
+
+### Redis Hash Primitives (Strict $\mathcal{O}(1)$ In-Slot Directory)
+| Command | Syntax | Description | Time Complexity |
+| :--- | :--- | :--- | :---: |
+| **`HSET`** | `HSET key field value [f v ...]` | Sets field-value pairs in hash; returns count of newly added fields. | $\mathcal{O}(M)$ |
+| **`HGET`** | `HGET key field` | Retrieves field value in hash (< 25 ns L1 CPU cacheline probe). | $\mathcal{O}(1)$ |
+| **`HDEL`** | `HDEL key field [field ...]` | Removes field(s) from hash; deletes key when empty. | $\mathcal{O}(M)$ |
+| **`HEXISTS`** | `HEXISTS key field` | Checks if field exists in hash (returns 1 or 0). | $\mathcal{O}(1)$ |
+| **`HLEN`** | `HLEN key` | Returns the number of live fields in the hash. | $\mathcal{O}(1)$ |
+| **`HGETALL`** | `HGETALL key` | Returns all fields and values in the hash as a flat array. | $\mathcal{O}(N)$ |
+
+### Database, Server & Observability
+| Command | Syntax | Description | Time Complexity |
+| :--- | :--- | :--- | :---: |
 | **`DBSIZE`** | `DBSIZE` | Returns the total count of keys in the current database. | $\mathcal{O}(1)$ |
-| **`TYPE`** | `TYPE key` | Returns the data type (`string` or `none` if missing). | $\mathcal{O}(1)$ |
+| **`TYPE`** | `TYPE key` | Returns key data type (`string`, `hash`, `vector`, or `none`). | $\mathcal{O}(1)$ |
 | **`FLUSHDB`** | `FLUSHDB` | Clears all keys and recycles slab pool memory blocks. | $\mathcal{O}(N)$ |
 | **`FLUSHALL`** | `FLUSHALL` | Clears all keys across all database instances. | $\mathcal{O}(N)$ |
 | **`QUIT`** | `QUIT` | Closes the client connection gracefully. | $\mathcal{O}(1)$ |
 | **`COMMAND`** | `COMMAND DOCS` | Returns Redis protocol capability metadata. | $\mathcal{O}(1)$ |
 
-> **Binary-Safe Storage:** All keys and values are treated as raw byte slices (`&[u8]`). Store JSON strings, raw binary tensors, Protobuf buffers, images, or compressed blobs up to 2 MB per slot without encoding overhead.
+> **Binary-Safe Storage:** All keys and values are treated as raw byte slices (`&[u8]`). Store JSON strings, raw binary tensors, Protobuf buffers, images, or compressed blobs up to 2 MB per slot without encoding overhead. Hash entries reside within dedicated Megaslab slots with sub-25ns in-slot directory lookup.
 
 ---
 
