@@ -1,22 +1,45 @@
-//! `kachedb-cli` — Interactive CLI client and live benchmarking utility for KacheDB.
+//! `kachedb-cli` — Interactive CLI client, live benchmarking, and diagnostic utility for KacheDB.
 
-use std::io::{BufRead, Read, Write};
-use std::net::TcpStream;
-use std::time::Instant;
+mod bench;
+mod repl;
+mod snapshot;
 
-use kachedb_proto_resp::{Frame, encode_array_header, encode_bulk_string, parse_frame};
+use bench::run_benchmark;
+use repl::run_repl;
+use snapshot::inspect_snapshot;
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
+#[derive(Debug, PartialEq, Eq)]
+pub enum Subcommand {
+    Repl {
+        host: String,
+        port: u16,
+    },
+    Bench {
+        host: String,
+        port: u16,
+        requests: usize,
+    },
+    SnapshotInfo {
+        path: String,
+    },
+}
 
-    // Check for offline diagnostic subcommands
-    if args.len() > 1 && (args[1] == "snapshot-info" || args[1] == "--snapshot-info") {
+pub fn parse_args(args: &[String]) -> Result<Subcommand, String> {
+    if args.len() <= 1 {
+        return Ok(Subcommand::Repl {
+            host: "127.0.0.1".to_string(),
+            port: 6379,
+        });
+    }
+
+    // Direct subcommand shortcut: `kachedb-cli snapshot-info <file>`
+    if args[1] == "snapshot-info" || args[1] == "--snapshot-info" {
         if args.len() > 2 {
-            inspect_snapshot(&args[2]);
-            return;
+            return Ok(Subcommand::SnapshotInfo {
+                path: args[2].clone(),
+            });
         } else {
-            eprintln!("Usage: kachedb-cli snapshot-info <snapshot_file.kdb>");
-            std::process::exit(1);
+            return Err("Usage: kachedb-cli snapshot-info <snapshot_file.kdb>".to_string());
         }
     }
 
@@ -24,54 +47,78 @@ fn main() {
     let mut port = 6379u16;
     let mut bench_mode = false;
     let mut bench_requests = 10_000usize;
+    let mut snapshot_path: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "snapshot-info" | "--snapshot-info" if i + 1 < args.len() => {
-                inspect_snapshot(&args[i + 1]);
-                return;
-            }
-            "-h" | "--host" if i + 1 < args.len() => {
-                host = args[i + 1].clone();
-                i += 2;
-            }
-            "-p" | "--port" if i + 1 < args.len() => {
-                if let Ok(p) = args[i + 1].parse() {
-                    port = p;
+            "snapshot-info" | "--snapshot-info" => {
+                if i + 1 < args.len() {
+                    snapshot_path = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    return Err("Usage: kachedb-cli snapshot-info <snapshot_file.kdb>".to_string());
                 }
-                i += 2;
             }
-            "--bench" | "-b" => {
+            "-h" | "--host" => {
+                if i + 1 < args.len() {
+                    host = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    return Err("Missing argument for -h/--host".to_string());
+                }
+            }
+            "-p" | "--port" => {
+                if i + 1 < args.len() {
+                    port = args[i + 1]
+                        .parse()
+                        .map_err(|_| format!("Invalid port number: {}", args[i + 1]))?;
+                    i += 2;
+                } else {
+                    return Err("Missing argument for -p/--port".to_string());
+                }
+            }
+            "-b" | "--bench" => {
                 bench_mode = true;
                 i += 1;
             }
-            "-n" if i + 1 < args.len() => {
-                if let Ok(n) = args[i + 1].parse() {
-                    bench_requests = n;
+            "-n" => {
+                if i + 1 < args.len() {
+                    bench_requests = args[i + 1]
+                        .parse()
+                        .map_err(|_| format!("Invalid request count: {}", args[i + 1]))?;
+                    i += 2;
+                } else {
+                    return Err("Missing argument for -n".to_string());
                 }
-                i += 2;
             }
-            "--help" => {
+            "--help" | "-help" => {
                 print_help();
-                return;
+                std::process::exit(0);
             }
-            _ => {
-                i += 1;
+            unknown => {
+                return Err(format!(
+                    "Unknown argument: {}\nRun with --help for usage.",
+                    unknown
+                ));
             }
         }
     }
 
-    let addr = format!("{}:{}", host, port);
-
-    if bench_mode {
-        run_benchmark(&addr, bench_requests);
+    if let Some(path) = snapshot_path {
+        Ok(Subcommand::SnapshotInfo { path })
+    } else if bench_mode {
+        Ok(Subcommand::Bench {
+            host,
+            port,
+            requests: bench_requests,
+        })
     } else {
-        run_repl(&addr);
+        Ok(Subcommand::Repl { host, port })
     }
 }
 
-fn print_help() {
+pub fn print_help() {
     println!(
         r#"
   KacheDB CLI - Interactive Client, Live Benchmark & Diagnostic Tool
@@ -81,7 +128,7 @@ fn print_help() {
       kachedb-cli snapshot-info <FILE.kdb>
 
   COMMANDS:
-      snapshot-info <FILE>   Inspect header, cipher suite, encryption status, and CRC32 of snapshot
+      snapshot-info <FILE>   Inspect header, cipher suite, encryption status, and CRC32 of snapshot (v2, v3, v4)
 
   OPTIONS:
       -h, --host <HOST>      Server hostname (default: 127.0.0.1)
@@ -93,365 +140,28 @@ fn print_help() {
     );
 }
 
-fn inspect_snapshot(path_str: &str) {
-    let path = std::path::Path::new(path_str);
-    if !path.exists() {
-        eprintln!("❌ Snapshot file not found: {:?}", path);
-        std::process::exit(1);
-    }
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
 
-    let data = match std::fs::read(path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("❌ Failed to read snapshot file: {e}");
+    match parse_args(&args) {
+        Ok(Subcommand::Repl { host, port }) => {
+            let addr = format!("{}:{}", host, port);
+            run_repl(&addr);
+        }
+        Ok(Subcommand::Bench {
+            host,
+            port,
+            requests,
+        }) => {
+            let addr = format!("{}:{}", host, port);
+            run_benchmark(&addr, requests);
+        }
+        Ok(Subcommand::SnapshotInfo { path }) => {
+            inspect_snapshot(&path);
+        }
+        Err(err) => {
+            eprintln!("❌ {}", err);
             std::process::exit(1);
-        }
-    };
-
-    if data.len() < 20 {
-        eprintln!(
-            "❌ Corrupt or truncated snapshot file (too small: {} bytes)",
-            data.len()
-        );
-        std::process::exit(1);
-    }
-
-    // CRC32 verification
-    let content_len = data.len() - 4;
-    let expected_crc = u32::from_le_bytes([
-        data[content_len],
-        data[content_len + 1],
-        data[content_len + 2],
-        data[content_len + 3],
-    ]);
-    let mut hasher = crc32fast::Hasher::new();
-    hasher.update(&data[..content_len]);
-    let calculated_crc = hasher.finalize();
-    let crc_valid = expected_crc == calculated_crc;
-
-    let magic = &data[0..4];
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("📦 KacheDB Snapshot Inspection: {:?}", path);
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!(
-        "File Size:          {} bytes ({:.2} KB)",
-        data.len(),
-        data.len() as f64 / 1024.0
-    );
-    println!(
-        "Checksum (CRC32):   {:#010x} [{}]",
-        calculated_crc,
-        if crc_valid { "VALID" } else { "CORRUPTED!" }
-    );
-
-    if magic == b"KDB\x02" {
-        let ts = u64::from_le_bytes([
-            data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
-        ]);
-        println!("Format Version:     v2 (Plaintext Legacy)");
-        println!("Created Timestamp:  {} (Unix Epoch)", ts);
-        println!("Encryption:         Disabled (Plaintext)");
-    } else if magic == b"KDB\x03" {
-        let ts = u64::from_le_bytes([
-            data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
-        ]);
-        let flags = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
-        let is_encrypted = (flags & 0x01) != 0;
-        let cipher_code = (flags >> 1) & 0x07;
-        let cipher_str = match cipher_code {
-            0 => "AES-256-GCM (Hardware Accelerated)",
-            1 => "ChaCha20-Poly1305 (Streaming AEAD)",
-            _ => "Unknown Cipher Code",
-        };
-
-        println!("Format Version:     v3 (Authenticated Snapshot)");
-        println!("Created Timestamp:  {} (Unix Epoch)", ts);
-        println!("Flags:              {:#010x}", flags);
-        println!(
-            "Encryption:         {}",
-            if is_encrypted {
-                "ENABLED"
-            } else {
-                "Disabled (Plaintext)"
-            }
-        );
-        if is_encrypted {
-            println!("Cipher Suite:       {}", cipher_str);
-            if content_len >= 16 + 32 + 12 {
-                let salt = &data[16..48];
-                let nonce = &data[48..60];
-                println!("Salt (256-bit):     {}", hex_encode(salt));
-                println!("Master Nonce:       {}", hex_encode(nonce));
-            }
-        }
-    } else {
-        println!("Format Version:     Unknown Magic Header: {:?}", magic);
-    }
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-fn run_benchmark(addr: &str, requests: usize) {
-    println!(
-        "🔥 Connecting to {} for live benchmark ({} requests)...",
-        addr, requests
-    );
-
-    let mut stream = match TcpStream::connect(addr) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("❌ Failed to connect to KacheDB at {}: {}", addr, e);
-            std::process::exit(1);
-        }
-    };
-
-    let start = Instant::now();
-    let mut read_buf = vec![0u8; 4096];
-
-    // Pipeline PING commands
-    let mut req_buf = Vec::with_capacity(32);
-    encode_array_header(&mut req_buf, 1);
-    encode_bulk_string(&mut req_buf, b"PING");
-
-    for _ in 0..requests {
-        stream.write_all(&req_buf).unwrap();
-        let n = stream.read(&mut read_buf).unwrap();
-        if n == 0 {
-            eprintln!("Connection closed by server.");
-            break;
-        }
-    }
-
-    let duration = start.elapsed();
-    let qps = (requests as f64) / duration.as_secs_f64();
-    let avg_lat_us = (duration.as_micros() as f64) / (requests as f64);
-
-    println!("\n📊 Benchmark Results:");
-    println!("   └─ Total Requests:   {}", requests);
-    println!("   └─ Total Time:       {:.3?}", duration);
-    println!("   └─ Throughput (QPS): {:.2} req/sec", qps);
-    println!("   └─ Avg Ping Latency: {:.2} µs / req", avg_lat_us);
-}
-
-fn run_repl(addr: &str) {
-    println!(
-        r#"
-  _  __           _          _____  ____   _____ _      _____ 
- | |/ /          | |        |  __ \|  _ \ / ____| |    |_   _|
- | ' / __ _  ___| |__   ___| |  | | |_) | |    | |      | |  
- |  < / _` |/ __| '_ \ / _ \ |  | |  _ <| |    | |      | |  
- | . \ (_| | (__| | | |  __/ |__| | |_) | |____| |____ _| |_ 
- |_|\_\__,_|\___|_| |_|\___|_____/|____/ \_____|______|_____|
-"#
-    );
-    println!("Connecting to KacheDB at {}...", addr);
-    let mut stream = match TcpStream::connect(addr) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("❌ Failed to connect to KacheDB at {}: {}", addr, e);
-            eprintln!("(Make sure `cargo run -p kachedb-server` is running)");
-            return;
-        }
-    };
-
-    println!(
-        "⚡ Connected to KacheDB. Type commands (e.g. SET, GET, EXPIRE, MSET, INCR, INFO, VADD, VSEARCH) or 'help' / 'quit'.\n"
-    );
-
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    let mut read_buf = vec![0u8; 64 * 1024];
-
-    loop {
-        print!("{}> ", addr);
-        let _ = stdout.flush();
-
-        let mut line = String::new();
-        if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
-            break;
-        }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if trimmed.eq_ignore_ascii_case("clear") {
-            print!("\x1B[2J\x1B[1;1H");
-            let _ = stdout.flush();
-            continue;
-        }
-
-        if trimmed.eq_ignore_ascii_case("help") {
-            print_cli_help();
-            continue;
-        }
-
-        if trimmed.eq_ignore_ascii_case("quit") || trimmed.eq_ignore_ascii_case("exit") {
-            println!("Bye!");
-            break;
-        }
-
-        let parts = tokenize_command(trimmed);
-        if parts.is_empty() {
-            continue;
-        }
-
-        // Encode as RESP Array
-        let mut req_buf = Vec::new();
-        encode_array_header(&mut req_buf, parts.len());
-        for part in &parts {
-            encode_bulk_string(&mut req_buf, part.as_bytes());
-        }
-
-        if let Err(e) = stream.write_all(&req_buf) {
-            eprintln!("Error sending command: {}", e);
-            break;
-        }
-
-        match stream.read(&mut read_buf) {
-            Ok(0) => {
-                println!("Connection closed by server.");
-                break;
-            }
-            Ok(n) => match parse_frame(&read_buf[..n]) {
-                Ok(Some((frame, _))) => {
-                    print_frame(&frame, 0);
-                }
-                Ok(None) => {
-                    println!("(Incomplete response)");
-                }
-                Err(e) => {
-                    println!("(Protocol error: {})", e);
-                }
-            },
-            Err(e) => {
-                eprintln!("Error reading response: {}", e);
-                break;
-            }
-        }
-    }
-}
-
-fn tokenize_command(input: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut in_single_quote = false;
-    let mut in_double_quote = false;
-    let mut chars = input.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\'' if !in_double_quote => {
-                in_single_quote = !in_single_quote;
-            }
-            '"' if !in_single_quote => {
-                in_double_quote = !in_double_quote;
-            }
-            '\\' if in_double_quote => {
-                if let Some(next_ch) = chars.next() {
-                    match next_ch {
-                        'n' => current.push('\n'),
-                        'r' => current.push('\r'),
-                        't' => current.push('\t'),
-                        '\\' => current.push('\\'),
-                        '"' => current.push('"'),
-                        _ => {
-                            current.push('\\');
-                            current.push(next_ch);
-                        }
-                    }
-                }
-            }
-            c if c.is_whitespace() && !in_single_quote && !in_double_quote => {
-                if !current.is_empty() {
-                    tokens.push(std::mem::take(&mut current));
-                }
-            }
-            c => {
-                current.push(c);
-            }
-        }
-    }
-
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-
-    tokens
-}
-
-fn print_cli_help() {
-    println!(
-        r#"
-Available Commands in KacheDB:
-  • Key-Value:
-      SET <key> <val> [EX <sec>]  - Set key to value with optional TTL in seconds
-      GET <key>                   - Retrieve value of key
-      MSET <k1> <v1> [<k2> <v2>]  - Set multiple keys simultaneously
-      MGET <k1> [<k2> ...]        - Retrieve multiple keys simultaneously
-      DEL <key> [<key> ...]       - Delete key(s)
-      INCR <key> / DECR <key>     - Increment / Decrement integer value by 1
-      INCRBY <key> <delta>        - Increment integer value by delta
-      APPEND <key> <val>          - Append string to key
-      STRLEN <key>                - Return byte length of string value
-  • Expiration & TTL:
-      EXPIRE <key> <sec>          - Set expiration in seconds from now
-      TTL <key> / PTTL <key>      - Query remaining time-to-live
-      PERSIST <key>               - Remove expiration from key
-  • Server & Observability:
-      HELLO [2|3]                 - Handshake and switch RESP protocol version
-      INFO [section]              - Return server runtime, memory, and stats
-      CLIENT SETNAME <name>       - Assign connection name
-      CLIENT GETNAME              - Get connection name
-      PING [msg]                  - Ping server
-  • Vector Engine:
-      VADD <idx> <key> <dim> <f32...>  - Insert embedding vector
-      VSEARCH <idx> <top_k> <f32...>   - Cosine similarity search
-"#
-    );
-}
-
-fn print_frame(frame: &Frame, depth: usize) {
-    let indent = "  ".repeat(depth);
-    match frame {
-        Frame::SimpleString(s) => {
-            println!("{}{}", indent, String::from_utf8_lossy(s));
-        }
-        Frame::Error(e) => {
-            println!("{}(error) {}", indent, String::from_utf8_lossy(e));
-        }
-        Frame::Integer(i) => {
-            println!("{}(integer) {}", indent, i);
-        }
-        Frame::BulkString(b) => {
-            let s = String::from_utf8_lossy(b);
-            if s.contains('\n') {
-                for line in s.lines() {
-                    println!("{}{}", indent, line);
-                }
-            } else {
-                println!("{}\"{}\"", indent, s);
-            }
-        }
-        Frame::Null => {
-            println!("{}(nil)", indent);
-        }
-        Frame::Array(arr) => {
-            if arr.is_empty() {
-                println!("{}(empty list or set)", indent);
-            } else {
-                for (idx, elem) in arr.iter().enumerate() {
-                    print!("{}{}) ", indent, idx + 1);
-                    if matches!(&**elem, Frame::Array(_)) {
-                        println!();
-                    }
-                    print_frame(elem, depth + 1);
-                }
-            }
         }
     }
 }
@@ -461,20 +171,79 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tokenize_plain_and_quoted_arguments() {
-        let tokens = tokenize_command("SET foo bar");
-        assert_eq!(tokens, vec!["SET", "foo", "bar"]);
-
-        let tokens = tokenize_command("SET \"user session\" 'logged in value'");
-        assert_eq!(tokens, vec!["SET", "user session", "logged in value"]);
-
-        let tokens = tokenize_command("MSET k1 \"val 1\" k2 \"val 2\"");
-        assert_eq!(tokens, vec!["MSET", "k1", "val 1", "k2", "val 2"]);
-
-        let tokens = tokenize_command("VADD index_a key1 4 0.1 0.2 0.3 0.4");
+    fn test_parse_args_defaults() {
+        let args = vec!["kachedb-cli".to_string()];
+        let cmd = parse_args(&args).expect("should parse defaults");
         assert_eq!(
-            tokens,
-            vec!["VADD", "index_a", "key1", "4", "0.1", "0.2", "0.3", "0.4"]
+            cmd,
+            Subcommand::Repl {
+                host: "127.0.0.1".to_string(),
+                port: 6379,
+            }
         );
+    }
+
+    #[test]
+    fn test_parse_args_custom_host_port() {
+        let args = vec![
+            "kachedb-cli".to_string(),
+            "-h".to_string(),
+            "10.0.0.5".to_string(),
+            "-p".to_string(),
+            "6381".to_string(),
+        ];
+        let cmd = parse_args(&args).expect("should parse host/port");
+        assert_eq!(
+            cmd,
+            Subcommand::Repl {
+                host: "10.0.0.5".to_string(),
+                port: 6381,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_args_bench() {
+        let args = vec![
+            "kachedb-cli".to_string(),
+            "--bench".to_string(),
+            "-n".to_string(),
+            "5000".to_string(),
+        ];
+        let cmd = parse_args(&args).expect("should parse bench mode");
+        assert_eq!(
+            cmd,
+            Subcommand::Bench {
+                host: "127.0.0.1".to_string(),
+                port: 6379,
+                requests: 5000,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_args_snapshot_info_subcommand() {
+        let args = vec![
+            "kachedb-cli".to_string(),
+            "snapshot-info".to_string(),
+            "backup.kdb".to_string(),
+        ];
+        let cmd = parse_args(&args).expect("should parse snapshot-info");
+        assert_eq!(
+            cmd,
+            Subcommand::SnapshotInfo {
+                path: "backup.kdb".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_args_invalid_port() {
+        let args = vec![
+            "kachedb-cli".to_string(),
+            "-p".to_string(),
+            "not_a_port".to_string(),
+        ];
+        assert!(parse_args(&args).is_err());
     }
 }
