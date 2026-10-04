@@ -711,7 +711,7 @@ fn execute_hello_client_and_info_flow() {
     .unwrap();
     let resp_str = std::str::from_utf8(&conn.write_buf).unwrap();
     assert!(resp_str.contains("# Server"));
-    assert!(resp_str.contains("kachedb_version:0.2.0"));
+    assert!(resp_str.contains("kachedb_version:0.3.0"));
     assert!(resp_str.contains("# Memory"));
     conn.write_buf.clear();
 }

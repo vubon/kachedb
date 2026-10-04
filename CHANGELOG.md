@@ -5,6 +5,36 @@ All notable changes to **KacheDB** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.3.0] — 2026-10-04
+
+### 📦 Redis Hash Primitives (`HSET`, `HGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`)
+- **Strict $\mathcal{O}(1)$ In-Slot Open-Addressing Directory:**
+  - Implemented in-slot open-addressing directory packed directly inside pre-allocated 64-byte aligned Megaslab slots, eliminating pointer fragmentation and cache misses.
+  - Achieved sub-25 ns point lookups (`HGET`, `HEXISTS`) resolving within a single L1 CPU cache line.
+  - Zero heap allocation on the hot path for requests with $\le 8$ field-value pairs (`SmallVec` stack buffer).
+- **Megaslab App-Cache Slot Isolation:**
+  - Hashes strictly reside in `AppSmall` (128 B), `AppMedium` (512 B), or `AppLarge` (4 KB) slots, completely isolated from tensor slab pools.
+  - Automatic slot resizing and pair relocation as fields grow, capped at 4096 bytes per hash key.
+- **Strict Type Guards & SwissTable Type Tag:**
+  - Added `value_type` tag (`VALUE_TYPE_HASH = 1`, `VALUE_TYPE_STRING = 0`) to `HashEntry` SwissTable metadata.
+  - Added type guards across all string commands (`GET`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY`) returning `-WRONGTYPE Operation against a key holding the wrong kind of value`.
+  - Updated `TYPE` command to return `hash`, `string`, `vector`, or `none`. `MGET` returns `nil` for non-string keys.
+- **ACID Persistence & Snapshot Format V4 (`KDB\x04`):**
+  - **AOF Logging:** Hash mutations logged as logical pairs with opcodes `0x07` (`HSet`) and `0x08` (`HDel`), ensuring deterministic append-only journal replay.
+  - **Snapshot Format V4:** Introduced `KDB\x04` format with typed record headers (`RecordType = 0x01` for Hash) supporting both plaintext and hardware-accelerated encrypted snapshots (AES-256-GCM / ChaCha20-Poly1305) with seamless backward-compatibility for legacy `KDB\x02` and `KDB\x03` formats.
+
+### 🛠️ Architecture & Tooling Modularization
+- **Modularization of `kachedb-net/src/connection/`:**
+  - Refactored monolithic 3,300-line `connection.rs` into domain-specific command handler submodules: `strings.rs`, `hashes.rs`, `vectors.rs`, `expiry.rs`, `admin.rs`, `mod.rs`, and isolated `tests.rs`.
+- **Modularization of `kachedb-cli`:**
+  - Restructured CLI into dedicated submodules: `repl.rs` (interactive terminal, quoted tokenizer, pretty-printer), `snapshot.rs` (forensic inspector supporting V2, V3, and V4 snapshots with CRC32 verification), `bench.rs` (pipelined throughput benchmark), and `main.rs` (clean CLI argument parsing).
+  - Documented Hash, Admin, and Vector Index commands in interactive `help` reference card.
+- **Benchmarking Engine (`kachedb-bench` & `run_benchmark.sh`):**
+  - Expanded native `kachedb-bench` harness with `--command hset`, `hget`, and `hmix` operations, pipelining, and high-resolution latency histograms.
+  - Updated `docker/run_benchmark.sh` with automated versioned report generation (`benchmark_comparison_results_<version>_hash.md`).
+
+---
+
 ## [v0.2.0] — 2026-09-27
 
 ### 🔐 Snapshot Encryption-at-Rest (`dump.kdb`)

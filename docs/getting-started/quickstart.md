@@ -82,7 +82,7 @@ OK
 
 127.0.0.1:6379> INFO
 # Server
-kachedb_version:0.2.0
+kachedb_version:0.3.0
 os:macos
 arch_bits:64
 ...

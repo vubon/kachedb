@@ -32,7 +32,7 @@ INFO [server | memory | stats | keyspace | vector]
 ```text
 127.0.0.1:6379> INFO
 # Server
-kachedb_version:0.2.0
+kachedb_version:0.3.0
 os:macos
 arch_bits:64
 process_id:48123
@@ -80,7 +80,7 @@ HELLO 3 [SETNAME client_name]
  1) "server"
  2) "kachedb"
  3) "version"
- 4) "0.2.0"
+ 4) "0.3.0"
  5) "proto"
  6) (integer) 3
  7) "id"
