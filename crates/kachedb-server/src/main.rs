@@ -10,6 +10,7 @@ mod snapshot;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use config::ServerConfig;
 use kachedb_net::{AcceptDispatcher, create_dispatch_channels};
@@ -32,7 +33,10 @@ fn main() {
 "#
     );
 
-    println!("⚡ KacheDB Daemon v0.3.1 (Production Stable) starting...");
+    println!(
+        "⚡ KacheDB Daemon v{} (Production Stable) starting...",
+        env!("CARGO_PKG_VERSION")
+    );
     if let Some(ref path) = config.config_path {
         println!("   └─ Config File:        {}", path.display());
     }
@@ -195,7 +199,7 @@ fn main() {
     }
 
     // Launch background AOF writer thread
-    let _aof_writer = if config.aof_enabled {
+    let aof_writer = if config.aof_enabled {
         match aof::AofWriter::start(&config.aof_path, config.appendfsync) {
             Ok(writer) => {
                 kachedb_net::set_aof_channel(writer.channel());
@@ -211,14 +215,14 @@ fn main() {
     };
 
     // Launch background snapshot worker thread
-    let _snapshot_worker = if config.snapshot_enabled {
+    let snapshot_worker = if config.snapshot_enabled {
         Some(snapshot::SnapshotWorker::start(
             config.snapshot_path.clone(),
             shared_table.clone(),
             &kachedb_net::DEFAULT_VECTORS,
             config.snapshot_interval_secs,
             shutdown.clone(),
-            Some(enc_config),
+            Some(enc_config.clone()),
         ))
     } else {
         None
@@ -227,11 +231,14 @@ fn main() {
     // Create per-worker crossbeam dispatch channels
     let (senders, receivers) = create_dispatch_channels(config.num_workers);
 
-    let mut handles = Vec::with_capacity(config.num_workers + 1);
+    // Shutdown barrier keeps worker SlabPools alive during final snapshot persistence
+    let shutdown_barrier = Arc::new(kachedb_net::ShutdownBarrier::new());
+    let mut worker_handles = Vec::with_capacity(config.num_workers);
 
     // Spawn worker threads (accept-dispatch mode)
     for (core_id, receiver) in receivers.into_iter().enumerate() {
         let shutdown_worker = shutdown.clone();
+        let barrier = shutdown_barrier.clone();
         let shm_enabled = config.shm_enabled;
         let worker_table = shared_table.clone();
         let pool_bytes = config.pool_mb_per_core * 1024 * 1024;
@@ -286,13 +293,13 @@ fn main() {
                         }
                     }
                 };
-                if let Err(e) = worker.run(shutdown_worker) {
+                if let Err(e) = worker.run_with_barrier(shutdown_worker, Some(barrier)) {
                     log::error!("Worker [{core_id}]: event loop terminated with error: {e}");
                 }
             })
             .expect("failed to spawn worker thread");
 
-        handles.push(handle);
+        worker_handles.push(handle);
     }
 
     // Spawn the accept-dispatcher thread (floating, no CPU pinning)
@@ -307,13 +314,70 @@ fn main() {
         })
         .expect("failed to spawn accept-dispatcher thread");
 
-    handles.push(accept_handle);
-
     println!("🚀 KacheDB is ready to accept Redis & LLM tensor connections!");
 
-    // Wait for all worker threads to exit
-    for handle in handles {
+    // Shutdown orchestration:
+    // 1. Wait for accept-dispatcher to exit (no new incoming connections)
+    let _ = accept_handle.join();
+    log::info!("AcceptDispatcher: shut down, no new connections accepted");
+
+    // 2. Stop the background snapshot worker thread so no async save collides
+    if let Some(mut sw) = snapshot_worker {
+        sw.stop();
+    }
+
+    // 3. Wait for all worker threads to stop processing client traffic
+    // (Workers pause at shutdown_barrier, keeping their SlabPools and arenas fully alive)
+    if !shutdown_barrier.wait_all_stopped(config.num_workers, Duration::from_secs(5)) {
+        log::warn!("Timed out waiting for all workers to pause event loop");
+    } else {
+        log::info!(
+            "All {} workers paused event loop, memory pools intact",
+            config.num_workers
+        );
+    }
+
+    // 4. Perform final shutdown snapshot while all memory pools and slab slots are guaranteed intact!
+    if config.snapshot_enabled {
+        log::info!("Snapshot worker: performing final shutdown snapshot...");
+        let now_sec = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        match snapshot::save_snapshot(
+            &config.snapshot_path,
+            &shared_table,
+            &kachedb_net::DEFAULT_VECTORS,
+            now_sec,
+            Some(&enc_config),
+        ) {
+            Ok(stats) => {
+                log::info!(
+                    "💾 Final shutdown snapshot saved successfully: {} vectors across {} indexes, {} KV keys ({} bytes) written to {:?}",
+                    stats.total_vectors,
+                    stats.vector_indexes,
+                    stats.total_kv_entries,
+                    stats.bytes_written,
+                    config.snapshot_path
+                );
+            }
+            Err(e) => {
+                log::error!("Final shutdown snapshot failed: {e}");
+            }
+        }
+    }
+
+    // 5. Release workers from barrier so they can cleanly drop their SlabPools
+    shutdown_barrier.release();
+
+    // 6. Join all worker thread handles
+    for handle in worker_handles {
         let _ = handle.join();
+    }
+
+    // 7. Flush and stop AOF writer if enabled
+    if let Some(mut aof) = aof_writer {
+        aof.stop();
     }
 
     if config.shm_enabled {

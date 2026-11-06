@@ -28,6 +28,8 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::shutdown::ShutdownBarrier;
+
 use io_uring::{IoUring, opcode, squeue, types};
 
 use kachedb_core::{HashedTimingWheel, SlabPool, pin_current_thread_to_core};
@@ -226,6 +228,14 @@ impl UringWorkerThread {
     }
 
     pub fn run(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), NetError> {
+        self.run_with_barrier(shutdown, None)
+    }
+
+    pub fn run_with_barrier(
+        &mut self,
+        shutdown: Arc<AtomicBool>,
+        barrier: Option<Arc<ShutdownBarrier>>,
+    ) -> Result<(), NetError> {
         let _ = pin_current_thread_to_core(self.core_id as usize);
 
         // ── io_uring init ────────────────────────────────────────────────────
@@ -437,6 +447,13 @@ impl UringWorkerThread {
         }
 
         log::info!("Worker [{}]: io_uring shut down", self.core_id);
+        if let Some(ref b) = barrier {
+            log::info!(
+                "Worker [{}]: io_uring event loop stopped, awaiting final persistence flush...",
+                self.core_id
+            );
+            b.wait_worker();
+        }
         Ok(())
     }
 }

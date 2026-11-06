@@ -1010,17 +1010,7 @@ impl SnapshotWorker {
                     }
                 }
 
-                // Final save on clean shutdown
-                log::info!("Snapshot worker: performing final shutdown snapshot...");
-                let now_sec = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as u32;
-                if let Err(e) = save_snapshot(&target_path, &table, vectors, now_sec, encryption.as_ref()) {
-                    log::error!("Final shutdown snapshot failed: {e}");
-                } else {
-                    log::info!("Final shutdown snapshot saved successfully to {:?}", target_path);
-                }
+                log::info!("Snapshot worker: background thread stopped");
             })
             .expect("failed to spawn snapshotter thread");
 
@@ -1624,6 +1614,76 @@ mod tests {
             Some(b"longer_val_2".as_slice())
         );
         assert_eq!(HashSlotFrame::get(restored_slot, b"field3"), None);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_shutdown_barrier_preserves_kv_snapshot() {
+        use kachedb_net::ShutdownBarrier;
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "test_shutdown_barrier_{}.kdb",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let table = Arc::new(ShardedSwissTable::new());
+        let vectors = VectorIndexRegistry::new();
+        let barrier = Arc::new(ShutdownBarrier::new());
+
+        let table_clone = table.clone();
+        let barrier_clone = barrier.clone();
+
+        // Worker thread owning SlabPool
+        let worker_handle = thread::spawn(move || {
+            let mut pool = SlabPool::new(0, 4 * 1024 * 1024).unwrap();
+
+            // Insert string key
+            let block_id = pool.allocate(SlabClassType::AppSmall).unwrap();
+            let ptr = unsafe { resolve_slot_ptr(block_id).unwrap() };
+            let val = b"worker_thread_payload";
+            unsafe {
+                std::ptr::copy_nonoverlapping(val.as_ptr(), ptr, val.len());
+            }
+            let key_hash = 999888777u64;
+            table_clone.insert_with_ttl(key_hash, block_id, val.len() as u32, 0);
+
+            // Simulate event loop stopping on shutdown, then waiting at barrier
+            barrier_clone.wait_worker();
+
+            // When released, pool is dropped here
+            drop(pool);
+        });
+
+        // Main thread: wait for worker to pause at barrier
+        assert!(barrier.wait_all_stopped(1, Duration::from_secs(2)));
+
+        // Take snapshot while worker is at barrier with pool alive
+        let save_stats = save_snapshot(&path, &table, &vectors, 0, None).expect("save failed");
+        assert_eq!(save_stats.total_kv_entries, 1);
+
+        // Release worker so it can exit
+        barrier.release();
+        worker_handle.join().unwrap();
+
+        // Now verify hydration from on-disk snapshot into clean database
+        let new_table = ShardedSwissTable::new();
+        let new_vectors = VectorIndexRegistry::new();
+        let mut new_pool = SlabPool::new(0, 4 * 1024 * 1024).unwrap();
+
+        let load_stats = load_snapshot(&path, &new_table, &mut new_pool, &new_vectors, None)
+            .expect("load failed")
+            .expect("stats present");
+        assert_eq!(load_stats.total_kv_entries, 1);
+
+        let entry = new_table.lookup(999888777u64).expect("key must exist");
+        let ptr = unsafe { resolve_slot_ptr(entry.slab_block_id).unwrap() };
+        let restored = unsafe { std::slice::from_raw_parts(ptr, entry.value_len as usize) };
+        assert_eq!(restored, b"worker_thread_payload");
 
         let _ = std::fs::remove_file(&path);
     }

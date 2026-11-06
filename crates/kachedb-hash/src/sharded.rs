@@ -1,6 +1,6 @@
 //! `kachedb-hash` — High-concurrency Sharded Swiss Table.
 //!
-//! Partitions the 64-bit AHash keyspace into 256 independent micro-shards,
+//! Partitions the 64-bit XXH3 keyspace into 256 independent micro-shards,
 //! each guarded by an ultra-low-overhead [`parking_lot::RwLock`].
 //!
 //! This enables true multi-core parallel scaling across all worker threads

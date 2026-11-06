@@ -42,7 +42,7 @@ pub struct TableEntry {
 ///
 /// | Offset | Field            | Size | Description                         |
 /// |--------|------------------|------|-------------------------------------|
-/// | 0      | `key_hash`       | 8 B  | Full 64-bit key hash (AHash)        |
+/// | 0      | `key_hash`       | 8 B  | Full 64-bit key hash (XXH3)         |
 /// | 8      | `slab_block_id`  | 4 B  | Opaque handle into the slab pool    |
 /// | 12     | `value_len`      | 4 B  | Byte length of the stored value     |
 /// | 16     | `expire_at_secs` | 4 B  | Absolute expiration epoch seconds   |

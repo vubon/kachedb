@@ -24,6 +24,7 @@ use rustls::server::ServerConfig;
 
 use crate::connection::{Connection, DEFAULT_VECTORS};
 use crate::error::NetError;
+use crate::shutdown::ShutdownBarrier;
 use crate::tls::TlsState;
 
 const SERVER_TOKEN: Token = Token(0);
@@ -210,10 +211,20 @@ impl WorkerThread {
 
     /// Runs the single-threaded event loop until `shutdown` is signaled.
     pub fn run(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), NetError> {
+        self.run_with_barrier(shutdown, None)
+    }
+
+    /// Runs the single-threaded event loop until `shutdown` is signaled,
+    /// pausing at `barrier` before dropping the thread's memory pool on exit.
+    pub fn run_with_barrier(
+        &mut self,
+        shutdown: Arc<AtomicBool>,
+        barrier: Option<Arc<ShutdownBarrier>>,
+    ) -> Result<(), NetError> {
         // Pin this thread to its assigned core
         let _ = pin_current_thread_to_core(self.core_id as usize);
 
-        match &self.conn_source {
+        let res = match &self.conn_source {
             ConnSource::Channel(_) => {
                 log::info!(
                     "Worker [{core}]: pinned to core, accept-dispatch mode",
@@ -229,7 +240,17 @@ impl WorkerThread {
                 );
                 self.run_listener_mode(addr, shutdown)
             }
+        };
+
+        if let Some(ref b) = barrier {
+            log::info!(
+                "Worker [{core}]: event loop stopped, awaiting final persistence flush...",
+                core = self.core_id
+            );
+            b.wait_worker();
         }
+
+        res
     }
 
     /// Event loop for **accept-dispatch mode**: receives connections from a crossbeam channel.
@@ -906,12 +927,12 @@ mod tests {
         let n = client.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"$10\r\nnew-worker\r\n");
 
-        // 5. INFO -> contains "# Server" and "kachedb_version:0.3.1"
+        // 5. INFO -> contains "# Server" and "kachedb_version:..."
         client.write_all(b"*1\r\n$4\r\nINFO\r\n").unwrap();
         let n = client.read(&mut buf).unwrap();
         let info_resp = std::str::from_utf8(&buf[..n]).unwrap();
         assert!(info_resp.contains("# Server"));
-        assert!(info_resp.contains("kachedb_version:0.3.1"));
+        assert!(info_resp.contains(&format!("kachedb_version:{}", env!("CARGO_PKG_VERSION"))));
         assert!(info_resp.contains("# Memory"));
 
         // Shut down worker

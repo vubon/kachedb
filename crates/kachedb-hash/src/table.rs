@@ -26,9 +26,6 @@
 //! The table resizes when occupancy exceeds **87.5%** (7/8 slots) of capacity,
 //! matching the standard Swiss Table growth threshold.
 
-use ahash::AHasher;
-use std::hash::{Hash, Hasher};
-
 use kachedb_core::SlabBlockId;
 
 use crate::entry::{HashEntry, TableEntry};
@@ -53,12 +50,15 @@ const MIN_SHRINK_CAPACITY: usize = 1024;
 
 // ─── Hash helpers ─────────────────────────────────────────────────────────────
 
-/// Computes a 64-bit AHash digest for an arbitrary byte key.
+/// Computes a deterministic 64-bit XXH3 digest for an arbitrary byte key.
+///
+/// The digest is **stable across process restarts, CPU architectures and
+/// builds**. This is required because snapshots persist the key hash (not the
+/// key bytes): a per-process randomised hasher (such as `AHasher::default()`)
+/// would make every restored key unreachable after a restart.
 #[inline]
 pub fn hash_key(key: &[u8]) -> u64 {
-    let mut h = AHasher::default();
-    key.hash(&mut h);
-    h.finish()
+    xxhash_rust::xxh3::xxh3_64(key)
 }
 
 /// Extracts `H1`: upper 57 bits used as the slot index.
@@ -902,5 +902,14 @@ mod tests {
 
         let missing = hash_key(b"missing");
         assert!(!t.persist(missing, 100));
+    }
+
+    /// Snapshots persist `key_hash`, so the digest must never depend on
+    /// per-process randomness. Pinned value guards against regressions.
+    #[test]
+    fn hash_key_is_stable_across_processes() {
+        assert_eq!(hash_key(b"k1"), 9344898337136588485);
+        assert_eq!(hash_key(b"k1"), hash_key(b"k1"));
+        assert_ne!(hash_key(b"k1"), hash_key(b"k2"));
     }
 }

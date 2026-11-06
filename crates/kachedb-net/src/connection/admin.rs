@@ -54,7 +54,7 @@ pub fn handle_admin(
             encode_bulk_string(write_buf, b"server");
             encode_bulk_string(write_buf, b"kachedb");
             encode_bulk_string(write_buf, b"version");
-            encode_bulk_string(write_buf, b"0.3.1");
+            encode_bulk_string(write_buf, env!("CARGO_PKG_VERSION").as_bytes());
             encode_bulk_string(write_buf, b"proto");
             encode_integer(write_buf, ver);
             encode_bulk_string(write_buf, b"id");
@@ -107,9 +107,10 @@ pub fn handle_admin(
             }
         },
         Command::Info { section: _ } => {
+            let pkg_ver = env!("CARGO_PKG_VERSION");
             let info_text = format!(
                 "# Server\r\n\
-                 kachedb_version:0.3.1\r\n\
+                 kachedb_version:{pkg_ver}\r\n\
                  os:{os}\r\n\
                  arch_bits:64\r\n\
                  process_id:{pid}\r\n\

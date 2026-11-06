@@ -5,6 +5,22 @@ All notable changes to **KacheDB** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.3.2] — 2026-11-07
+
+### 🐛 Bug Fixes & Persistence Reliability
+- **Zero KV Data Loss on Container Restarts (`dump.kdb`):**
+  - Fixed a shutdown ordering bug where worker threads dropped their thread-local `SlabPool` arenas upon exiting their event loop before the snapshot worker could capture state. Dropping pools unregistered `MegaslabArena`s from `GLOBAL_ARENAS`, causing `resolve_slot_ptr()` to return `None` and overwriting `dump.kdb` with 0 KV keys.
+  - Introduced `ShutdownBarrier` in `kachedb-net`, ensuring worker threads pause after halting network event loops while keeping their memory pools fully allocated and registered.
+  - The main server thread now deterministically halts connection dispatch, signals background workers, performs the final shutdown snapshot, and only then releases the worker threads for orderly memory reclamation.
+- **Cross-Process Deterministic Key Hashing (`kachedb-hash`):**
+  - Switched `hash_key` in `SwissTable` from per-process randomized `AHasher::default()` (which uses random seeds per process launch) to `xxhash_rust::xxh3::xxh3_64`.
+  - Guarantees that key hashes saved in `dump.kdb` remain 100% deterministic and reachable across server and container restarts across all architectures.
+  - Added deterministic hash stability tests in `crates/kachedb-hash`.
+- **Dynamic Version Metadata:**
+  - Updated `HELLO`, `INFO`, and daemon startup logs to dynamically resolve from compile-time `env!("CARGO_PKG_VERSION")`.
+
+---
+
 ## [v0.3.1] — 2026-10-05
 
 ### 🐍 Python SDK Redis Hash Methods & Array Parsing

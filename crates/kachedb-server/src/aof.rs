@@ -303,14 +303,19 @@ impl AofWriter {
         let _ = file.sync_all();
         log::info!("AofWriter: safely stopped, flushed AOF to {:?}", path);
     }
-}
 
-impl Drop for AofWriter {
-    fn drop(&mut self) {
+    /// Explicitly stops the background AOF writer thread and joins it.
+    pub fn stop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
         if let Some(handle) = self.worker_handle.take() {
             let _ = handle.join();
         }
+    }
+}
+
+impl Drop for AofWriter {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 

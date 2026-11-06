@@ -359,14 +359,14 @@ dependencies = [
 
 [[package]]
 name = "kachedb-bench"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "kachedb-proto-resp",
 ]
 
 [[package]]
 name = "kachedb-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "crc32fast",
  "kachedb-proto-resp",
@@ -374,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "cfg-if",
  "core_affinity",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-hash"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ahash",
  "cfg-if",
@@ -397,11 +397,12 @@ dependencies = [
  "parking_lot",
  "smallvec",
  "thiserror",
+ "xxhash-rust",
 ]
 
 [[package]]
 name = "kachedb-net"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "cfg-if",
  "crc32fast",
@@ -424,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-proto-resp"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "criterion",
  "log",
@@ -434,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-proto-tensor"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "kachedb-core",
  "log",
@@ -443,7 +444,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-radix"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -455,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-server"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "cfg-if",
  "crc32fast",
@@ -480,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-shm"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "cfg-if",
  "criterion",
@@ -493,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "kachedb-vector"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ahash",
  "cfg-if",
@@ -1133,6 +1134,12 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
 
 [[package]]
 name = "zerocopy"
