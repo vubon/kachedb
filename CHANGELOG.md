@@ -5,6 +5,45 @@ All notable changes to **KacheDB** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.4.0] — 2026-11-08
+
+### 🔍 Keyspace Cursor & Pattern Scanning (`SCAN`, `HSCAN`)
+- **Stateless Bit-Reversed Cursor Over SwissTable Shards:**
+  - Implemented `SCAN <cursor> [MATCH pattern] [COUNT count] [TYPE type]` across 256 independent SwissTable shards.
+  - Implemented home-bucket bit-reversed iteration (`next_bit_reversed_cursor`) over probe chains originating at `h1(key_hash, cap) == home_bucket`, mathematically guaranteeing zero skipped keys across open-addressing table growth (`grow`), shrink-on-delete (`shrink`), and tombstone back-shift compaction (`compact_one_group`).
+  - Bit-packed 53-bit cursor `((local_cursor << 8) | shard_idx)` guarantees lossless roundtrips in JavaScript/JSON runtimes (`< Number.MAX_SAFE_INTEGER`).
+  - Amortized shard lock acquisition: batches up to 256 home buckets per read lock acquisition, with bounded per-call step (`MAX_BUCKETS_PER_STEP = 4096`).
+  - Empty database fast-path: checks `shard.is_empty()` across all 256 shards in $\mathcal{O}(1)$ and returns cursor `"0"` in a single network round-trip.
+- **Single-Pass Hash Scanning (`HSCAN`):**
+  - Implemented `HSCAN <key> <cursor> [MATCH pattern] [COUNT count]` reading bounded in-slot Megaslab frames ($\le 4\text{ KB}$, $\le 128$ field-value pairs) in a single pass.
+- **40-Byte Inline SSO & Zero-Bloat Key Storage:**
+  - Replaced 42 bytes of unused padding in `HashEntry` (`_pad: [u8; 42]`) with `key_len: u16` and `inline_key: [u8; 40]`.
+  - Preserved exact 64-byte L1 CPU cache-line alignment (`size_of::<HashEntry>() == 64`) and `size_of::<TableEntry>() <= 24`, resulting in **0 bytes** of memory bloat per slot across all 256 shards.
+  - Keys $\le 40$ bytes are stored 100% inline with zero heap allocations on the write hot-path.
+  - Keys $> 40$ bytes store their 40-byte prefix inline in L1 cache and full key bytes in shard-local `SwissTable::overflow_keys: HashMap<u64, Box<[u8]>>`, leaving Megaslab value slots 100% unmodified.
+- **Zero-Allocation Glob Pattern Matching Engine:**
+  - Fast iterative byte-level glob matcher supporting wildcards (`*`, `?`), character classes (`[abc]`, `[a-z]`), negation (`[^abc]`, `[!abc]`), and escape sequences (`\x`).
+  - Single-star backtrack anchor preventing exponential ReDoS backtrack vulnerabilities (CVE-2022-36021).
+  - `CompiledPattern` literal-prefix fast-path evaluates and rejects non-matching keys directly from the 40-byte L1 prefix before ever accessing `overflow_keys`.
+- **Snapshot Format V5 (`KDB\x05`):**
+  - Introduced Snapshot V5 format persisting `[key_len: u16][key_bytes]` alongside each KV payload.
+  - Full backward compatibility: seamlessly loads legacy V2, V3, and V4 snapshots without keys (`key_len = 0`), logging a warning and lazily upgrading them on write (`SET`, `HSET`, `EXPIRE`, `PERSIST`) or AOF recovery.
+  - Added `anonymous_keys:<count>` metric to `INFO` command.
+- **Protocol Error Handling & Wire Framing Decoupling:**
+  - Added `parse_command_frame` to cleanly decouple wire transport framing from command argument validation.
+  - Semantic command errors (`InvalidCursor`, `SyntaxError`, `WrongArgumentCount`, `PatternTooLong`) consume the frame, return `-ERR ...\r\n` to the client, and keep the TCP connection alive.
+- **Compaction & AOF Rewrite Integrity:**
+  - Fixed `BGREWRITEAOF` in `kachedb-server` to serialize `VALUE_TYPE_HASH` entries using `HashSlotFrame::encode_pairs` as `AofOp::HSet` (rather than string `Set`), and emit follow-up `AofOp::Expire` frames when `expire_at > 0`.
+- **CLI & Benchmarking Tools:**
+  - Updated `kachedb-cli snapshot-info` forensic inspector to recognize and validate `KDB\x05` plaintext and encrypted snapshots.
+  - Added `--command SCAN` support to the native `kachedb-bench` harness.
+- **Python Client SDK (`kachedb`):**
+  - Added native `scan()` and `hscan()` methods with `MATCH`, `COUNT`, and `TYPE` filtering to `KacheClient`.
+  - Added Pythonic generators `scan_iter()` and `hscan_iter()` for seamless multi-page iteration.
+  - Added unit test suite covering mock wire payloads and live client round-trips against KacheDB daemon.
+
+---
+
 ## [v0.3.2] — 2026-11-07
 
 ### 🐛 Bug Fixes & Persistence Reliability

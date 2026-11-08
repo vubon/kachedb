@@ -114,7 +114,7 @@ fn apply_frame(
                     std::ptr::copy_nonoverlapping(frame.value.as_ptr(), ptr, val_len);
                 }
                 let h = hash_key(&frame.key);
-                let old = table.insert(h, block_id, val_len as u32);
+                let old = table.insert_with_key(h, &frame.key, block_id, val_len as u32);
                 if let Some(old_id) = old {
                     let _ = pool.deallocate(old_id);
                 }
@@ -131,6 +131,9 @@ fn apply_frame(
                 && let Ok(expire_at) = ts_str.parse::<u32>()
             {
                 let h = hash_key(&frame.key);
+                table.with_shard_mut(h, |shard| {
+                    shard.ensure_key_name(h, &frame.key);
+                });
                 table.update_ttl(h, expire_at, 0);
             }
         }
@@ -204,6 +207,7 @@ fn apply_frame(
                         for (f, v) in &pairs {
                             let _ = HashSlotFrame::upsert(slot, f, v);
                         }
+                        shard.ensure_key_name(h, &frame.key);
                         return;
                     }
 
@@ -230,8 +234,9 @@ fn apply_frame(
                             let old_id = entry.slab_block_id;
                             let expire_at = entry.expire_at_secs;
                             if shard
-                                .insert_typed(
+                                .insert_typed_with_key(
                                     h,
+                                    &frame.key,
                                     new_block_id,
                                     target_class.slot_bytes() as u32,
                                     expire_at,
@@ -260,8 +265,9 @@ fn apply_frame(
                                 let _ = HashSlotFrame::upsert(slot, f, v);
                             }
                             if shard
-                                .insert_typed(
+                                .insert_typed_with_key(
                                     h,
+                                    &frame.key,
                                     block_id,
                                     target_class.slot_bytes() as u32,
                                     0,

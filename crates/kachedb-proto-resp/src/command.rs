@@ -156,6 +156,20 @@ pub enum Command<'a> {
     HLen { key: &'a [u8] },
     /// `HGETALL <key>`
     HGetAll { key: &'a [u8] },
+    /// `SCAN <cursor> [MATCH <pattern>] [COUNT <count>] [TYPE <type>]`
+    Scan {
+        cursor: u64,
+        pattern: Option<&'a [u8]>,
+        count: Option<usize>,
+        type_filter: Option<&'a [u8]>,
+    },
+    /// `HSCAN <key> <cursor> [MATCH <pattern>] [COUNT <count>]`
+    HScan {
+        key: &'a [u8],
+        cursor: u64,
+        pattern: Option<&'a [u8]>,
+        count: Option<usize>,
+    },
     /// `FLUSHDB`
     FlushDb,
     /// `FLUSHALL`
@@ -176,11 +190,20 @@ pub enum ClientSubcommand<'a> {
     Unrecognized(&'a [u8]),
 }
 
-/// Fast zero-allocation parser for Redis wire commands directly from raw TCP stream slices.
-///
-/// Parses array of bulk strings directly into a stack-allocated [`SmallVec`] without
-/// allocating any [`Box`] or heap memory for incoming frames.
-pub fn parse_command<'a>(src: &'a [u8]) -> Result<Option<(Command<'a>, usize)>, RespError> {
+/// Return type for [`parse_command_frame`]:
+/// - `Ok(None)` if more TCP bytes are required to complete the wire frame.
+/// - `Ok(Some((Ok(cmd), consumed)))` if the wire frame and command arguments are valid.
+/// - `Ok(Some((Err(cmd_err), consumed)))` if the wire frame (`consumed` bytes) was cleanly
+///   delimited, but command-level validation failed (e.g. `InvalidCursor`, `SyntaxError`,
+///   `WrongArgumentCount`, `PatternTooLong`), allowing the server to reply `-ERR ...` and keep
+///   the TCP socket open.
+/// - `Err(wire_err)` if the RESP wire stream itself is corrupted (`InvalidTypeMarker`, `MissingCrlf`, etc.).
+pub type ParsedCommandFrame<'a> =
+    Result<Option<(Result<Command<'a>, RespError>, usize)>, RespError>;
+
+/// Fast zero-allocation parser for Redis wire commands that preserves consumed frame offsets
+/// on command-level validation errors.
+pub fn parse_command_frame<'a>(src: &'a [u8]) -> ParsedCommandFrame<'a> {
     if src.is_empty() {
         return Ok(None);
     }
@@ -255,26 +278,26 @@ pub fn parse_command<'a>(src: &'a [u8]) -> Result<Option<(Command<'a>, usize)>, 
             }
         }
 
-        let cmd = Command::from_raw_args(args)?;
-        Ok(Some((cmd, offset)))
+        Ok(Some((Command::from_raw_args(args), offset)))
     } else {
         // Inline command fallback (e.g. PING\r\n or QUIT\r\n)
         let crlf_pos = match find_crlf(src) {
             Some(pos) => pos,
             None => return Ok(None),
         };
+        let consumed = crlf_pos + 2;
 
         let line = &src[..crlf_pos];
         if line.eq_ignore_ascii_case(b"PING") {
-            Ok(Some((Command::Ping { message: None }, crlf_pos + 2)))
+            Ok(Some((Ok(Command::Ping { message: None }), consumed)))
         } else if line.eq_ignore_ascii_case(b"QUIT") {
-            Ok(Some((Command::Quit, crlf_pos + 2)))
+            Ok(Some((Ok(Command::Quit), consumed)))
         } else if line.eq_ignore_ascii_case(b"DBSIZE") {
-            Ok(Some((Command::DBSize, crlf_pos + 2)))
+            Ok(Some((Ok(Command::DBSize), consumed)))
         } else if line.eq_ignore_ascii_case(b"FLUSHDB") {
-            Ok(Some((Command::FlushDb, crlf_pos + 2)))
+            Ok(Some((Ok(Command::FlushDb), consumed)))
         } else if line.eq_ignore_ascii_case(b"FLUSHALL") {
-            Ok(Some((Command::FlushAll, crlf_pos + 2)))
+            Ok(Some((Ok(Command::FlushAll), consumed)))
         } else {
             let mut parts = line
                 .split(|&b| b == b' ' || b == b'\t')
@@ -282,51 +305,72 @@ pub fn parse_command<'a>(src: &'a [u8]) -> Result<Option<(Command<'a>, usize)>, 
             if let Some(cmd_name) = parts.next() {
                 if cmd_name.eq_ignore_ascii_case(b"PING") {
                     let msg = parts.next();
-                    Ok(Some((Command::Ping { message: msg }, crlf_pos + 2)))
+                    Ok(Some((Ok(Command::Ping { message: msg }), consumed)))
                 } else if cmd_name.eq_ignore_ascii_case(b"GET") {
                     if let Some(key) = parts.next() {
-                        Ok(Some((Command::Get { key }, crlf_pos + 2)))
+                        Ok(Some((Ok(Command::Get { key }), consumed)))
                     } else {
-                        Err(RespError::WrongArgumentCount {
-                            command: "GET".into(),
-                        })
+                        Ok(Some((
+                            Err(RespError::WrongArgumentCount {
+                                command: "GET".into(),
+                            }),
+                            consumed,
+                        )))
                     }
                 } else if cmd_name.eq_ignore_ascii_case(b"SET") {
                     if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
                         Ok(Some((
-                            Command::Set {
+                            Ok(Command::Set {
                                 key,
                                 value,
                                 ttl_ms: None,
-                            },
-                            crlf_pos + 2,
+                            }),
+                            consumed,
                         )))
                     } else {
-                        Err(RespError::WrongArgumentCount {
-                            command: "SET".into(),
-                        })
+                        Ok(Some((
+                            Err(RespError::WrongArgumentCount {
+                                command: "SET".into(),
+                            }),
+                            consumed,
+                        )))
                     }
                 } else if cmd_name.eq_ignore_ascii_case(b"DBSIZE") {
-                    Ok(Some((Command::DBSize, crlf_pos + 2)))
+                    Ok(Some((Ok(Command::DBSize), consumed)))
                 } else if cmd_name.eq_ignore_ascii_case(b"TYPE") {
                     if let Some(key) = parts.next() {
-                        Ok(Some((Command::Type { key }, crlf_pos + 2)))
+                        Ok(Some((Ok(Command::Type { key }), consumed)))
                     } else {
-                        Err(RespError::WrongArgumentCount {
-                            command: "TYPE".into(),
-                        })
+                        Ok(Some((
+                            Err(RespError::WrongArgumentCount {
+                                command: "TYPE".into(),
+                            }),
+                            consumed,
+                        )))
                     }
                 } else if cmd_name.eq_ignore_ascii_case(b"FLUSHDB") {
-                    Ok(Some((Command::FlushDb, crlf_pos + 2)))
+                    Ok(Some((Ok(Command::FlushDb), consumed)))
                 } else if cmd_name.eq_ignore_ascii_case(b"FLUSHALL") {
-                    Ok(Some((Command::FlushAll, crlf_pos + 2)))
+                    Ok(Some((Ok(Command::FlushAll), consumed)))
                 } else {
-                    Ok(Some((Command::Unknown { name: cmd_name }, crlf_pos + 2)))
+                    Ok(Some((Ok(Command::Unknown { name: cmd_name }), consumed)))
                 }
             } else {
                 Err(RespError::EmptyCommand)
             }
         }
+    }
+}
+
+/// Fast zero-allocation parser for Redis wire commands directly from raw TCP stream slices.
+///
+/// Parses array of bulk strings directly into a stack-allocated [`SmallVec`] without
+/// allocating any [`Box`] or heap memory for incoming frames.
+pub fn parse_command<'a>(src: &'a [u8]) -> Result<Option<(Command<'a>, usize)>, RespError> {
+    match parse_command_frame(src)? {
+        Some((Ok(cmd), consumed)) => Ok(Some((cmd, consumed))),
+        Some((Err(e), _)) => Err(e),
+        None => Ok(None),
     }
 }
 
@@ -1013,6 +1057,10 @@ impl<'a> Command<'a> {
                 });
             }
             Ok(Command::HGetAll { key: args[1] })
+        } else if cmd_name.eq_ignore_ascii_case(b"SCAN") {
+            parse_scan_raw(&args)
+        } else if cmd_name.eq_ignore_ascii_case(b"HSCAN") {
+            parse_hscan_raw(&args)
         } else if cmd_name.eq_ignore_ascii_case(b"FLUSHDB") {
             Ok(Command::FlushDb)
         } else if cmd_name.eq_ignore_ascii_case(b"FLUSHALL") {
@@ -1833,6 +1881,18 @@ impl<'a> Command<'a> {
                     }
                     let key = extract_required_bytes(&args[1], "HGETALL")?;
                     Ok(Command::HGetAll { key })
+                } else if cmd_name.eq_ignore_ascii_case(b"SCAN") {
+                    let mut raw: SmallVec<[&'a [u8]; 8]> = SmallVec::with_capacity(args.len());
+                    for arg in &args {
+                        raw.push(extract_required_bytes(arg, "SCAN")?);
+                    }
+                    parse_scan_raw(&raw)
+                } else if cmd_name.eq_ignore_ascii_case(b"HSCAN") {
+                    let mut raw: SmallVec<[&'a [u8]; 8]> = SmallVec::with_capacity(args.len());
+                    for arg in &args {
+                        raw.push(extract_required_bytes(arg, "HSCAN")?);
+                    }
+                    parse_hscan_raw(&raw)
                 } else if cmd_name.eq_ignore_ascii_case(b"FLUSHDB") {
                     Ok(Command::FlushDb)
                 } else if cmd_name.eq_ignore_ascii_case(b"FLUSHALL") {
@@ -1872,6 +1932,110 @@ fn extract_required_bytes<'a>(frame: &Frame<'a>, cmd: &str) -> Result<&'a [u8], 
             command: cmd.into(),
         }),
     }
+}
+
+fn parse_scan_raw<'a>(args: &[&'a [u8]]) -> Result<Command<'a>, RespError> {
+    if args.len() < 2 {
+        return Err(RespError::WrongArgumentCount {
+            command: "SCAN".into(),
+        });
+    }
+    let cursor = std::str::from_utf8(args[1])
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .ok_or(RespError::InvalidCursor)?;
+
+    if !(args.len() - 2).is_multiple_of(2) {
+        return Err(RespError::SyntaxError);
+    }
+
+    let mut pattern = None;
+    let mut count = None;
+    let mut type_filter = None;
+
+    let mut i = 2;
+    while i < args.len() {
+        let opt = args[i];
+        let val = args[i + 1];
+        if opt.eq_ignore_ascii_case(b"MATCH") {
+            if val.len() > 256 {
+                return Err(RespError::PatternTooLong);
+            }
+            pattern = Some(val);
+        } else if opt.eq_ignore_ascii_case(b"COUNT") {
+            let parsed = std::str::from_utf8(val)
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .ok_or(RespError::SyntaxError)?;
+            if parsed <= 0 {
+                return Err(RespError::SyntaxError);
+            }
+            count = Some((parsed as usize).clamp(1, 10_000));
+        } else if opt.eq_ignore_ascii_case(b"TYPE") {
+            type_filter = Some(val);
+        } else {
+            return Err(RespError::SyntaxError);
+        }
+        i += 2;
+    }
+
+    Ok(Command::Scan {
+        cursor,
+        pattern,
+        count,
+        type_filter,
+    })
+}
+
+fn parse_hscan_raw<'a>(args: &[&'a [u8]]) -> Result<Command<'a>, RespError> {
+    if args.len() < 3 {
+        return Err(RespError::WrongArgumentCount {
+            command: "HSCAN".into(),
+        });
+    }
+    let key = args[1];
+    let cursor = std::str::from_utf8(args[2])
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .ok_or(RespError::InvalidCursor)?;
+
+    if !(args.len() - 3).is_multiple_of(2) {
+        return Err(RespError::SyntaxError);
+    }
+
+    let mut pattern = None;
+    let mut count = None;
+
+    let mut i = 3;
+    while i < args.len() {
+        let opt = args[i];
+        let val = args[i + 1];
+        if opt.eq_ignore_ascii_case(b"MATCH") {
+            if val.len() > 256 {
+                return Err(RespError::PatternTooLong);
+            }
+            pattern = Some(val);
+        } else if opt.eq_ignore_ascii_case(b"COUNT") {
+            let parsed = std::str::from_utf8(val)
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .ok_or(RespError::SyntaxError)?;
+            if parsed <= 0 {
+                return Err(RespError::SyntaxError);
+            }
+            count = Some((parsed as usize).clamp(1, 10_000));
+        } else {
+            return Err(RespError::SyntaxError);
+        }
+        i += 2;
+    }
+
+    Ok(Command::HScan {
+        key,
+        cursor,
+        pattern,
+        count,
+    })
 }
 
 #[cfg(test)]
@@ -2478,5 +2642,93 @@ mod tests {
             parse_command(&large_raw),
             Err(RespError::FrameTooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn parse_scan_and_hscan_commands() {
+        // Basic SCAN 0
+        let raw_scan = b"*2\r\n$4\r\nSCAN\r\n$1\r\n0\r\n";
+        let (cmd, _) = parse_command(raw_scan).unwrap().unwrap();
+        assert_eq!(
+            cmd,
+            Command::Scan {
+                cursor: 0,
+                pattern: None,
+                count: None,
+                type_filter: None,
+            }
+        );
+
+        // SCAN with MATCH, COUNT, TYPE in mixed order
+        let raw_scan_opts = b"*8\r\n$4\r\nSCAN\r\n$3\r\n256\r\n$4\r\nTYPE\r\n$6\r\nstring\r\n$5\r\nMATCH\r\n$5\r\nuser*\r\n$5\r\nCOUNT\r\n$2\r\n50\r\n";
+        let (cmd_opts, _) = parse_command(raw_scan_opts).unwrap().unwrap();
+        assert_eq!(
+            cmd_opts,
+            Command::Scan {
+                cursor: 256,
+                pattern: Some(b"user*"),
+                count: Some(50),
+                type_filter: Some(b"string"),
+            }
+        );
+        let (frame_opts, _) = parse_frame(raw_scan_opts).unwrap().unwrap();
+        assert_eq!(Command::from_frame(frame_opts).unwrap(), cmd_opts);
+
+        // SCAN COUNT clamping (> 10_000 -> 10_000)
+        let raw_clamp = b"*4\r\n$4\r\nSCAN\r\n$1\r\n0\r\n$5\r\nCOUNT\r\n$6\r\n999999\r\n";
+        let (cmd_clamp, _) = parse_command(raw_clamp).unwrap().unwrap();
+        assert_eq!(
+            cmd_clamp,
+            Command::Scan {
+                cursor: 0,
+                pattern: None,
+                count: Some(10_000),
+                type_filter: None,
+            }
+        );
+
+        // SCAN invalid cursor
+        let bad_cursor = b"*2\r\n$4\r\nSCAN\r\n$3\r\nabc\r\n";
+        assert_eq!(parse_command(bad_cursor), Err(RespError::InvalidCursor));
+
+        // SCAN COUNT 0 -> SyntaxError
+        let bad_count = b"*4\r\n$4\r\nSCAN\r\n$1\r\n0\r\n$5\r\nCOUNT\r\n$1\r\n0\r\n";
+        assert_eq!(parse_command(bad_count), Err(RespError::SyntaxError));
+
+        // SCAN unknown option -> SyntaxError
+        let bad_opt = b"*4\r\n$4\r\nSCAN\r\n$1\r\n0\r\n$3\r\nFOO\r\n$3\r\nBAR\r\n";
+        assert_eq!(parse_command(bad_opt), Err(RespError::SyntaxError));
+
+        // SCAN trailing option without argument -> SyntaxError
+        let trailing_opt = b"*3\r\n$4\r\nSCAN\r\n$1\r\n0\r\n$5\r\nMATCH\r\n";
+        assert_eq!(parse_command(trailing_opt), Err(RespError::SyntaxError));
+
+        // SCAN pattern > 256 bytes -> PatternTooLong
+        let long_pat = vec![b'a'; 257];
+        let mut raw_long_pat = b"*4\r\n$4\r\nSCAN\r\n$1\r\n0\r\n$5\r\nMATCH\r\n$257\r\n".to_vec();
+        raw_long_pat.extend_from_slice(&long_pat);
+        raw_long_pat.extend_from_slice(b"\r\n");
+        assert_eq!(parse_command(&raw_long_pat), Err(RespError::PatternTooLong));
+
+        // HSCAN basic and with options
+        let raw_hscan =
+            b"*7\r\n$5\r\nHSCAN\r\n$6\r\nmyhash\r\n$1\r\n0\r\n$5\r\nMATCH\r\n$2\r\nf*\r\n$5\r\nCOUNT\r\n$2\r\n20\r\n";
+        let (cmd_hscan, _) = parse_command(raw_hscan).unwrap().unwrap();
+        assert_eq!(
+            cmd_hscan,
+            Command::HScan {
+                key: b"myhash",
+                cursor: 0,
+                pattern: Some(b"f*"),
+                count: Some(20),
+            }
+        );
+        let (frame_hscan, _) = parse_frame(raw_hscan).unwrap().unwrap();
+        assert_eq!(Command::from_frame(frame_hscan).unwrap(), cmd_hscan);
+
+        // HSCAN rejecting TYPE option -> SyntaxError
+        let bad_hscan_type =
+            b"*5\r\n$5\r\nHSCAN\r\n$6\r\nmyhash\r\n$1\r\n0\r\n$4\r\nTYPE\r\n$4\r\nhash\r\n";
+        assert_eq!(parse_command(bad_hscan_type), Err(RespError::SyntaxError));
     }
 }

@@ -26,9 +26,12 @@
 //! The table resizes when occupancy exceeds **87.5%** (7/8 slots) of capacity,
 //! matching the standard Swiss Table growth threshold.
 
+use std::collections::HashMap;
+
 use kachedb_core::SlabBlockId;
 
-use crate::entry::{HashEntry, TableEntry};
+use crate::entry::{HashEntry, INLINE_KEY_CAPACITY, TableEntry};
+use crate::glob::CompiledPattern;
 
 // ─── Control byte sentinels ───────────────────────────────────────────────────
 
@@ -149,6 +152,19 @@ impl<'a> Group<'a> {
 /// table.insert(hash, block_id, 256).unwrap();
 /// assert!(table.lookup(hash).is_some());
 /// ```
+/// Advances a shard-local home-bucket cursor `cursor` within a power-of-two `cap`.
+/// Handles cursors from a previously larger table (post-shrink) via Redis's
+/// high-bit mask preservation before bit-reversed increment.
+#[inline(always)]
+pub fn next_bit_reversed_cursor(mut cursor: usize, cap: usize) -> usize {
+    debug_assert!(cap >= 2 && cap.is_power_of_two());
+    let mask = cap - 1;
+    cursor |= !mask;
+    cursor = cursor.reverse_bits();
+    cursor = cursor.wrapping_add(1);
+    cursor.reverse_bits()
+}
+
 pub struct SwissTable {
     /// One control byte per slot.
     ctrl: Vec<u8>,
@@ -160,6 +176,8 @@ pub struct SwissTable {
     capacity: usize,
     /// Incremental cursor for idle-time tombstone compaction (Improvement 3).
     compact_cursor: usize,
+    /// Shard-local overflow storage for keys exceeding `INLINE_KEY_CAPACITY` (40 bytes).
+    overflow_keys: HashMap<u64, Box<[u8]>>,
 }
 
 impl SwissTable {
@@ -175,16 +193,25 @@ impl SwissTable {
             count: 0,
             capacity,
             compact_cursor: 0,
+            overflow_keys: HashMap::new(),
         }
     }
 
-    /// Inserts a mapping from `key_hash` → (`slab_block_id`, `value_len`).
-    ///
-    /// Returns `true` if the key was newly inserted, `false` if it was updated.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(())` if the table is completely full (only possible if the
+    #[inline(always)]
+    fn store_entry_key(
+        overflow_keys: &mut HashMap<u64, Box<[u8]>>,
+        entry: &mut HashEntry,
+        key_hash: u64,
+        key: &[u8],
+    ) {
+        entry.set_inline_key(key);
+        if key.len() > INLINE_KEY_CAPACITY {
+            overflow_keys.insert(key_hash, key.into());
+        } else {
+            overflow_keys.remove(&key_hash);
+        }
+    }
+
     /// Inserts a key-hash and slab descriptor, returning `Some(old_block_id)` if updated
     /// or `None` if newly inserted.
     #[inline]
@@ -195,6 +222,18 @@ impl SwissTable {
         value_len: u32,
     ) -> Result<Option<SlabBlockId>, ()> {
         self.insert_with_ttl(key_hash, slab_block_id, value_len, 0)
+    }
+
+    /// Inserts a key-hash, raw key bytes, and slab descriptor without TTL.
+    #[inline]
+    pub fn insert_with_key(
+        &mut self,
+        key_hash: u64,
+        key: &[u8],
+        slab_block_id: SlabBlockId,
+        value_len: u32,
+    ) -> Result<Option<SlabBlockId>, ()> {
+        self.insert_with_ttl_and_key(key_hash, key, slab_block_id, value_len, 0)
     }
 
     /// Inserts a key-hash and slab descriptor with an explicit expiration timestamp (in epoch seconds).
@@ -218,13 +257,54 @@ impl SwissTable {
         )
     }
 
+    /// Inserts a key-hash, raw key bytes, and slab descriptor with an explicit expiration timestamp.
+    #[inline]
+    pub fn insert_with_ttl_and_key(
+        &mut self,
+        key_hash: u64,
+        key: &[u8],
+        slab_block_id: SlabBlockId,
+        value_len: u32,
+        expire_at_secs: u32,
+    ) -> Result<Option<SlabBlockId>, ()> {
+        self.insert_typed_with_key(
+            key_hash,
+            key,
+            slab_block_id,
+            value_len,
+            expire_at_secs,
+            crate::entry::VALUE_TYPE_STRING,
+        )
+    }
+
     /// Inserts a key-hash, slab descriptor, expiration timestamp, and explicit value type.
     ///
     /// Single-pass probe: Returns `Ok(Some(old_block_id))` if updated in place,
     /// or `Ok(None)` if inserted as a new entry.
+    #[inline]
     pub fn insert_typed(
         &mut self,
         key_hash: u64,
+        slab_block_id: SlabBlockId,
+        value_len: u32,
+        expire_at_secs: u32,
+        value_type: u8,
+    ) -> Result<Option<SlabBlockId>, ()> {
+        self.insert_typed_with_key(
+            key_hash,
+            &[],
+            slab_block_id,
+            value_len,
+            expire_at_secs,
+            value_type,
+        )
+    }
+
+    /// Inserts a key-hash, raw key bytes, slab descriptor, expiration timestamp, and explicit value type.
+    pub fn insert_typed_with_key(
+        &mut self,
+        key_hash: u64,
+        key: &[u8],
         slab_block_id: SlabBlockId,
         value_len: u32,
         expire_at_secs: u32,
@@ -247,7 +327,9 @@ impl SwissTable {
                 if self.ctrl[idx] != CTRL_EMPTY && self.ctrl[idx] != CTRL_DELETED {
                     if self.entries[idx].matches(key_hash) {
                         let old_block_id = self.entries[idx].slab_block_id;
-                        // Update in place without heap allocation.
+                        let prev_key_len = self.entries[idx].key_len;
+                        let prev_inline_key = self.entries[idx].inline_key;
+                        // Update in place without heap allocation for short keys.
                         self.entries[idx] = HashEntry::with_type(
                             key_hash,
                             slab_block_id,
@@ -255,6 +337,18 @@ impl SwissTable {
                             expire_at_secs,
                             value_type,
                         );
+                        if !key.is_empty() {
+                            Self::store_entry_key(
+                                &mut self.overflow_keys,
+                                &mut self.entries[idx],
+                                key_hash,
+                                key,
+                            );
+                        } else if prev_key_len > 0 {
+                            // Preserve existing key name if caller used legacy hash-only update
+                            self.entries[idx].key_len = prev_key_len;
+                            self.entries[idx].inline_key = prev_inline_key;
+                        }
                         return Ok(Some(old_block_id)); // updated
                     }
                 }
@@ -271,12 +365,71 @@ impl SwissTable {
                     expire_at_secs,
                     value_type,
                 );
+                if !key.is_empty() {
+                    Self::store_entry_key(
+                        &mut self.overflow_keys,
+                        &mut self.entries[slot],
+                        key_hash,
+                        key,
+                    );
+                } else {
+                    self.overflow_keys.remove(&key_hash);
+                }
                 self.count += 1;
                 return Ok(None); // newly inserted
             }
 
             // Linear probing with group-size steps (SIMD open-addressing).
             pos = (pos + GROUP_SIZE) & mask;
+        }
+    }
+
+    /// Populates the key name on an existing entry if it was previously anonymous (`key_len == 0`).
+    pub fn ensure_key_name(&mut self, key_hash: u64, key: &[u8]) {
+        if key.is_empty() {
+            return;
+        }
+        let fingerprint = h2(key_hash);
+        let mask = self.capacity - 1;
+        let mut pos = ((key_hash >> 7) as usize) & mask;
+
+        loop {
+            let group = Group::new(&self.ctrl, pos, self.capacity);
+            for idx in group.match_byte(fingerprint) {
+                if self.ctrl[idx] != CTRL_EMPTY && self.ctrl[idx] != CTRL_DELETED {
+                    if self.entries[idx].matches(key_hash) {
+                        if self.entries[idx].key_len == 0 {
+                            Self::store_entry_key(
+                                &mut self.overflow_keys,
+                                &mut self.entries[idx],
+                                key_hash,
+                                key,
+                            );
+                        }
+                        return;
+                    }
+                }
+            }
+            if group.has_empty() {
+                return;
+            }
+            pos = (pos + GROUP_SIZE) & mask;
+        }
+    }
+
+    /// Returns the raw key bytes for `entry`, resolving from the inline SSO buffer
+    /// for keys `<= 40` bytes or from `overflow_keys` for keys `> 40` bytes.
+    #[inline(always)]
+    pub fn key_bytes<'a>(&'a self, entry: &'a HashEntry) -> &'a [u8] {
+        let len = entry.key_len as usize;
+        if len == 0 {
+            &[]
+        } else if len <= INLINE_KEY_CAPACITY {
+            &entry.inline_key[..len]
+        } else if let Some(full) = self.overflow_keys.get(&entry.key_hash) {
+            full.as_ref()
+        } else {
+            &entry.inline_key[..INLINE_KEY_CAPACITY]
         }
     }
 
@@ -435,6 +588,10 @@ impl SwissTable {
             for idx in matches {
                 if self.ctrl[idx] != CTRL_EMPTY && self.ctrl[idx] != CTRL_DELETED {
                     if self.entries[idx].matches(key_hash) {
+                        if (self.entries[idx].key_len as usize) > INLINE_KEY_CAPACITY {
+                            self.overflow_keys.remove(&key_hash);
+                        }
+                        self.entries[idx].key_len = 0;
                         self.ctrl[idx] = CTRL_DELETED;
                         self.count -= 1;
                         let snapshot = self.entries[idx].to_snapshot();
@@ -486,6 +643,10 @@ impl SwissTable {
                     if self.entries[idx].matches(key_hash)
                         && self.entries[idx].slab_block_id == expected_block_id
                     {
+                        if (self.entries[idx].key_len as usize) > INLINE_KEY_CAPACITY {
+                            self.overflow_keys.remove(&key_hash);
+                        }
+                        self.entries[idx].key_len = 0;
                         self.ctrl[idx] = CTRL_DELETED;
                         self.count -= 1;
                         let snapshot = self.entries[idx].to_snapshot();
@@ -542,6 +703,96 @@ impl SwissTable {
             }
         }
         res
+    }
+
+    /// Returns a vector containing all live `(key_hash, key_bytes, TableEntry)` tuples in the table.
+    pub fn live_entries_with_keys(&self) -> Vec<(u64, Vec<u8>, TableEntry)> {
+        let mut res = Vec::with_capacity(self.count);
+        for (idx, entry) in self.entries.iter().enumerate() {
+            if self.ctrl[idx] != CTRL_EMPTY && self.ctrl[idx] != CTRL_DELETED {
+                res.push((
+                    entry.key_hash,
+                    self.key_bytes(entry).to_vec(),
+                    entry.to_snapshot(),
+                ));
+            }
+        }
+        res
+    }
+
+    /// Returns the number of live entries with `key_len == 0` (legacy pre-V5 anonymous keys).
+    pub fn anonymous_key_count(&self) -> usize {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|&(idx, entry)| {
+                self.ctrl[idx] != CTRL_EMPTY && self.ctrl[idx] != CTRL_DELETED && entry.key_len == 0
+            })
+            .count()
+    }
+
+    /// Visits all live entries whose home bucket (`h1(key_hash, capacity)`) equals
+    /// `cursor & (capacity - 1)`, applying optional TTL, type, and glob pattern filters.
+    ///
+    /// Returns the number of matching keys emitted via `on_key`.
+    pub fn scan_home_bucket(
+        &self,
+        cursor: usize,
+        pattern: Option<&CompiledPattern<'_>>,
+        type_filter: Option<u8>,
+        now_secs: u32,
+        mut on_key: impl FnMut(&[u8]),
+    ) -> usize {
+        if self.count == 0 || self.capacity == 0 {
+            return 0;
+        }
+
+        let mask = self.capacity - 1;
+        let home_bucket = cursor & mask;
+        let mut pos = home_bucket;
+        let max_groups = (self.capacity / GROUP_SIZE).max(1);
+        let mut visited_groups = 0;
+        let mut emitted = 0;
+
+        loop {
+            for i in 0..GROUP_SIZE {
+                let idx = (pos + i) & mask;
+                let ctrl = self.ctrl[idx];
+                if ctrl != CTRL_EMPTY && ctrl != CTRL_DELETED {
+                    let entry = &self.entries[idx];
+                    if h1(entry.key_hash, self.capacity) == home_bucket {
+                        // Skip legacy anonymous keys (key_len == 0) and expired keys
+                        if entry.key_len == 0 {
+                            continue;
+                        }
+                        if now_secs != 0 && entry.is_expired(now_secs) {
+                            continue;
+                        }
+                        if let Some(expected_type) = type_filter {
+                            if entry.value_type != expected_type {
+                                continue;
+                            }
+                        }
+                        if let Some(pat) = pattern {
+                            if !pat.matches_entry(self, entry) {
+                                continue;
+                            }
+                        }
+                        on_key(self.key_bytes(entry));
+                        emitted += 1;
+                    }
+                }
+            }
+
+            let group = Group::new(&self.ctrl, pos, self.capacity);
+            visited_groups += 1;
+            if group.has_empty() || visited_groups >= max_groups {
+                break;
+            }
+            pos = (pos + GROUP_SIZE) & mask;
+        }
+
+        emitted
     }
 
     // ── Private ──────────────────────────────────────────────────────────────
@@ -632,6 +883,7 @@ impl SwissTable {
     /// Clears all entries from the table.
     pub fn clear(&mut self) {
         self.ctrl.fill(CTRL_EMPTY);
+        self.overflow_keys.clear();
         self.count = 0;
         self.compact_cursor = 0;
     }
@@ -911,5 +1163,143 @@ mod tests {
         assert_eq!(hash_key(b"k1"), 9344898337136588485);
         assert_eq!(hash_key(b"k1"), hash_key(b"k1"));
         assert_ne!(hash_key(b"k1"), hash_key(b"k2"));
+    }
+
+    #[test]
+    fn test_inline_sso_and_overflow_key_storage_all_lengths() {
+        let mut t = SwissTable::with_capacity(64);
+        let lengths = [0usize, 1, 39, 40, 41, 512];
+
+        for (i, &len) in lengths.iter().enumerate() {
+            let key: Vec<u8> = (0..len).map(|b| b'a' + (b % 26) as u8).collect();
+            let h = hash_key(&key);
+            t.insert_with_key(h, &key, make_id(i as u32 + 1), 64)
+                .unwrap();
+
+            let entry = t.lookup(h).expect("entry must exist");
+            assert_eq!(entry.key_len as usize, len);
+            assert_eq!(t.key_bytes(entry), key.as_slice());
+
+            if len > 40 {
+                // Verify 40B prefix is stored inline and full key is in overflow_keys
+                assert_eq!(&entry.inline_key[..], &key[..40]);
+                assert!(t.overflow_keys.contains_key(&h));
+            } else {
+                assert!(!t.overflow_keys.contains_key(&h));
+            }
+        }
+
+        // Anonymous key count should be 1 (the 0-byte key)
+        assert_eq!(t.anonymous_key_count(), 1);
+
+        // Upgrade the 0-byte anonymous key in-place using ensure_key_name
+        let h0 = hash_key(&[]);
+        t.ensure_key_name(h0, b"upgraded_key");
+        assert_eq!(t.anonymous_key_count(), 0);
+        let e0 = t.lookup(h0).unwrap();
+        assert_eq!(t.key_bytes(e0), b"upgraded_key");
+
+        // Overwrite a 512-byte overflow key with a 10-byte short key -> overflow entry removed
+        let key_512: Vec<u8> = (0..512).map(|b| b'a' + (b % 26) as u8).collect();
+        let h512 = hash_key(&key_512);
+        assert!(t.overflow_keys.contains_key(&h512));
+        t.insert_with_key(h512, b"short_key!", make_id(99), 64)
+            .unwrap();
+        assert!(!t.overflow_keys.contains_key(&h512));
+        assert_eq!(t.key_bytes(t.lookup(h512).unwrap()), b"short_key!");
+
+        // Remove the 41-byte overflow key -> overflow entry removed
+        let key_41: Vec<u8> = (0..41).map(|b| b'a' + (b % 26) as u8).collect();
+        let h41 = hash_key(&key_41);
+        assert!(t.overflow_keys.contains_key(&h41));
+        assert!(t.remove(h41).is_some());
+        assert!(!t.overflow_keys.contains_key(&h41));
+
+        // Clear removes everything
+        t.clear();
+        assert!(t.overflow_keys.is_empty());
+        assert_eq!(t.len(), 0);
+    }
+
+    #[test]
+    fn test_bit_reversed_cursor_full_cycle() {
+        let cap = 8;
+        let mut cur = 0;
+        let mut visited = Vec::new();
+        loop {
+            visited.push(cur);
+            cur = next_bit_reversed_cursor(cur, cap);
+            if cur == 0 {
+                break;
+            }
+        }
+        assert_eq!(visited, vec![0, 4, 2, 6, 1, 5, 3, 7]);
+    }
+
+    #[test]
+    fn test_home_bucket_scan_completeness_under_grow_shrink_and_compaction() {
+        use std::collections::HashSet;
+
+        // Start with capacity 1024 and populate 900 keys (triggers resize to 2048)
+        let mut t = SwissTable::with_capacity(1024);
+        let mut survivor_keys: HashSet<Vec<u8>> = HashSet::new();
+        let mut transient_keys: Vec<Vec<u8>> = Vec::new();
+
+        for i in 0..300 {
+            let k = format!("survivor:key:{i:04}").into_bytes();
+            let h = hash_key(&k);
+            t.insert_with_key(h, &k, make_id(i as u32), 64).unwrap();
+            survivor_keys.insert(k);
+        }
+        for i in 0..1600 {
+            let k = format!("transient:key:{i:04}").into_bytes();
+            let h = hash_key(&k);
+            t.insert_with_key(h, &k, make_id(1000 + i as u32), 64)
+                .unwrap();
+            transient_keys.push(k);
+        }
+        assert!(t.capacity() >= 2048);
+
+        let mut seen: HashSet<Vec<u8>> = HashSet::new();
+        let mut cursor = 0usize;
+        let mut step = 0usize;
+
+        loop {
+            t.scan_home_bucket(cursor, None, None, 0, |k| {
+                seen.insert(k.to_vec());
+            });
+            cursor = next_bit_reversed_cursor(cursor, t.capacity());
+            step += 1;
+
+            // Mid-scan mutations: delete transient keys to trigger shrink, and run compaction
+            if step == 50 {
+                for k in &transient_keys[..800] {
+                    t.remove(hash_key(k));
+                }
+                for _ in 0..32 {
+                    t.compact_one_group();
+                }
+            } else if step == 150 {
+                for k in &transient_keys[800..] {
+                    t.remove(hash_key(k));
+                }
+                for _ in 0..32 {
+                    t.compact_one_group();
+                }
+            }
+
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        // 100% of survivor keys that remained live throughout the scan MUST be visited!
+        for k in &survivor_keys {
+            assert!(
+                seen.contains(k),
+                "Missed survivor key {:?} during dynamic resize/shrink/compaction scan",
+                String::from_utf8_lossy(k)
+            );
+        }
     }
 }

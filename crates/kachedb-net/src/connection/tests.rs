@@ -1401,3 +1401,561 @@ fn execute_hash_primitives_flow() {
     assert_eq!(conn.write_buf, b":0\r\n");
     conn.write_buf.clear();
 }
+
+/// Helper to decode a 2-element SCAN/HSCAN RESP array `[*2, $len\r\n<cursor>, *count, ...]`
+fn decode_scan_reply(buf: &[u8]) -> (u64, Vec<Vec<u8>>) {
+    let (frame, consumed) = kachedb_proto_resp::parse_frame(buf)
+        .expect("valid RESP frame")
+        .expect("complete RESP frame");
+    assert_eq!(consumed, buf.len());
+    match frame {
+        kachedb_proto_resp::Frame::Array(outer) => {
+            assert_eq!(outer.len(), 2);
+            let cursor_bytes = match outer[0].as_ref() {
+                kachedb_proto_resp::Frame::BulkString(b) => *b,
+                other => panic!("expected cursor BulkString, got {other:?}"),
+            };
+            let next_cursor: u64 = std::str::from_utf8(cursor_bytes)
+                .unwrap()
+                .parse()
+                .expect("valid u64 cursor");
+            let items = match outer[1].as_ref() {
+                kachedb_proto_resp::Frame::Array(arr) => arr
+                    .iter()
+                    .map(|elem| match elem.as_ref() {
+                        kachedb_proto_resp::Frame::BulkString(b) => b.to_vec(),
+                        other => panic!("expected item BulkString, got {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("expected items Array, got {other:?}"),
+            };
+            (next_cursor, items)
+        }
+        other => panic!("expected 2-element outer Array, got {other:?}"),
+    }
+}
+
+#[test]
+fn execute_scan_empty_and_full_cycle_with_filters() {
+    use smallvec::smallvec;
+    use std::collections::HashSet;
+
+    let mut conn = Connection::new();
+    let table = ShardedSwissTable::new();
+    let mut pool = SlabPool::new(0, 32 * 1024 * 1024).unwrap();
+
+    // 1. Empty DB SCAN 0 -> ["0", []]
+    Connection::execute_command_full(
+        Command::Scan {
+            cursor: 0,
+            pattern: None,
+            count: None,
+            type_filter: None,
+        },
+        &mut conn.write_buf,
+        &table,
+        &mut pool,
+        100,
+        &DEFAULT_VECTORS,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(conn.write_buf, b"*2\r\n$1\r\n0\r\n*0\r\n");
+    conn.write_buf.clear();
+
+    // 2. Populate 500 string keys (including >40B overflow keys) + 50 hash keys + 10 expired keys
+    let mut expected_all = HashSet::new();
+    let mut expected_strings = HashSet::new();
+    let mut expected_hashes = HashSet::new();
+    let mut expected_long = HashSet::new();
+
+    for i in 0..450 {
+        let k = format!("user:short:{i:04}").into_bytes();
+        Connection::execute_command_full(
+            Command::Set {
+                key: &k,
+                value: b"val",
+                ttl_ms: None,
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            100,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        conn.write_buf.clear();
+        expected_all.insert(k.clone());
+        expected_strings.insert(k);
+    }
+
+    for i in 0..50 {
+        // 68-byte key (> 40B inline SSO limit)
+        let k = format!("tenant:organization:department:long_overflow_key_identifier:{i:04}")
+            .into_bytes();
+        assert!(k.len() > 40);
+        Connection::execute_command_full(
+            Command::Set {
+                key: &k,
+                value: b"long_val",
+                ttl_ms: None,
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            100,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        conn.write_buf.clear();
+        expected_all.insert(k.clone());
+        expected_strings.insert(k.clone());
+        expected_long.insert(k);
+    }
+
+    for i in 0..50 {
+        let k = format!("profile:hash:{i:04}").into_bytes();
+        Connection::execute_command_full(
+            Command::HSet {
+                key: &k,
+                pairs: smallvec![(b"f1" as &[u8], b"v1" as &[u8])],
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            100,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        conn.write_buf.clear();
+        expected_all.insert(k.clone());
+        expected_hashes.insert(k);
+    }
+
+    // Expired keys inserted at now_sec = 50 with TTL 10s (expires at 60 <= 100)
+    for i in 0..10 {
+        let k = format!("expired:key:{i:04}").into_bytes();
+        Connection::execute_command_full(
+            Command::Set {
+                key: &k,
+                value: b"old",
+                ttl_ms: Some(10_000),
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            50,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        conn.write_buf.clear();
+    }
+
+    // 3. Full SCAN cycle at now_sec = 100 with COUNT 25
+    let mut cursor = 0u64;
+    let mut seen_all = HashSet::new();
+    loop {
+        Connection::execute_command_full(
+            Command::Scan {
+                cursor,
+                pattern: None,
+                count: Some(25),
+                type_filter: None,
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            100,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        let (next, batch) = decode_scan_reply(&conn.write_buf);
+        conn.write_buf.clear();
+        for k in batch {
+            seen_all.insert(k);
+        }
+        cursor = next;
+        if cursor == 0 {
+            break;
+        }
+    }
+    assert_eq!(seen_all, expected_all);
+
+    // 4. SCAN with MATCH "tenant:*:00[0-4]?" (matches all 50 long overflow keys)
+    let mut cursor = 0u64;
+    let mut seen_long = HashSet::new();
+    loop {
+        Connection::execute_command_full(
+            Command::Scan {
+                cursor,
+                pattern: Some(b"tenant:*:00[0-4]?"),
+                count: Some(50),
+                type_filter: None,
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            100,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        let (next, batch) = decode_scan_reply(&conn.write_buf);
+        conn.write_buf.clear();
+        for k in batch {
+            seen_long.insert(k);
+        }
+        cursor = next;
+        if cursor == 0 {
+            break;
+        }
+    }
+    assert_eq!(seen_long, expected_long);
+
+    // 5. SCAN with TYPE hash
+    let mut cursor = 0u64;
+    let mut seen_hashes = HashSet::new();
+    loop {
+        Connection::execute_command_full(
+            Command::Scan {
+                cursor,
+                pattern: None,
+                count: Some(50),
+                type_filter: Some(b"hash"),
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            100,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        let (next, batch) = decode_scan_reply(&conn.write_buf);
+        conn.write_buf.clear();
+        for k in batch {
+            seen_hashes.insert(k);
+        }
+        cursor = next;
+        if cursor == 0 {
+            break;
+        }
+    }
+    assert_eq!(seen_hashes, expected_hashes);
+
+    // 6. SCAN with TYPE string
+    let mut cursor = 0u64;
+    let mut seen_strings = HashSet::new();
+    loop {
+        Connection::execute_command_full(
+            Command::Scan {
+                cursor,
+                pattern: None,
+                count: Some(100),
+                type_filter: Some(b"STRING"),
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            100,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        let (next, batch) = decode_scan_reply(&conn.write_buf);
+        conn.write_buf.clear();
+        for k in batch {
+            seen_strings.insert(k);
+        }
+        cursor = next;
+        if cursor == 0 {
+            break;
+        }
+    }
+    assert_eq!(seen_strings, expected_strings);
+
+    // 7. SCAN with unknown TYPE (e.g. zset) -> empty across full cycle
+    let mut cursor = 0u64;
+    let mut seen_zset = Vec::new();
+    loop {
+        Connection::execute_command_full(
+            Command::Scan {
+                cursor,
+                pattern: None,
+                count: Some(500),
+                type_filter: Some(b"zset"),
+            },
+            &mut conn.write_buf,
+            &table,
+            &mut pool,
+            100,
+            &DEFAULT_VECTORS,
+            None,
+            None,
+        )
+        .unwrap();
+        let (next, batch) = decode_scan_reply(&conn.write_buf);
+        conn.write_buf.clear();
+        seen_zset.extend(batch);
+        cursor = next;
+        if cursor == 0 {
+            break;
+        }
+    }
+    assert!(seen_zset.is_empty());
+}
+
+#[test]
+fn execute_hscan_and_anonymous_key_upgrade_flow() {
+    use smallvec::smallvec;
+
+    let mut conn = Connection::new();
+    let table = ShardedSwissTable::new();
+    let mut pool = SlabPool::new(0, 16 * 1024 * 1024).unwrap();
+
+    // 1. HSCAN on missing key -> ["0", []]
+    Connection::execute_command_full(
+        Command::HScan {
+            key: b"missing_hash",
+            cursor: 0,
+            pattern: None,
+            count: None,
+        },
+        &mut conn.write_buf,
+        &table,
+        &mut pool,
+        100,
+        &DEFAULT_VECTORS,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(conn.write_buf, b"*2\r\n$1\r\n0\r\n*0\r\n");
+    conn.write_buf.clear();
+
+    // 2. Populate hash and string
+    Connection::execute_command_full(
+        Command::HSet {
+            key: b"user:100",
+            pairs: smallvec![
+                (b"name" as &[u8], b"alice" as &[u8]),
+                (b"email" as &[u8], b"alice@example.com" as &[u8]),
+                (b"meta:role" as &[u8], b"admin" as &[u8]),
+                (b"meta:team" as &[u8], b"core" as &[u8]),
+            ],
+        },
+        &mut conn.write_buf,
+        &table,
+        &mut pool,
+        100,
+        &DEFAULT_VECTORS,
+        None,
+        None,
+    )
+    .unwrap();
+    conn.write_buf.clear();
+
+    Connection::execute_command_full(
+        Command::Set {
+            key: b"plain_str",
+            value: b"hello",
+            ttl_ms: None,
+        },
+        &mut conn.write_buf,
+        &table,
+        &mut pool,
+        100,
+        &DEFAULT_VECTORS,
+        None,
+        None,
+    )
+    .unwrap();
+    conn.write_buf.clear();
+
+    // 3. HSCAN on string key -> WRONGTYPE
+    Connection::execute_command_full(
+        Command::HScan {
+            key: b"plain_str",
+            cursor: 0,
+            pattern: None,
+            count: None,
+        },
+        &mut conn.write_buf,
+        &table,
+        &mut pool,
+        100,
+        &DEFAULT_VECTORS,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(conn.write_buf.starts_with(b"-WRONGTYPE"));
+    conn.write_buf.clear();
+
+    // 4. HSCAN user:100 0 (all 4 fields = 8 bulk strings)
+    Connection::execute_command_full(
+        Command::HScan {
+            key: b"user:100",
+            cursor: 0,
+            pattern: None,
+            count: None,
+        },
+        &mut conn.write_buf,
+        &table,
+        &mut pool,
+        100,
+        &DEFAULT_VECTORS,
+        None,
+        None,
+    )
+    .unwrap();
+    let (next_cur, items) = decode_scan_reply(&conn.write_buf);
+    conn.write_buf.clear();
+    assert_eq!(next_cur, 0);
+    assert_eq!(items.len(), 8);
+
+    // 5. HSCAN user:100 0 MATCH meta:* -> 2 fields (4 bulk strings)
+    Connection::execute_command_full(
+        Command::HScan {
+            key: b"user:100",
+            cursor: 0,
+            pattern: Some(b"meta:*"),
+            count: Some(10),
+        },
+        &mut conn.write_buf,
+        &table,
+        &mut pool,
+        100,
+        &DEFAULT_VECTORS,
+        None,
+        None,
+    )
+    .unwrap();
+    let (next_cur, filtered_items) = decode_scan_reply(&conn.write_buf);
+    conn.write_buf.clear();
+    assert_eq!(next_cur, 0);
+    assert_eq!(filtered_items.len(), 4);
+    assert!(filtered_items.contains(&b"meta:role".to_vec()));
+    assert!(filtered_items.contains(&b"admin".to_vec()));
+    assert!(filtered_items.contains(&b"meta:team".to_vec()));
+    assert!(filtered_items.contains(&b"core".to_vec()));
+
+    // 6. Simulate pre-V5 anonymous key (`key_len == 0`) via `table.insert`
+    let anon_key = b"legacy:v4:key";
+    let anon_hash = kachedb_hash::hash_key(anon_key);
+    let block_id = pool
+        .allocate(kachedb_core::SlabClassType::AppSmall)
+        .unwrap();
+    table.insert(anon_hash, block_id, 5);
+    assert_eq!(table.anonymous_key_count(), 1);
+
+    // INFO reports anonymous_keys:1
+    Connection::execute_command_full(
+        Command::Info { section: None },
+        &mut conn.write_buf,
+        &table,
+        &mut pool,
+        100,
+        &DEFAULT_VECTORS,
+        None,
+        None,
+    )
+    .unwrap();
+    let info_str = String::from_utf8_lossy(&conn.write_buf);
+    assert!(info_str.contains("anonymous_keys:1"));
+    conn.write_buf.clear();
+
+    // Upgrading via SET populates key name and drops anonymous_key_count to 0
+    Connection::execute_command_full(
+        Command::Set {
+            key: anon_key,
+            value: b"upgraded",
+            ttl_ms: None,
+        },
+        &mut conn.write_buf,
+        &table,
+        &mut pool,
+        100,
+        &DEFAULT_VECTORS,
+        None,
+        None,
+    )
+    .unwrap();
+    conn.write_buf.clear();
+    assert_eq!(table.anonymous_key_count(), 0);
+
+    // 7. Simulate pre-V5 anonymous key upgraded lazily via EXPIRE and PERSIST
+    let anon_exp_key = b"legacy:v4:expire_upgrade";
+    let anon_exp_hash = kachedb_hash::hash_key(anon_exp_key);
+    let exp_block = pool
+        .allocate(kachedb_core::SlabClassType::AppSmall)
+        .unwrap();
+    table.insert(anon_exp_hash, exp_block, 5);
+    assert_eq!(table.anonymous_key_count(), 1);
+
+    Connection::execute_command_full(
+        Command::Expire {
+            key: anon_exp_key,
+            seconds: 60,
+        },
+        &mut conn.write_buf,
+        &table,
+        &mut pool,
+        100,
+        &DEFAULT_VECTORS,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(conn.write_buf, b":1\r\n");
+    conn.write_buf.clear();
+    assert_eq!(table.anonymous_key_count(), 0);
+}
+
+#[test]
+fn process_incoming_command_errors_keep_socket_alive() {
+    use std::io::Cursor;
+
+    let mut conn = Connection::new();
+    let table = ShardedSwissTable::new();
+    let mut pool = SlabPool::new(0, 8 * 1024 * 1024).unwrap();
+
+    // Pipeline:
+    // 1. SCAN notanint -> -ERR Invalid cursor\r\n
+    // 2. SCAN 0 COUNT 0 -> -ERR syntax error\r\n
+    // 3. GET (missing arg) -> -ERR wrong number of arguments for 'GET' command\r\n
+    // 4. PING -> +PONG\r\n
+    let payload = concat!(
+        "*2\r\n$4\r\nSCAN\r\n$8\r\nnotanint\r\n",
+        "*4\r\n$4\r\nSCAN\r\n$1\r\n0\r\n$5\r\nCOUNT\r\n$1\r\n0\r\n",
+        "*1\r\n$3\r\nGET\r\n",
+        "*1\r\n$4\r\nPING\r\n"
+    );
+
+    let mut stream = Cursor::new(payload.as_bytes());
+    conn.read_from(&mut stream).unwrap();
+    let keep_alive = conn.process_incoming(&table, &mut pool).unwrap();
+    assert!(keep_alive);
+
+    let expected = concat!(
+        "-ERR Invalid cursor\r\n",
+        "-ERR syntax error\r\n",
+        "-ERR wrong number of arguments for 'GET' command\r\n",
+        "+PONG\r\n"
+    );
+    assert_eq!(std::str::from_utf8(&conn.write_buf).unwrap(), expected);
+}

@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod expiry;
 pub mod hashes;
+pub mod scan;
 pub mod strings;
 pub mod vectors;
 
@@ -14,7 +15,7 @@ use std::sync::{Arc, LazyLock, RwLock};
 
 use kachedb_core::{HashedTimingWheel, SlabPool};
 use kachedb_hash::ShardedSwissTable;
-use kachedb_proto_resp::{Command, encode_error, encode_simple_string, parse_command};
+use kachedb_proto_resp::{Command, encode_error, encode_simple_string, parse_command_frame};
 use kachedb_vector::VectorIndexRegistry;
 
 use crate::error::NetError;
@@ -178,8 +179,8 @@ impl Connection {
                 break;
             }
 
-            match parse_command(slice)? {
-                Some((cmd, consumed)) => {
+            match parse_command_frame(slice)? {
+                Some((Ok(cmd), consumed)) => {
                     self.read_pos += consumed;
                     let keep_alive = Self::execute_command_full(
                         cmd,
@@ -194,6 +195,11 @@ impl Connection {
                     if !keep_alive {
                         return Ok(false);
                     }
+                }
+                Some((Err(cmd_err), consumed)) => {
+                    self.read_pos += consumed;
+                    let msg = cmd_err.to_resp_error_msg();
+                    encode_error(&mut self.write_buf, &msg);
                 }
                 None => break, // incomplete frame, wait for more data
             }
@@ -358,9 +364,13 @@ impl Connection {
             | Command::HDel { .. }
             | Command::HExists { .. }
             | Command::HLen { .. }
-            | Command::HGetAll { .. } => {
+            | Command::HGetAll { .. }
+            | Command::HScan { .. } => {
                 hashes::handle_hashes(cmd, write_buf, table, pool, now_sec, timing_wheel)
             }
+
+            // Keyspace cursor scanning
+            Command::Scan { .. } => scan::handle_scan(cmd, write_buf, table, now_sec),
 
             // Vector index and similarity search commands
             Command::VAdd { .. }

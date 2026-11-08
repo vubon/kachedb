@@ -27,7 +27,7 @@ pub fn run_repl(addr: &str) {
     };
 
     println!(
-        "⚡ Connected to KacheDB. Type commands (e.g. SET, GET, HSET, HGET, EXPIRE, MSET, INCR, INFO, VADD, VSEARCH) or 'help' / 'quit'.\n"
+        "⚡ Connected to KacheDB. Type commands (e.g. SET, GET, SCAN, HSET, HGET, HSCAN, EXPIRE, MSET, INCR, INFO, VADD, VSEARCH) or 'help' / 'quit'.\n"
     );
 
     let stdin = std::io::stdin();
@@ -200,6 +200,7 @@ Available Commands in KacheDB:
   • Key-Value:
       SET <key> <val> [EX <sec>]  - Set key to value with optional TTL in seconds
       GET <key>                   - Retrieve value of key
+      SCAN <cur> [MATCH p] [COUNT n] [TYPE t] - Incrementally iterate keyspace
       MSET <k1> <v1> [<k2> <v2>]  - Set multiple keys simultaneously
       MGET <k1> [<k2> ...]        - Retrieve multiple keys simultaneously
       DEL <key> [<key> ...]       - Delete key(s)
@@ -212,6 +213,7 @@ Available Commands in KacheDB:
   • Redis Hashes:
       HSET <key> <f> <v> [<f> <v>] - Set field-value pair(s) in hash
       HGET <key> <field>          - Retrieve value of hash field
+      HSCAN <key> <cur> [MATCH p] [COUNT n] - Incrementally iterate hash fields
       HDEL <key> <f> [<f> ...]    - Delete field(s) from hash
       HEXISTS <key> <field>       - Check if field exists in hash
       HLEN <key>                  - Return number of fields in hash
@@ -336,6 +338,20 @@ mod tests {
         assert_eq!(
             tokens,
             vec!["VINDEX", "CREATE", "doc_index", "128", "COSINE"]
+        );
+
+        let scan_tokens = tokenize_command("SCAN 0 MATCH \"user:*\" COUNT 50 TYPE string");
+        assert_eq!(
+            scan_tokens,
+            vec![
+                "SCAN", "0", "MATCH", "user:*", "COUNT", "50", "TYPE", "string"
+            ]
+        );
+
+        let hscan_tokens = tokenize_command("HSCAN user:1 0 MATCH \"meta:*\" COUNT 10");
+        assert_eq!(
+            hscan_tokens,
+            vec!["HSCAN", "user:1", "0", "MATCH", "meta:*", "COUNT", "10"]
         );
     }
 }

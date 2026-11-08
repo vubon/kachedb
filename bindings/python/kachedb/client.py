@@ -5,11 +5,12 @@ KacheDB Zero-Copy Python Client for Redis RESP queries and POSIX Shared Memory T
 import mmap
 import os
 import socket
-from typing import Optional, Union
+from collections.abc import Iterator
 
 import numpy as np
 
 from .descriptor import TENSOR_DESCRIPTOR_MAGIC, TensorBlockDescriptor, TensorDType
+
 
 class KacheClient:
     """
@@ -22,7 +23,7 @@ class KacheClient:
     def __init__(self, host: str = "127.0.0.1", port: int = 6379):
         self.host = host
         self.port = port
-        self.sock: Optional[socket.socket] = None
+        self.sock: socket.socket | None = None
         self.shm_mappings: dict[int, mmap.mmap] = {}
 
     def connect(self) -> "KacheClient":
@@ -59,13 +60,13 @@ class KacheClient:
         self._send_command(["PING"])
         return self._read_response()
 
-    def get(self, key: Union[str, bytes]) -> Optional[bytes]:
+    def get(self, key: str | bytes) -> bytes | None:
         """Gets value for key via TCP RESP protocol."""
         self._send_command(["GET", key])
         res = self._read_response()
         return res if isinstance(res, bytes) else None
 
-    def set(self, key: Union[str, bytes], value: Union[str, bytes], ex: Optional[int] = None) -> bool:
+    def set(self, key: str | bytes, value: str | bytes, ex: int | None = None) -> bool:
         """Sets key-value pair in KacheDB."""
         args = ["SET", key, value]
         if ex:
@@ -74,7 +75,7 @@ class KacheClient:
         res = self._read_response()
         return res == "OK"
 
-    def delete(self, key: Union[str, bytes]) -> int:
+    def delete(self, key: str | bytes) -> int:
         """Deletes key from KacheDB."""
         self._send_command(["DEL", key])
         res = self._read_response()
@@ -84,10 +85,10 @@ class KacheClient:
 
     def hset(
         self,
-        key: Union[str, bytes],
-        field: Optional[Union[str, bytes]] = None,
-        value: Optional[Union[str, bytes]] = None,
-        mapping: Optional[dict[Union[str, bytes], Union[str, bytes]]] = None,
+        key: str | bytes,
+        field: str | bytes | None = None,
+        value: str | bytes | None = None,
+        mapping: dict[str | bytes, str | bytes] | None = None,
     ) -> int:
         """
         Sets field(s) in a hash stored at key.
@@ -95,7 +96,7 @@ class KacheClient:
             client.hset("myhash", "field1", "val1")
             client.hset("myhash", mapping={"field1": "val1", "field2": "val2"})
         """
-        args: list[Union[str, bytes]] = ["HSET", key]
+        args: list[str | bytes] = ["HSET", key]
         if mapping:
             for k, v in mapping.items():
                 args.extend([k, v])
@@ -108,35 +109,35 @@ class KacheClient:
         res = self._read_response()
         return int(res) if isinstance(res, (int, str)) and str(res).isdigit() else 0
 
-    def hget(self, key: Union[str, bytes], field: Union[str, bytes]) -> Optional[bytes]:
+    def hget(self, key: str | bytes, field: str | bytes) -> bytes | None:
         """Gets value of a hash field. Returns None if field or key does not exist."""
         self._send_command(["HGET", key, field])
         res = self._read_response()
         return res if isinstance(res, bytes) else None
 
-    def hdel(self, key: Union[str, bytes], *fields: Union[str, bytes]) -> int:
+    def hdel(self, key: str | bytes, *fields: str | bytes) -> int:
         """Deletes one or more fields from a hash. Returns the number of fields removed."""
         if not fields:
             raise ValueError("At least one field must be specified")
-        args: list[Union[str, bytes]] = ["HDEL", key]
+        args: list[str | bytes] = ["HDEL", key]
         args.extend(fields)
         self._send_command(args)
         res = self._read_response()
         return int(res) if isinstance(res, (int, str)) and str(res).isdigit() else 0
 
-    def hexists(self, key: Union[str, bytes], field: Union[str, bytes]) -> bool:
+    def hexists(self, key: str | bytes, field: str | bytes) -> bool:
         """Returns True if the hash field exists, False otherwise."""
         self._send_command(["HEXISTS", key, field])
         res = self._read_response()
         return res == 1 or res == "1"
 
-    def hlen(self, key: Union[str, bytes]) -> int:
+    def hlen(self, key: str | bytes) -> int:
         """Returns the number of fields contained in the hash."""
         self._send_command(["HLEN", key])
         res = self._read_response()
         return int(res) if isinstance(res, (int, str)) and str(res).isdigit() else 0
 
-    def hgetall(self, key: Union[str, bytes]) -> dict[bytes, bytes]:
+    def hgetall(self, key: str | bytes) -> dict[bytes, bytes]:
         """
         Returns all fields and values of the hash stored at key as a dictionary of bytes.
         """
@@ -151,6 +152,104 @@ class KacheClient:
                 v = res[i + 1] if isinstance(res[i + 1], bytes) else str(res[i + 1]).encode("utf-8")
                 result[f] = v
         return result
+
+    # ── Keyspace & Hash Scanning ──────────────────────────────────────────────
+
+    def scan(
+        self,
+        cursor: int = 0,
+        match: str | bytes | None = None,
+        count: int | None = None,
+        type: str | bytes | None = None,
+    ) -> tuple[int, list[bytes]]:
+        """
+        Incrementally iterates over keys in the database.
+        Returns a tuple of (next_cursor, list_of_keys).
+        """
+        args: list[str | bytes] = ["SCAN", str(cursor)]
+        if match is not None:
+            args.extend(["MATCH", match])
+        if count is not None:
+            args.extend(["COUNT", str(count)])
+        if type is not None:
+            args.extend(["TYPE", type])
+
+        self._send_command(args)
+        res = self._read_response()
+        if not isinstance(res, list) or len(res) < 2:
+            return 0, []
+
+        next_cursor = int(res[0])
+        raw_keys = res[1] if isinstance(res[1], list) else []
+        keys = [
+            k if isinstance(k, bytes) else str(k).encode("utf-8")
+            for k in raw_keys
+        ]
+        return next_cursor, keys
+
+    def scan_iter(
+        self,
+        match: str | bytes | None = None,
+        count: int | None = None,
+        type: str | bytes | None = None,
+    ) -> Iterator[bytes]:
+        """
+        Convenience generator yielding keys matching the pattern until the cursor completes.
+        """
+        cursor = 0
+        while True:
+            cursor, keys = self.scan(cursor=cursor, match=match, count=count, type=type)
+            yield from keys
+            if cursor == 0:
+                break
+
+    def hscan(
+        self,
+        key: str | bytes,
+        cursor: int = 0,
+        match: str | bytes | None = None,
+        count: int | None = None,
+    ) -> tuple[int, dict[bytes, bytes]]:
+        """
+        Incrementally iterates fields and values of a hash stored at key.
+        Returns a tuple of (next_cursor, dict_of_field_values).
+        """
+        args: list[str | bytes] = ["HSCAN", key, str(cursor)]
+        if match is not None:
+            args.extend(["MATCH", match])
+        if count is not None:
+            args.extend(["COUNT", str(count)])
+
+        self._send_command(args)
+        res = self._read_response()
+        if not isinstance(res, list) or len(res) < 2:
+            return 0, {}
+
+        next_cursor = int(res[0])
+        raw_items = res[1] if isinstance(res[1], list) else []
+        items: dict[bytes, bytes] = {}
+        for i in range(0, len(raw_items), 2):
+            if i + 1 < len(raw_items):
+                f = raw_items[i] if isinstance(raw_items[i], bytes) else str(raw_items[i]).encode("utf-8")
+                v = raw_items[i + 1] if isinstance(raw_items[i + 1], bytes) else str(raw_items[i + 1]).encode("utf-8")
+                items[f] = v
+        return next_cursor, items
+
+    def hscan_iter(
+        self,
+        key: str | bytes,
+        match: str | bytes | None = None,
+        count: int | None = None,
+    ) -> Iterator[tuple[bytes, bytes]]:
+        """
+        Convenience generator yielding (field, value) pairs until the hash scan completes.
+        """
+        cursor = 0
+        while True:
+            cursor, items = self.hscan(key, cursor=cursor, match=match, count=count)
+            yield from items.items()
+            if cursor == 0:
+                break
 
     # ── Zero-Copy Shared Memory KV-Cache Extraction ───────────────────────────
 
@@ -207,7 +306,7 @@ class KacheClient:
 
     # ── Internal RESP Wire Parsing Helpers ────────────────────────────────────
 
-    def _send_command(self, args: list[Union[str, bytes]]):
+    def _send_command(self, args: list[str | bytes]):
         if not self.sock:
             raise ConnectionError("Not connected to KacheDB")
 
@@ -224,7 +323,7 @@ class KacheClient:
 
         self.sock.sendall(buf)
 
-    def _read_response(self) -> Union[str, bytes, int, None]:
+    def _read_response(self) -> str | bytes | int | None:
         if not self.sock:
             raise ConnectionError("Not connected to KacheDB")
 

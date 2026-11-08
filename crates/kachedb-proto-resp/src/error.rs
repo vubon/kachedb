@@ -28,4 +28,28 @@ pub enum RespError {
     /// Command syntax is invalid (wrong number of arguments).
     #[error("wrong number of arguments for '{command}' command")]
     WrongArgumentCount { command: String },
+
+    /// Cursor argument is not a valid 64-bit unsigned integer.
+    #[error("ERR Invalid cursor")]
+    InvalidCursor,
+
+    /// Generic Redis syntax error (e.g. unknown option, trailing option flag, or COUNT <= 0).
+    #[error("ERR syntax error")]
+    SyntaxError,
+
+    /// Glob pattern exceeds the 256-byte limit.
+    #[error("ERR pattern exceeds maximum length of 256 bytes")]
+    PatternTooLong,
+}
+
+impl RespError {
+    /// Formats a command-level error as a Redis error payload (without leading `-` or trailing `\r\n`).
+    pub fn to_resp_error_msg(&self) -> String {
+        let s = self.to_string();
+        if s.starts_with("ERR ") || s.starts_with("WRONGTYPE ") {
+            s
+        } else {
+            format!("ERR {s}")
+        }
+    }
 }

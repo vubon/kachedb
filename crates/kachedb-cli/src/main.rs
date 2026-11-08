@@ -144,7 +144,7 @@ pub fn print_help() {
       kachedb-cli snapshot-info <FILE.kdb>
 
   COMMANDS:
-      snapshot-info <FILE>   Inspect header, cipher suite, encryption status, and CRC32 of snapshot (v2, v3, v4)
+      snapshot-info <FILE>   Inspect header, cipher suite, encryption status, and CRC32 of snapshot (v2, v3, v4, v5)
       <COMMAND> [ARGS...]    Execute a single command (e.g. ping, get key, set key val) and exit
 
   OPTIONS:

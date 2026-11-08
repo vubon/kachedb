@@ -134,6 +134,7 @@ pub fn handle_admin(
                  \r\n\
                  # Keyspace\r\n\
                  db0:keys={total_keys},expires=0,avg_ttl=0\r\n\
+                 anonymous_keys:{anon_keys}\r\n\
                  \r\n                 \r\n\
                   # VectorEngine\r\n\
                   active_indices:{vec_indices}\r\n\
@@ -148,6 +149,7 @@ pub fn handle_admin(
                 megaslabs = pool.arena_count(),
                 active_slots = table.len(),
                 total_keys = table.len(),
+                anon_keys = table.anonymous_key_count(),
                 vec_indices = vectors.overall_stats(now_sec).0,
                 vec_total = vectors.overall_stats(now_sec).1,
                 vec_mem = vectors.overall_stats(now_sec).2,

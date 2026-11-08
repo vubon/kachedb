@@ -90,7 +90,8 @@ pub fn execute_incr_by(
                 std::ptr::copy_nonoverlapping(val_bytes.as_ptr(), slot_ptr, val_len);
             }
 
-            let old_block_id = table.insert_with_ttl(h, block_id, val_len as u32, expire_at_secs);
+            let old_block_id =
+                table.insert_with_ttl_and_key(h, key, block_id, val_len as u32, expire_at_secs);
             if let Some(old_id) = old_block_id {
                 let _ = pool.deallocate(old_id);
             }
@@ -174,9 +175,14 @@ pub fn handle_strings(
                         std::ptr::copy_nonoverlapping(value.as_ptr(), slot_ptr, val_len);
                     }
 
-                    // Insert atomically into the global sharded index (zero heap allocations)
-                    let old_block_id =
-                        table.insert_with_ttl(h, block_id, val_len as u32, expire_at_secs);
+                    // Insert atomically into the global sharded index
+                    let old_block_id = table.insert_with_ttl_and_key(
+                        h,
+                        key,
+                        block_id,
+                        val_len as u32,
+                        expire_at_secs,
+                    );
 
                     // Deallocate old slab slot if this was an update
                     if let Some(old_id) = old_block_id {
@@ -249,7 +255,8 @@ pub fn handle_strings(
                             std::ptr::copy_nonoverlapping(value.as_ptr(), slot_ptr, val_len);
                         }
 
-                        let old_block_id = table.insert_with_ttl(h, block_id, val_len as u32, 0);
+                        let old_block_id =
+                            table.insert_with_ttl_and_key(h, key, block_id, val_len as u32, 0);
                         if let Some(old_id) = old_block_id {
                             let _ = pool.deallocate(old_id);
                         }
@@ -351,8 +358,13 @@ pub fn handle_strings(
                         std::ptr::copy_nonoverlapping(combined_val.as_ptr(), slot_ptr, new_len);
                     }
 
-                    let old_block_id =
-                        table.insert_with_ttl(h, block_id, new_len as u32, expire_at_secs);
+                    let old_block_id = table.insert_with_ttl_and_key(
+                        h,
+                        key,
+                        block_id,
+                        new_len as u32,
+                        expire_at_secs,
+                    );
                     if let Some(old_id) = old_block_id {
                         let _ = pool.deallocate(old_id);
                     }

@@ -1,7 +1,9 @@
-//! Redis Hash command execution handlers (`HSET`, `HGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`).
+//! Redis Hash command execution handlers (`HSET`, `HGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`, `HSCAN`).
 
 use kachedb_core::{HashedTimingWheel, SlabClassType, SlabPool, resolve_slot_ptr};
-use kachedb_hash::{HashSlotFrame, ShardedSwissTable, VALUE_TYPE_HASH, hash_key};
+use kachedb_hash::{
+    CompiledPattern, HashSlotFrame, MAX_PATTERN_LEN, ShardedSwissTable, VALUE_TYPE_HASH, hash_key,
+};
 use kachedb_proto_resp::{
     Command, encode_array_header, encode_bulk_string, encode_error, encode_integer, encode_null,
 };
@@ -110,6 +112,7 @@ pub fn handle_hashes(
                     }
 
                     if in_place_success {
+                        shard.ensure_key_name(h, key);
                         return Ok(());
                     }
 
@@ -164,8 +167,9 @@ pub fn handle_hashes(
 
                     let old_expire = entry.expire_at_secs;
                     let old_block_id = entry.slab_block_id;
-                    match shard.insert_typed(
+                    match shard.insert_typed_with_key(
                         h,
+                        key,
                         new_block_id,
                         target_class.slot_bytes() as u32,
                         old_expire,
@@ -223,8 +227,9 @@ pub fn handle_hashes(
                         }
                     }
 
-                    match shard.insert_typed(
+                    match shard.insert_typed_with_key(
                         h,
+                        key,
                         block_id,
                         target_class.slot_bytes() as u32,
                         0,
@@ -408,6 +413,65 @@ pub fn handle_hashes(
                         encode_array_header(write_buf, 0);
                     }
                 } else {
+                    encode_array_header(write_buf, 0);
+                }
+            });
+        }
+        Command::HScan {
+            key,
+            cursor: _,
+            pattern,
+            count,
+        } => {
+            if count == Some(0) {
+                encode_error(write_buf, "ERR syntax error");
+                return Ok(true);
+            }
+            if let Some(pat) = pattern {
+                if pat.len() > MAX_PATTERN_LEN {
+                    encode_error(write_buf, "ERR pattern exceeds maximum length of 256 bytes");
+                    return Ok(true);
+                }
+            }
+
+            let compiled = pattern.map(CompiledPattern::new);
+            let h = hash_key(key);
+            table.with_shard(h, |shard| {
+                if let Some(entry) = shard.lookup_checked(h, now_sec) {
+                    if entry.value_type != VALUE_TYPE_HASH {
+                        encode_error(
+                            write_buf,
+                            "WRONGTYPE Operation against a key holding the wrong kind of value",
+                        );
+                    } else if let Some(ptr) = unsafe { resolve_slot_ptr(entry.slab_block_id) } {
+                        let slot =
+                            unsafe { std::slice::from_raw_parts(ptr, entry.value_len as usize) };
+                        let mut matched: smallvec::SmallVec<[(&[u8], &[u8]); 16]> =
+                            smallvec::SmallVec::new();
+                        for (f, v) in HashSlotFrame::iter_pairs(slot) {
+                            let is_match = match &compiled {
+                                Some(cp) => cp.matches(f),
+                                None => true,
+                            };
+                            if is_match {
+                                matched.push((f, v));
+                            }
+                        }
+                        encode_array_header(write_buf, 2);
+                        encode_bulk_string(write_buf, b"0");
+                        encode_array_header(write_buf, matched.len() * 2);
+                        for (f, v) in matched {
+                            encode_bulk_string(write_buf, f);
+                            encode_bulk_string(write_buf, v);
+                        }
+                    } else {
+                        encode_array_header(write_buf, 2);
+                        encode_bulk_string(write_buf, b"0");
+                        encode_array_header(write_buf, 0);
+                    }
+                } else {
+                    encode_array_header(write_buf, 2);
+                    encode_bulk_string(write_buf, b"0");
                     encode_array_header(write_buf, 0);
                 }
             });

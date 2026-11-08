@@ -3,8 +3,10 @@ Unit tests for KacheDB Python client and zero-copy tensor descriptor.
 """
 
 import ctypes
+
 import numpy as np
-from kachedb import TensorBlockDescriptor, TensorDType, TENSOR_DESCRIPTOR_MAGIC
+from kachedb import TENSOR_DESCRIPTOR_MAGIC, TensorBlockDescriptor, TensorDType
+
 
 def test_descriptor_layout():
     assert ctypes.sizeof(TensorBlockDescriptor) == 64
@@ -168,10 +170,104 @@ def test_live_client_hash_roundtrip():
         client.delete("py_test_hash")
         client.close()
 
+def test_client_scan_methods_mock():
+    from kachedb import KacheClient
+
+    client = KacheClient()
+
+    # 1. SCAN cursor 0 with no options
+    client.sock = MockSocket([b"*2\r\n$1\r\n0\r\n*2\r\n$4\r\nkey1\r\n$4\r\nkey2\r\n"])
+    cur, keys = client.scan(0)
+    assert cur == 0
+    assert keys == [b"key1", b"key2"]
+    assert client.sock.sent_bytes == b"*2\r\n$4\r\nSCAN\r\n$1\r\n0\r\n"
+
+    # 2. SCAN with MATCH, COUNT, and TYPE
+    client.sock = MockSocket([b"*2\r\n$3\r\n128\r\n*1\r\n$8\r\nuser:100\r\n"])
+    cur, keys = client.scan(42, match="user:*", count=50, type="string")
+    assert cur == 128
+    assert keys == [b"user:100"]
+    assert client.sock.sent_bytes == (
+        b"*8\r\n$4\r\nSCAN\r\n$2\r\n42\r\n$5\r\nMATCH\r\n$6\r\nuser:*\r\n$5\r\nCOUNT\r\n$2\r\n50\r\n$4\r\nTYPE\r\n$6\r\nstring\r\n"
+    )
+
+    # 3. SCAN_ITER generator across multi-page cursor
+    step1 = b"*2\r\n$3\r\n100\r\n*2\r\n$6\r\nitem:1\r\n$6\r\nitem:2\r\n"
+    step2 = b"*2\r\n$1\r\n0\r\n*1\r\n$6\r\nitem:3\r\n"
+    client.sock = MockSocket([step1, step2])
+    iter_keys = list(client.scan_iter(match="item:*"))
+    assert iter_keys == [b"item:1", b"item:2", b"item:3"]
+
+def test_client_hscan_methods_mock():
+    from kachedb import KacheClient
+
+    client = KacheClient()
+
+    # 1. HSCAN single page
+    client.sock = MockSocket([b"*2\r\n$1\r\n0\r\n*4\r\n$2\r\nf1\r\n$2\r\nv1\r\n$2\r\nf2\r\n$2\r\nv2\r\n"])
+    cur, items = client.hscan("myhash", 0, match="f*", count=20)
+    assert cur == 0
+    assert items == {b"f1": b"v1", b"f2": b"v2"}
+    assert client.sock.sent_bytes == (
+        b"*7\r\n$5\r\nHSCAN\r\n$6\r\nmyhash\r\n$1\r\n0\r\n$5\r\nMATCH\r\n$2\r\nf*\r\n$5\r\nCOUNT\r\n$2\r\n20\r\n"
+    )
+
+    # 2. HSCAN_ITER generator
+    client.sock = MockSocket([b"*2\r\n$1\r\n0\r\n*4\r\n$2\r\nf1\r\n$2\r\nv1\r\n$2\r\nf2\r\n$2\r\nv2\r\n"])
+    iter_items = dict(client.hscan_iter("myhash", match="f*"))
+    assert iter_items == {b"f1": b"v1", b"f2": b"v2"}
+
+def test_live_client_scan_roundtrip():
+    from kachedb import KacheClient
+
+    # Prefer testing against our live port 6381 test container
+    client = None
+    for port in (6381, 6380, 6379):
+        try:
+            c = KacheClient(port=port)
+            c.connect()
+            c.ping()
+            client = c
+            break
+        except Exception:
+            continue
+
+    if client is None:
+        return
+
+    try:
+        # Populate test string keys
+        client.set("py_scan_test:1", "val1")
+        client.set("py_scan_test:2", "val2")
+        client.set("py_other_test:3", "val3")
+
+        # Populate test hash key
+        client.hset("py_hscan_test", mapping={"field_a": "alpha", "field_b": "beta"})
+
+        # Test scan with match
+        matched_keys = list(client.scan_iter(match="py_scan_test:*"))
+        assert b"py_scan_test:1" in matched_keys
+        assert b"py_scan_test:2" in matched_keys
+        assert b"py_other_test:3" not in matched_keys
+
+        # Test hscan with match
+        hash_pairs = dict(client.hscan_iter("py_hscan_test", match="field_*"))
+        assert hash_pairs.get(b"field_a") == b"alpha"
+        assert hash_pairs.get(b"field_b") == b"beta"
+    finally:
+        client.delete("py_scan_test:1")
+        client.delete("py_scan_test:2")
+        client.delete("py_other_test:3")
+        client.delete("py_hscan_test")
+        client.close()
+
 if __name__ == "__main__":
     test_descriptor_layout()
     test_descriptor_magic_and_fields()
     test_zero_copy_frombuffer()
     test_client_hash_methods_mock()
     test_live_client_hash_roundtrip()
-    print("✅ All Python descriptor & hash client tests passed!")
+    test_client_scan_methods_mock()
+    test_client_hscan_methods_mock()
+    test_live_client_scan_roundtrip()
+    print("✅ All Python descriptor, hash & scan client tests passed!")

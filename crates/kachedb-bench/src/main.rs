@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use kachedb_proto_resp::{encode_array_header, encode_bulk_string};
+use kachedb_proto_resp::{encode_array_header, encode_bulk_string, parse_frame};
 
 // ── CLI Configuration ─────────────────────────────────────────────────────────
 
@@ -33,6 +33,7 @@ enum BenchCommand {
     HSet,
     HGet,
     HMix,
+    Scan,
 }
 
 impl Default for BenchConfig {
@@ -92,6 +93,7 @@ fn parse_args() -> BenchConfig {
                     "HSET" => BenchCommand::HSet,
                     "HGET" => BenchCommand::HGet,
                     "HMIX" => BenchCommand::HMix,
+                    "SCAN" => BenchCommand::Scan,
                     _ => BenchCommand::Ping,
                 };
                 i += 2;
@@ -122,7 +124,7 @@ fn print_help() {
       -n, --requests <N>        Total number of requests (default: 100,000)
       -c, --clients <N>         Number of concurrent TCP connections (default: 50)
           --pipeline <N>        In-flight requests per connection (default: 16)
-          --command <CMD>       Command: PING | SET | GET | HSET | HGET | HMIX (default: PING)
+          --command <CMD>       Command: PING | SET | GET | HSET | HGET | HMIX | SCAN (default: PING)
           --key-size <N>        Key length in bytes (default: 16)
           --value-size <N>      Value length in bytes for SET/HSET (default: 64)
           --help                Print this help message
@@ -221,6 +223,16 @@ fn build_hget_frame(key: &[u8], field: &[u8]) -> Vec<u8> {
     buf
 }
 
+fn build_scan_frame() -> Vec<u8> {
+    let mut buf = Vec::with_capacity(64);
+    encode_array_header(&mut buf, 4);
+    encode_bulk_string(&mut buf, b"SCAN");
+    encode_bulk_string(&mut buf, b"0");
+    encode_bulk_string(&mut buf, b"COUNT");
+    encode_bulk_string(&mut buf, b"100");
+    buf
+}
+
 // ── Worker Thread ─────────────────────────────────────────────────────────────
 
 fn run_worker(
@@ -266,6 +278,7 @@ fn run_worker(
                         build_hget_frame(key.as_bytes(), b"field1")
                     }
                 }
+                BenchCommand::Scan => build_scan_frame(),
             }
         })
         .collect();
@@ -326,6 +339,16 @@ fn run_worker(
                             break;
                         }
                     }
+                    b'*' => match parse_frame(&carry[pos..]) {
+                        Ok(Some((_frame, consumed))) => {
+                            pos += consumed;
+                            responses_received += 1;
+                        }
+                        Ok(None) => break,
+                        Err(_) => {
+                            pos += 1;
+                        }
+                    },
                     _ => {
                         pos += 1;
                     }

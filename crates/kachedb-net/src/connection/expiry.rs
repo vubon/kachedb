@@ -35,6 +35,9 @@ pub fn handle_expiry(
                 };
                 let ok = table.update_ttl(h, expire_at_secs, now_sec);
                 if ok {
+                    table.with_shard_mut(h, |shard| {
+                        shard.ensure_key_name(h, key);
+                    });
                     emit_aof(
                         AofOp::Expire,
                         key,
@@ -69,6 +72,9 @@ pub fn handle_expiry(
                 };
                 let ok = table.update_ttl(h, expire_at_secs, now_sec);
                 if ok {
+                    table.with_shard_mut(h, |shard| {
+                        shard.ensure_key_name(h, key);
+                    });
                     emit_aof(
                         AofOp::Expire,
                         key,
@@ -98,6 +104,9 @@ pub fn handle_expiry(
                 let expire_at_secs = timestamp.max(0) as u32;
                 let ok = table.update_ttl(h, expire_at_secs, now_sec);
                 if ok {
+                    table.with_shard_mut(h, |shard| {
+                        shard.ensure_key_name(h, key);
+                    });
                     emit_aof(
                         AofOp::Expire,
                         key,
@@ -128,6 +137,9 @@ pub fn handle_expiry(
                 let expire_at_secs = ts_sec.max(0) as u32;
                 let ok = table.update_ttl(h, expire_at_secs, now_sec);
                 if ok {
+                    table.with_shard_mut(h, |shard| {
+                        shard.ensure_key_name(h, key);
+                    });
                     emit_aof(
                         AofOp::Expire,
                         key,
@@ -160,6 +172,9 @@ pub fn handle_expiry(
         Command::Persist { key } => {
             let h = hash_key(key);
             let ok = table.persist(h, now_sec);
+            table.with_shard_mut(h, |shard| {
+                shard.ensure_key_name(h, key);
+            });
             encode_integer(write_buf, if ok { 1 } else { 0 });
         }
         _ => unreachable!("handle_expiry called with non-expiry command"),

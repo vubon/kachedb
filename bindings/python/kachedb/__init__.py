@@ -3,7 +3,7 @@ KacheDB Python Client & PyTorch/vLLM Zero-Copy Bindings.
 """
 
 from .client import KacheClient
-from .descriptor import TensorBlockDescriptor, TensorDType, TENSOR_DESCRIPTOR_MAGIC
+from .descriptor import TENSOR_DESCRIPTOR_MAGIC, TensorBlockDescriptor, TensorDType
 
-__version__ = "0.3.2"
-__all__ = ["KacheClient", "TensorBlockDescriptor", "TensorDType", "TENSOR_DESCRIPTOR_MAGIC"]
+__version__ = "0.4.0"
+__all__ = ["TENSOR_DESCRIPTOR_MAGIC", "KacheClient", "TensorBlockDescriptor", "TensorDType"]
