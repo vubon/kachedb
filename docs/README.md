@@ -27,6 +27,8 @@
 
 ### ⚡ Command Reference
 * [**Core Key-Value Commands**](./commands/core-kv.md): `GET`, `SET`, `MGET`, `MSET`, `DEL`, `EXISTS`, `INCR`, `DECR`, `APPEND`, `STRLEN`, `DBSIZE`, `TYPE`, `FLUSHDB`, `FLUSHALL`, `PING`.
+* [**Redis Hash Primitives**](./commands/hashes.md): `HSET`, `HGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`, in-slot directory architecture, and Megaslab packing.
+* [**Keyspace & Hash Cursor Scanning**](./commands/scanning.md): `SCAN`, `HSCAN`, home-bucket bit-reversed cursors across 256 shards, ReDoS-safe zero-alloc glob matching, and inline SSO.
 * [**TTL & Key Lifecycle Commands**](./commands/ttl-lifecycle.md): `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST`, and the background Timing Wheel.
 * [**SIMD Semantic Vector Commands**](./commands/vector-search.md): `VADD`, `VSEARCH`, `VADD_BATCH`, `VSEARCH_BATCH`, `VDEL`, `VSTATS`, `VINDEX`, ARM NEON / AVX2 kernels.
 * [**Server Observability & Introspection**](./commands/server-introspection.md): `INFO`, `COMMAND DOCS`, `HELLO 2/3`, `AUTH`, `CLIENT SETNAME/GETNAME/ID/LIST`, `BGREWRITEAOF`, `QUIT`.
@@ -38,7 +40,7 @@
 * [**2 MB Megaslab Memory Engine**](./architecture/memory-engine.md): Slotted slab bump allocator, 64-byte cache-line alignment, and S3-FIFO quota manager.
 * [**Token Radix Prefix Tree**](./architecture/radix-prefix-tree.md): Hierarchical `&[u32]` token prefix tree, sub-microsecond prefill lookup, and Epoch RCU concurrency.
 * [**Zero-Copy Shared Memory IPC**](./architecture/zero-copy-ipc.md): POSIX `/dev/shm` lock-free ring buffers and PCIe line-rate tensor sharing.
-* [**Snapshot Encryption-at-Rest**](./architecture/snapshot-encryption.md): Hardware-accelerated AES-256-GCM / ChaCha20-Poly1305 streaming AEAD encryption, HKDF key derivation, and `KDB\x03` format.
+* [**Snapshot Encryption-at-Rest**](./architecture/snapshot-encryption.md): Hardware-accelerated AES-256-GCM / ChaCha20-Poly1305 streaming AEAD encryption, HKDF key derivation, and `KDB\x03` / `KDB\x05` formats.
 
 ---
 

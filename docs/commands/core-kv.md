@@ -25,6 +25,7 @@ KacheDB implements the standard **Redis / Valkey RESP2 and RESP3** binary wire p
 | **`TYPE`** | `TYPE key` | `O(1)` | Returns the string representation of the key's type (`string`, `hash`, `vector`, or `none`). |
 | **`FLUSHDB`** | `FLUSHDB` | `O(N)` | Removes all keys from the currently selected database. |
 | **`FLUSHALL`** | `FLUSHALL` | `O(N)` | Removes all keys from all databases and resets Megaslab allocators. |
+| **`SCAN`** | `SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]` | `O(1)` per call | Incrementally iterates the keyspace with non-blocking cursors. See [Keyspace Scanning](scanning.md). |
 
 ---
 
@@ -229,4 +230,23 @@ OK
 127.0.0.1:6379> DBSIZE
 (integer) 0
 ```
+
+---
+
+### `SCAN`
+Incrementally iterates the keyspace across 256 shards using home-bucket bit-reversed cursors without blocking or allocating temporary buffers.
+
+#### Syntax
+```text
+SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]
+```
+
+#### `kachedb-cli` Example
+```text
+127.0.0.1:6379> SCAN 0 MATCH "user:*" COUNT 10
+1) "0"
+2) 1) "user:100"
+```
+
+For detailed algorithmic properties, composite cursor layout, and glob pattern rules, see the dedicated [Keyspace & Hash Cursor Scanning Guide](scanning.md).
 

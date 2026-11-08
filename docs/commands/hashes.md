@@ -16,8 +16,9 @@ Unlike traditional in-memory stores that rely on linked-list linear scans (`list
 | **`HEXISTS`** | `HEXISTS key field` | **Strict $\mathcal{O}(1)$** | Returns `1` if the field exists in the hash, or `0` if the key or field does not exist. |
 | **`HLEN`** | `HLEN key` | $\mathcal{O}(1)$ | Returns the number of live fields in the hash; returns `0` if the key does not exist. |
 | **`HGETALL`** | `HGETALL key` | $\mathcal{O}(N)$ | Returns a flat array of all field-value pairs `[field1, val1, field2, val2, ...]`; returns an empty list if the key does not exist. |
+| **`HSCAN`** | `HSCAN key cursor [MATCH pattern] [COUNT count]` | $\mathcal{O}(1)$ per step, $\mathcal{O}(F)$ full hash | Iterates through fields and values within a hash using glob pattern matching. |
 
-* $M$ = number of fields in the request; $N$ = total live fields stored in the hash.
+* $M$ = number of fields in the request; $N$ = total live fields stored in the hash; $F$ = total live fields matching the scan criteria.
 
 ---
 
@@ -164,7 +165,43 @@ HGETALL key
 
 ---
 
+### `HSCAN`
+Iterates over fields and values of the hash stored at `key` matching an optional glob pattern.
+
+#### Syntax
+```text
+HSCAN key cursor [MATCH pattern] [COUNT count]
+```
+
+#### Parameters
+* **`key`**: Name of the hash to scan.
+* **`cursor`**: Cursor position (`0` to start).
+* **`MATCH pattern`** *(optional)*: Glob pattern matching field names (`*`, `?`, `[a-z]`, `\`).
+* **`COUNT count`** *(optional, default: 10)*: Hint for number of field-value elements to return.
+
+#### `kachedb-cli` / `redis-cli` Example
+```text
+127.0.0.1:6379> HSCAN user:1000 0 MATCH "*mail"
+1) "0"
+2) 1) "email"
+   2) "alice@example.com"
+```
+
+---
+
 ## 🐍 Client Integration Examples
+
+### Native Python (`kachedb`)
+```python
+from kachedb import KacheClient
+
+with KacheClient(host="127.0.0.1", port=6379) as client:
+    client.hset("session:agent_42", mapping={"model": "claude-3-7-sonnet", "step": "12", "tokens": "8450"})
+
+    # Streaming field-value iteration with generator
+    for field, value in client.hscan_iter("session:agent_42", match="*"):
+        print(f"{field.decode('utf-8')} = {value.decode('utf-8')}")
+```
 
 ### Python (`redis-py`)
 ```python
@@ -189,6 +226,10 @@ assert client.hexists("session:agent_42", "tokens") == 1
 field_count = client.hlen("session:agent_42")
 print(f"Total fields: {field_count}")
 
+# Stream fields and values via hscan_iter
+for field, value in client.hscan_iter("session:agent_42", match="s*"):
+    print(f"{field} -> {value}")
+
 # Fetch all fields as a dictionary
 session_data = client.hgetall("session:agent_42")
 print(session_data)
@@ -200,10 +241,11 @@ client.hdel("session:agent_42", "status")
 
 ---
 
-## 💾 Durability & Snapshots (Format V4)
+## 💾 Durability & Snapshots (Format V5)
 
 KacheDB persists Redis Hash entries with full ACID durability:
 1. **Append-Only File (AOF):** Hash mutations are logged as logical opcode pairs:
    - `0x07` (`HSet`): `[key_len, key, field_len, field, val_len, val]`
    - `0x08` (`HDel`): `[key_len, key, field_len, field]`
-2. **Snapshot Format V4 (`KDB\x04`):** Snapshots write a typed record header `RecordType = 0x01` (Hash) followed by encoded field-value pairs, maintaining compatibility with both plaintext and encrypted snapshots (`AES-256-GCM` or `ChaCha20-Poly1305`).
+   - Compaction via `BGREWRITEAOF` serializes all live hash fields using `HashSlotFrame::encode_pairs` into `AofOp::HSet` and preserves active TTLs with `AofOp::Expire`.
+2. **Snapshot Format V5 (`KDB\x05`):** Snapshots write a typed record header `RecordType = 0x01` (Hash) followed by length-prefixed key bytes and encoded field-value pairs, maintaining compatibility with both plaintext and encrypted snapshots (`AES-256-GCM` or `ChaCha20-Poly1305`). Transparent backward-compatibility supports loading legacy `KDB\x02`, `KDB\x03`, and `KDB\x04` dumps.

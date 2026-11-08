@@ -10,6 +10,7 @@
 # Command Reference
 - [Core Key-Value Commands](commands/core-kv.md)
 - [Redis Hash Primitives](commands/hashes.md)
+- [Keyspace & Hash Scanning](commands/scanning.md)
 - [TTL & Key Lifecycle](commands/ttl-lifecycle.md)
 - [SIMD Vector Commands](commands/vector-search.md)
 - [Server Observability & Introspection](commands/server-introspection.md)

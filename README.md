@@ -1,35 +1,37 @@
-# KacheDB
-
 <p align="center">
-  <img src="./docs/assets/KacheDB.svg" alt="KacheDB Banner" width="650" onerror="this.style.display='none'"/>
+  <img src="docs/assets/KacheDB.svg" alt="KacheDB Banner" width="720"/>
 </p>
 
 <p align="center">
-  <strong>The High-Performance, Zero-Copy In-Memory Engine for Redis-Compatible Caching & LLM KV-Cache Offloading</strong>
+  <strong>The Ultra-High Performance, Zero-Copy In-Memory Engine for Redis-Compatible Caching & LLM KV-Cache Offloading</strong>
 </p>
 
 <p align="center">
-  <a href="https://vubon.github.io/kachedb/"><img src="https://img.shields.io/badge/docs-vubon.github.io%2Fkachedb-blue.svg" alt="Documentation"/></a>
-  <a href="#-benchmark-performance"><img src="https://img.shields.io/badge/benchmark-sub--4ns%20alloc-brightgreen.svg" alt="Benchmark"/></a>
-  <a href="#-benchmark-performance"><img src="https://img.shields.io/badge/throughput-3.56M%20QPS%20(epoll)-blue.svg" alt="Throughput"/></a>
-  <a href="https://github.com/vubon/kachedb/actions"><img src="https://img.shields.io/badge/tests-120%2B%20passed%2C%200%20failed-success.svg" alt="Tests"/></a>
-  <a href="#-license"><img src="https://img.shields.io/badge/license-Apache--2.0%20%2F%20MIT-blue.svg" alt="License"/></a>
+  <a href="https://github.com/vubon/kachedb/releases/tag/v0.4.0"><img src="https://img.shields.io/badge/release-v0.4.0-blue.svg?style=flat-square" alt="Version"/></a>
+  <a href="https://vubon.github.io/kachedb/"><img src="https://img.shields.io/badge/docs-vubon.github.io%2Fkachedb-blue.svg?style=flat-square" alt="Documentation"/></a>
+  <a href="#-benchmark-performance"><img src="https://img.shields.io/badge/throughput-3.56M%20QPS-brightgreen.svg?style=flat-square" alt="Throughput"/></a>
+  <a href="#-benchmark-performance"><img src="https://img.shields.io/badge/alloc-3.84ns%20slab-brightgreen.svg?style=flat-square" alt="Megaslab Allocator"/></a>
+  <a href="https://github.com/vubon/kachedb/actions"><img src="https://img.shields.io/badge/tests-200%2B%20passed%2C%200%20failed-success.svg?style=flat-square" alt="Tests"/></a>
+  <a href="https://pypi.org/project/kachedb/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg?style=flat-square" alt="Python Version"/></a>
+  <a href="#-license"><img src="https://img.shields.io/badge/license-Apache--2.0%20%2F%20MIT-informational.svg?style=flat-square" alt="License"/></a>
 </p>
 
 ---
 
 ## ⚡ Overview
 
-**KacheDB** is a next-generation in-memory storage engine written in Rust. It unifies two critical high-scale workloads into a single, zero-copy architecture:
+**KacheDB** is an open-source, next-generation in-memory engine engineered from first principles in Rust. It unifies microsecond-latency application caching with high-throughput LLM tensor memory management in a single zero-copy architecture:
 
-1. **Microsecond App Cache**: Wire-compatible Redis & Valkey key-value cache (RESP2 / RESP3 protocol) powered by a SIMD-accelerated Swiss Table, S3-FIFO cache eviction, and an explicit 2 MB Megaslab bump allocator.
-2. **LLM KV-Cache Offloader**: Hierarchical `&[u32]` token prefix tree and zero-copy POSIX Shared Memory (`/dev/shm`) ring buffer transport for vLLM, SGLang, and PyTorch inference engines.
+* ⚡ **Microsecond App Cache**: Wire-compatible Redis & Valkey engine (RESP2 / RESP3 wire protocol) powered by an AVX-512 / NEON SIMD Swiss Table, an explicit 2 MB Megaslab bump allocator, S3-FIFO eviction, and strictly bounded $\mathcal{O}(1)$ timing wheels.
+* 🔍 **Keyspace & Hash Cursor Scanning**: Non-blocking `SCAN` and `HSCAN` cursor iteration across 256 shards using home-bucket bit-reversed cursors, zero-allocation glob pattern matching (`*`, `?`, `[...]`), ReDoS backtracking protection, and 40-byte inline Short String Optimization (SSO).
+* 🤖 **LLM KV-Cache Offloader**: Hierarchical `&[u32]` token prefix tree and zero-copy POSIX Shared Memory (`/dev/shm`) lock-free SPSC ring buffers for vLLM, SGLang, and PyTorch (17.6M msgs/sec, sub-50ns tensor sharing, 0 socket copies).
+* 🔒 **Encrypted ACID Durability**: Append-Only File (AOF) with online compaction rewrite (`BGREWRITEAOF`), and Snapshot Format V5 (`KDB\x05`) with streaming hardware-accelerated `AES-256-GCM` or `ChaCha20-Poly1305` encryption-at-rest.
 
 ---
 
 ## 🥊 Why KacheDB?
 
-| Feature / Metric | Redis 7.4 | Valkey 8.0 | DragonflyDB | **KacheDB v0.1** |
+| Feature / Metric | Redis 7.4 | Valkey 8.0 | DragonflyDB | **KacheDB v0.4** |
 | :--- | :---: | :---: | :---: | :---: |
 | **Language** | C | C | C++ | **Rust** 🦀 |
 | **Peak GET Throughput** | 964,654 QPS | 1,033,849 QPS | 2,296,822 QPS | **3,563,603 QPS** 👑 |
@@ -40,9 +42,11 @@
 | **Memory Architecture** | `jemalloc` / Heap | `jemalloc` / Heap | Custom Slab | **2 MB Megaslab (Bump + Free-list + Compaction)** |
 | **Hot-Path Alloc Overhead** | 20–50 ns | 20–50 ns | 10–25 ns | **3.84 ns ($\mathcal{O}(1)$)** |
 | **Hash Indexing** | Dict / Chained Hash | Dict / Chained Hash | `dashtable` | **AVX-512 / NEON Swiss Table** |
-| **Lookup Hit Latency** | 15–30 ns | 15–30 ns | 8–15 ns | **3.09 ns (L1 Cache Line)** |
+| **Keyspace Cursor Scan** | Bucket bit-reversed | Bucket bit-reversed | Segmented scan | **Home-Bucket Bit-Reversed (256 Shards, ReDoS-Safe Glob)** |
+| **Lookup Hit Latency** | 15–30 ns | 15–30 ns | 8–15 ns | **1.96 ns (L1 Cache Line)** |
 | **Async Network Engine** | `epoll` / `kqueue` | `epoll` / `kqueue` | `epoll` fiber pool | **Accept-Dispatch epoll + TCP_NODELAY** |
 | **TTL Expiration Engine** | Probabilistic Sampling | Probabilistic Sampling | Active Scanning | **$\mathcal{O}(1)$ 3,600-Bucket Timing Wheel** |
+| **Durability & Snapshots** | RDB / AOF | RDB / AOF | Snapshot | **Snapshot V5 (`KDB\x05`) + AOF + AEAD Encryption** |
 | **LLM KV-Cache Prefix Tree** | ❌ None | ❌ None | ❌ None | **✅ Native `&[u32]` Token Radix** |
 | **Zero-Copy PyTorch IPC** | ❌ TCP Socket Serialization | ❌ TCP Socket Serialization | ❌ TCP Socket | **✅ `/dev/shm` Lock-Free Ring** |
 
@@ -72,7 +76,7 @@ cargo build --release --workspace
 ./target/release/kachedb-server -p 6379 -w 4
 ```
 
-### Query via standard `redis-cli`
+### Query via standard `redis-cli` or `kachedb-cli`
 ```bash
 $ redis-cli -p 6379 SET user:100 "alice" EX 60
 OK
@@ -82,26 +86,32 @@ $ redis-cli -p 6379 HSET user:100:profile name "alice" role "admin"
 (integer) 2
 $ redis-cli -p 6379 HGET user:100:profile name
 "alice"
+$ redis-cli -p 6379 SCAN 0 MATCH "user:*" COUNT 10
+1) "0"
+2) 1) "user:100"
+   2) "user:100:profile"
+$ redis-cli -p 6379 HSCAN user:100:profile 0 MATCH "r*"
+1) "0"
+2) 1) "role"
+   2) "admin"
 $ redis-cli -p 6379 TYPE user:100:profile
 hash
 $ redis-cli -p 6379 DBSIZE
 (integer) 2
-$ redis-cli -p 6379 FLUSHDB
-OK
 ```
 
 ---
 
 ## ⚡ Supported Cache Commands & Protocol
 
-KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can use any existing Redis/Valkey client library (`redis-py`, `ioredis`, `go-redis`, `redis-rs`, `jedis`) without code modifications:
+KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can use any existing Redis or Valkey client library (`redis-py`, `ioredis`, `go-redis`, `redis-rs`, `jedis`) without code modifications:
 
 ### Core Key-Value & Strings
 | Command | Syntax | Description | Time Complexity |
 | :--- | :--- | :--- | :---: |
 | **`PING`** | `PING [message]` | Tests server liveness; returns `PONG` or echoed message. | $\mathcal{O}(1)$ |
-| **`SET`** | `SET key value [EX seconds] [PX millis]` | Stores binary-safe value with optional high-resolution TTL expiration. | $\mathcal{O}(1)$ |
-| **`GET`** | `GET key` | Retrieves binary-safe value, returning `nil` if missing or expired. | $\mathcal{O}(1)$ |
+| **`SET`** | `SET key value [EX seconds] [PX millis]` | Stores binary value with optional high-resolution TTL expiration. | $\mathcal{O}(1)$ |
+| **`GET`** | `GET key` | Retrieves binary value, returning `nil` if missing or expired. | $\mathcal{O}(1)$ |
 | **`MSET`** | `MSET key value [key value ...]` | Atomically stores multiple key-value pairs. | $\mathcal{O}(N)$ |
 | **`MGET`** | `MGET key [key ...]` | Batch retrieves multiple keys in a single pipelined operation. | $\mathcal{O}(N)$ |
 | **`DEL`** | `DEL key [key ...]` | Removes keys and immediately returns slab slots to the free-list. | $\mathcal{O}(N)$ |
@@ -121,17 +131,27 @@ KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can 
 | **`HLEN`** | `HLEN key` | Returns the number of live fields in the hash. | $\mathcal{O}(1)$ |
 | **`HGETALL`** | `HGETALL key` | Returns all fields and values in the hash as a flat array. | $\mathcal{O}(N)$ |
 
+### Keyspace & Hash Pattern Scanning
+| Command | Syntax | Description | Time Complexity |
+| :--- | :--- | :--- | :---: |
+| **`SCAN`** | `SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]` | Incrementally iterates the keyspace across 256 shards with zero heap allocations. | $\mathcal{O}(1)$ per step |
+| **`HSCAN`** | `HSCAN key cursor [MATCH pattern] [COUNT count]` | Iterates through fields and values within a hash using glob pattern matching. | $\mathcal{O}(1)$ per step |
+
 ### Database, Server & Observability
 | Command | Syntax | Description | Time Complexity |
 | :--- | :--- | :--- | :---: |
 | **`DBSIZE`** | `DBSIZE` | Returns the total count of keys in the current database. | $\mathcal{O}(1)$ |
 | **`TYPE`** | `TYPE key` | Returns key data type (`string`, `hash`, `vector`, or `none`). | $\mathcal{O}(1)$ |
+| **`EXPIRE` / `TTL`** | `EXPIRE key seconds` / `TTL key` | Configures and queries key TTL lifecycle in $\mathcal{O}(1)$ timing wheels. | $\mathcal{O}(1)$ |
+| **`PERSIST`** | `PERSIST key` | Removes TTL expiration, making key persistent. | $\mathcal{O}(1)$ |
 | **`FLUSHDB`** | `FLUSHDB` | Clears all keys and recycles slab pool memory blocks. | $\mathcal{O}(N)$ |
 | **`FLUSHALL`** | `FLUSHALL` | Clears all keys across all database instances. | $\mathcal{O}(N)$ |
+| **`BGREWRITEAOF`** | `BGREWRITEAOF` | Triggers background compaction rewrite of the Append-Only File. | $\mathcal{O}(N)$ |
+| **`INFO`** | `INFO [section]` | Returns real-time telemetry, memory stats, and keyspace diagnostics. | $\mathcal{O}(1)$ |
 | **`QUIT`** | `QUIT` | Closes the client connection gracefully. | $\mathcal{O}(1)$ |
 | **`COMMAND`** | `COMMAND DOCS` | Returns Redis protocol capability metadata. | $\mathcal{O}(1)$ |
 
-> **Binary-Safe Storage:** All keys and values are treated as raw byte slices (`&[u8]`). Store JSON strings, raw binary tensors, Protobuf buffers, images, or compressed blobs up to 2 MB per slot without encoding overhead. Hash entries reside within dedicated Megaslab slots with sub-25ns in-slot directory lookup.
+> **Binary-Safe Storage:** All keys and values are treated as raw byte slices (`&[u8]`). Store JSON strings, raw binary tensors, Protobuf buffers, images, or compressed blobs up to 2 MB per slot without encoding overhead.
 
 ---
 
@@ -145,9 +165,10 @@ KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can 
                                                |
 +-----------------------------------------------------------------------------------------------+
 |                                       INDEXING SUBSYSTEM                                      |
-|   1. SIMD Swiss Hash Table (3.09 ns Point Lookups, S3-FIFO Eviction Tracking)                 |
-|   2. Token Radix Prefix Tree (&[u32] Longest Prefix Match for LLM KV-Cache Prefills)          |
-|   3. Per-Core Hashed Timing Wheel (3,600 Circular Buckets for O(1) Memory Reclamation)        |
+|   1. SIMD Swiss Hash Table (1.96 ns Point Lookups, 256 Shards, S3-FIFO Eviction Tracking)     |
+|   2. Keyspace Scanning (Bit-Reversed Radix Cursors, ReDoS-Safe Zero-Alloc Glob Matching)      |
+|   3. Token Radix Prefix Tree (&[u32] Longest Prefix Match for LLM KV-Cache Prefills)          |
+|   4. Per-Core Hashed Timing Wheel (3,600 Circular Buckets for O(1) Memory Reclamation)        |
 +-----------------------------------------------------------------------------------------------+
                                                |
 +-----------------------------------------------------------------------------------------------+
@@ -161,6 +182,7 @@ KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can 
 |                                 STORAGE & ZERO-COPY TRANSPORT                                 |
 |   - POSIX Shared Memory (/dev/shm) Lock-Free SPSC Ring Buffer IPC (17.66M msgs/sec)           |
 |   - Accept-Dispatch Thread-per-Core TCP Engine (epoll + TCP_NODELAY / mio) (3.56M QPS)        |
+|   - Encrypted Durability (AOF Rewrite + Snapshot V5 KDB\x05 with AES-256-GCM / ChaCha20)      |
 +-----------------------------------------------------------------------------------------------+
 ```
 
@@ -187,6 +209,7 @@ All micro-benchmarks evaluated with [Criterion.rs](https://github.com/bheisler/c
 | **`kachedb-core`** | Multi-Arena Pool Allocate + Free (`AppSmall`) | **11.97 ns** | Elastic quota-safe allocation |
 | **`kachedb-hash`** | Swiss Table Point Query Hit (1M keys) | **1.96 ns** | **510.2 Million lookups/sec / core** |
 | **`kachedb-hash`** | Swiss Table 1M Keys Sequential Insert | **25.85 ms** | −44.5% speedup via tombstone compaction |
+| **`kachedb-hash`** | Zero-Alloc Glob Pattern Matching (`prefix*`) | **4.21 ns** | Linear single-star fast-path (ReDoS immune) |
 | **`kachedb-radix`** | 1,024-token Prompt Prefix Match (64 blocks) | **2.48 µs** | **~10,000× speedup** vs GPU prefill |
 | **`kachedb-radix`** | Bottom-up LRU Leaf Eviction | **403.1 ns** | Sub-microsecond tensor memory reclaim |
 | **`kachedb-shm`** | POSIX Shared Memory Push/Pop Roundtrip | **83.18 ns / msg** | **12.0 Million msgs/sec** (single-thread) |
@@ -202,19 +225,21 @@ All micro-benchmarks evaluated with [Criterion.rs](https://github.com/bheisler/c
 kachedb/
 ├── crates/
 │   ├── kachedb-core/             # 64-byte aligned Megaslab allocator, SlabPool & HashedTimingWheel
-│   ├── kachedb-hash/             # SIMD Swiss Table hash index with S3-FIFO & TTL lookup
+│   ├── kachedb-hash/             # SIMD Swiss Table, bit-reversed SCAN, ReDoS-safe glob, S3-FIFO & inline SSO
 │   ├── kachedb-radix/            # Token prefix tree with lock-free EpochTree RCU concurrency
 │   ├── kachedb-vector/           # SIMD vector indexing, SQ8 quantization & HNSW search
 │   ├── kachedb-proto-tensor/     # 64-byte TensorBlockDescriptor & PagedAttention layouts
 │   ├── kachedb-shm/              # Zero-copy POSIX /dev/shm SPSC ring buffer IPC
 │   ├── kachedb-proto-resp/       # Zero-allocation streaming RESP2/RESP3 wire parser
-│   ├── kachedb-net/              # Thread-per-core async TCP engine (io_uring / mio)
-│   ├── kachedb-server/           # Multi-core daemon runtime executable
-│   ├── kachedb-cli/              # Interactive CLI admin & REPL tool
+│   ├── kachedb-net/              # Thread-per-core async TCP engine (io_uring / mio) with non-blocking SCAN
+│   ├── kachedb-server/           # Multi-core daemon runtime executable with Snapshot V5 & AOF rewrite
+│   ├── kachedb-cli/              # Interactive CLI admin, REPL & KDB\x05 forensic inspection tool
 │   └── kachedb-bench/            # Standalone multi-connection pipelined load generator
 ├── bindings/
-│   └── python/                   # Zero-copy Python client & PyTorch/vLLM tensor bindings
+│   └── python/                   # Zero-copy Python client (scan_iter, hscan_iter, PyTorch & vLLM IPC)
 ├── docs/
+│   ├── commands/                 # Complete command references (core-kv, hashes, scanning, vector)
+│   ├── architecture/             # Deep dive architecture specifications
 │   ├── rfcs/                     # Formal Architecture Decision Records (ADRs)
 │   └── benchmarks/               # Standardized benchmark reproduction protocol
 └── docker/                       # One-command reproducible Linux io_uring container
@@ -229,11 +254,23 @@ from kachedb import KacheClient
 
 # Connect to KacheDB daemon over TCP
 with KacheClient(host="127.0.0.1", port=6379) as client:
-    # Standard Redis-compatible caching with TTL
+    # 1. Standard Redis-compatible caching with TTL
     client.set("session:user_1", "active_payload", ex=3600)
-    print(client.get("session:user_1"))
+    print("Session:", client.get("session:user_1"))
 
-    # Zero-copy KV-cache tensor extraction from /dev/shm (< 50 ns, 0 bytes copied)
+    # 2. Redis Hash operations
+    client.hset("user:1:profile", mapping={"name": "Alice", "role": "admin"})
+    print("Role:", client.hget("user:1:profile", "role"))
+
+    # 3. Streaming keyspace iteration with zero-allocation generator
+    for key in client.scan_iter(match="session:*", count=50):
+        print("Discovered key:", key.decode("utf-8"))
+
+    # 4. Streaming Hash iteration
+    for field, val in client.hscan_iter("user:1:profile", match="*"):
+        print(f"Field: {field.decode('utf-8')} -> {val.decode('utf-8')}")
+
+    # 5. Zero-copy KV-cache tensor extraction from /dev/shm (< 50 ns, 0 bytes copied)
     tensor = client.read_tensor_zero_copy(core_id=0, byte_offset=0)
     print("Zero-copy PyTorch Tensor Shape:", tensor.shape)
 ```
@@ -247,6 +284,8 @@ Complete documentation, command references, and integration guides are available
 * 🚀 [**Quickstart Guide**](docs/getting-started/quickstart.md) & [**kachedb-cli Manual**](docs/getting-started/kachedb-cli.md)
 * ⚙️ [**Server Configuration & Tuning**](docs/getting-started/configuration.md)
 * 🔑 [**Core Key-Value Command Reference**](docs/commands/core-kv.md)
+* 📦 [**Redis Hash Primitives Guide**](docs/commands/hashes.md)
+* 🔍 [**Keyspace & Hash Cursor Scanning (`SCAN`, `HSCAN`)**](docs/commands/scanning.md)
 * ⏱️ [**TTL & Key Expiration Lifecycle**](docs/commands/ttl-lifecycle.md)
 * 🧠 [**SIMD Vector Search Commands**](docs/commands/vector-search.md)
 * 📊 [**Server Observability & Introspection**](docs/commands/server-introspection.md)

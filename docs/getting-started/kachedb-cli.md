@@ -221,7 +221,7 @@ You can measure raw network round-trip throughput and latency using the built-in
 
 ### What `snapshot-info` Inspects:
 * **File Size & Integrity:** Reads and verifies IEEE 802.3 CRC32 checksum trailer over the entire snapshot file.
-* **Format Version:** Identifies `KDB\x02` (legacy unencrypted), `KDB\x03` (authenticated snapshot format), or `KDB\x04` (typed KV records + Redis Hash entries).
+* **Format Version:** Identifies `KDB\x02` (legacy unencrypted), `KDB\x03` (authenticated snapshot format), `KDB\x04` (typed KV records + Redis Hash entries), or `KDB\x05` (lossless keyspace storage for pattern scanning).
 * **Creation Timestamp:** Displays the Unix epoch creation timestamp.
 * **Encryption Status:** Checks whether encryption is active (`ENABLED` vs `Disabled (Plaintext)`).
 * **Cipher Suite:** Identifies `AES-256-GCM` or `ChaCha20-Poly1305`.
