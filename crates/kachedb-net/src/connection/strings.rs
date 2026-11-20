@@ -1,24 +1,39 @@
-//! Redis String command execution handlers (`GET`, `SET`, `MGET`, `MSet`, `DEL`, `EXISTS`, `INCR`, `DECR`, `APPEND`, `STRLEN`).
+//! Redis String command execution handlers (`GET`, `SET`, `MGET`, `MSET`, `DEL`, `EXISTS`, `INCR`, `DECR`, `APPEND`, `STRLEN`).
 
-use kachedb_core::{HashedTimingWheel, SlabClassType, SlabPool, resolve_slot_ptr};
-use kachedb_hash::{ShardedSwissTable, SwissTable, VALUE_TYPE_STRING, hash_key};
+use std::collections::HashMap;
+
+use kachedb_core::{HashedTimingWheel, SlabBlockId, SlabClassType, SlabPool, resolve_slot_ptr};
+use kachedb_hash::{ShardedSwissTable, StringBatchEntry, SwissTable, VALUE_TYPE_STRING, hash_key};
 use kachedb_proto_resp::{
     Command, encode_array_header, encode_bulk_string, encode_error, encode_integer, encode_null,
     encode_simple_string,
 };
 
-use crate::aof_encode::{AofOp, emit_aof};
+use crate::aof_encode::{AofOp, emit_aof, mset_fits_aof_record};
 use crate::error::NetError;
 
 const WRONG_TYPE: &str = "WRONGTYPE Operation against a key holding the wrong kind of value";
 const SLOT_ERROR: &str = "ERR internal slab slot error";
 const OOM_ERROR: &str = "OOM command not allowed when used memory > 'maxmemory'";
 const SIZE_ERROR: &str = "ERR value exceeds maximum supported slab size (2 MB)";
+const BATCH_SIZE_ERROR: &str = "ERR MSET exceeds maximum AOF record size (64 MiB)";
 const INTEGER_ERROR: &str = "ERR value is not an integer or out of range";
 
 enum Arithmetic {
     Add(i64),
     Subtract(i64),
+}
+
+fn prepare_string(pool: &mut SlabPool, value: &[u8]) -> Result<SlabBlockId, &'static str> {
+    let class = SlabClassType::for_size(value.len()).ok_or(SIZE_ERROR)?;
+    let block = pool.reserve_non_evicting(class).map_err(|_| OOM_ERROR)?;
+    // This slot is unpublished and exclusively owned by the current worker.
+    let Some(ptr) = (unsafe { resolve_slot_ptr(block) }) else {
+        let _ = pool.deallocate(block);
+        return Err(SLOT_ERROR);
+    };
+    unsafe { std::ptr::copy_nonoverlapping(value.as_ptr(), ptr, value.len()) };
+    Ok(block)
 }
 
 /// Writes a new allocation and publishes it under the key's shard write lock.
@@ -31,14 +46,7 @@ fn store_string(
     expires: u32,
     wheel: Option<&mut HashedTimingWheel>,
 ) -> Result<(), &'static str> {
-    let class = SlabClassType::for_size(value.len()).ok_or(SIZE_ERROR)?;
-    let block = pool.reserve_non_evicting(class).map_err(|_| OOM_ERROR)?;
-    // This slot is unpublished and exclusively owned by the current worker.
-    let Some(ptr) = (unsafe { resolve_slot_ptr(block) }) else {
-        let _ = pool.deallocate(block);
-        return Err(SLOT_ERROR);
-    };
-    unsafe { std::ptr::copy_nonoverlapping(value.as_ptr(), ptr, value.len()) };
+    let block = prepare_string(pool, value)?;
     let old = match shard.insert_with_ttl_and_key(hash, key, block, value.len() as u32, expires) {
         Ok(old) => old,
         Err(()) => {
@@ -55,6 +63,61 @@ fn store_string(
         wheel.schedule_key(hash, key, block, expires);
     }
     Ok(())
+}
+
+fn store_string_batch(
+    table: &ShardedSwissTable,
+    pool: &mut SlabPool,
+    pairs: &[(&[u8], &[u8])],
+) -> Result<(), &'static str> {
+    if pairs
+        .iter()
+        .any(|(_, value)| SlabClassType::for_size(value.len()).is_none())
+    {
+        return Err(SIZE_ERROR);
+    }
+    if !mset_fits_aof_record(pairs) {
+        return Err(BATCH_SIZE_ERROR);
+    }
+
+    // Validate the original batch before deduplicating it. Reserve just one
+    // payload per distinct key, using that key's last supplied value.
+    let mut final_values = HashMap::new();
+    final_values
+        .try_reserve(pairs.len())
+        .map_err(|_| OOM_ERROR)?;
+    final_values.extend(pairs.iter().copied());
+    let mut prepared = Vec::new();
+    prepared
+        .try_reserve_exact(final_values.len())
+        .map_err(|_| OOM_ERROR)?;
+
+    let publish = (|| {
+        for (key, value) in final_values {
+            prepared.push(StringBatchEntry {
+                key_hash: hash_key(key),
+                key,
+                slab_block_id: prepare_string(pool, value)?,
+                value_len: value.len() as u32,
+            });
+        }
+        table.insert_string_batch(&prepared).map_err(|_| OOM_ERROR)
+    })();
+    // Once the shard locks are released, readers can only see the new slots.
+    match publish {
+        Ok(replaced) => {
+            for block in replaced {
+                let _ = pool.deallocate(block);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            for entry in prepared {
+                let _ = pool.deallocate(entry.slab_block_id);
+            }
+            Err(error)
+        }
+    }
 }
 
 fn execute_arithmetic(
@@ -150,37 +213,22 @@ pub fn handle_strings(
         }
         Command::MGet { keys } => {
             encode_array_header(write_buf, keys.len());
-            for key in keys {
-                let hash = hash_key(key);
-                // The shard read lock is held until encoding has copied the payload.
-                let encoded = unsafe {
-                    table.with_read_lock_entry(hash, key, now_sec, |entry, value| {
-                        if entry.value_type == VALUE_TYPE_STRING {
-                            encode_bulk_string(write_buf, value);
-                            true
-                        } else {
-                            false
-                        }
-                    })
-                };
-                if encoded != Some(true) {
-                    encode_null(write_buf);
-                }
-            }
-        }
-        Command::MSet { pairs } => {
-            for (key, value) in pairs {
-                let hash = hash_key(key);
-                let result = table.with_shard_mut(hash, |shard| {
-                    store_string(shard, pool, hash, key, value, 0, None)
+            let hashed_keys: smallvec::SmallVec<[(u64, &[u8]); 8]> =
+                keys.into_iter().map(|key| (hash_key(key), key)).collect();
+            // Payloads are retired under their shard locks. This callback only copies bytes.
+            unsafe {
+                table.with_read_lock_entries(&hashed_keys, now_sec, |payload| match payload {
+                    Some((entry, value)) if entry.value_type == VALUE_TYPE_STRING => {
+                        encode_bulk_string(write_buf, value);
+                    }
+                    _ => encode_null(write_buf),
                 });
-                if let Err(error) = result {
-                    encode_error(write_buf, error);
-                    return Ok(true);
-                }
             }
-            encode_simple_string(write_buf, "OK");
         }
+        Command::MSet { pairs } => match store_string_batch(table, pool, &pairs) {
+            Ok(()) => encode_simple_string(write_buf, "OK"),
+            Err(error) => encode_error(write_buf, error),
+        },
         Command::Del { keys } => {
             let mut deleted = 0i64;
             for key in keys {

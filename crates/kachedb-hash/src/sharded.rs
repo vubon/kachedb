@@ -9,7 +9,10 @@
 use parking_lot::RwLock;
 
 use crate::{
-    entry::{HashEntry, SnapshotPayloadEntry, TableEntry},
+    entry::{
+        HashEntry, INLINE_KEY_CAPACITY, MAX_KEY_LEN, SnapshotPayloadEntry, StringBatchEntry,
+        TableEntry,
+    },
     glob::CompiledPattern,
     table::{SwissTable, next_bit_reversed_cursor},
 };
@@ -87,6 +90,14 @@ impl ShardedSwissTable {
     fn shard_idx(hash: u64) -> usize {
         // Use upper bits of hash to avoid correlation with H1/H2 in SwissTable
         ((hash >> 32) as usize) & SHARD_MASK
+    }
+
+    fn select_shards(hashes: impl Iterator<Item = u64>) -> [bool; NUM_SHARDS] {
+        let mut selected = [false; NUM_SHARDS];
+        for hash in hashes {
+            selected[Self::shard_idx(hash)] = true;
+        }
+        selected
     }
 
     /// Point lookup with TTL expiry validation.
@@ -222,6 +233,59 @@ impl ShardedSwissTable {
         f(&mut shard)
     }
 
+    /// Publishes prepared string slots atomically and returns the replaced slots.
+    /// On failure the caller still owns every prepared slot and no keys change.
+    #[allow(clippy::result_unit_err)]
+    pub fn insert_string_batch(
+        &self,
+        updates: &[StringBatchEntry<'_>],
+    ) -> Result<Vec<SlabBlockId>, ()> {
+        if updates.iter().any(|update| update.key.len() > MAX_KEY_LEN) {
+            return Err(());
+        }
+        let mut replaced = Vec::new();
+        replaced.try_reserve_exact(updates.len()).map_err(|_| ())?;
+        let mut overflow = Vec::new();
+        overflow.try_reserve_exact(updates.len()).map_err(|_| ())?;
+
+        let selected = Self::select_shards(updates.iter().map(|update| update.key_hash));
+        // from_fn visits indices in ascending order. Readers use the same order.
+        let mut guards: [_; NUM_SHARDS] =
+            std::array::from_fn(|index| selected[index].then(|| self.shards[index].table.write()));
+        let mut additional = [(0, 0); NUM_SHARDS];
+        for update in updates {
+            let index = Self::shard_idx(update.key_hash);
+            let shard = guards[index].as_ref().expect("affected shard is locked");
+            let is_new = shard.key_slot(update.key_hash, update.key).is_none();
+            if is_new {
+                additional[index].0 += 1;
+            }
+            let key_bytes = if is_new && update.key.len() > INLINE_KEY_CAPACITY {
+                additional[index].1 += 1;
+                let mut bytes = Vec::new();
+                bytes.try_reserve_exact(update.key.len()).map_err(|_| ())?;
+                bytes.extend_from_slice(update.key);
+                Some(bytes.into_boxed_slice())
+            } else {
+                None
+            };
+            overflow.push(key_bytes);
+        }
+        for (guard, (entries, long_keys)) in guards.iter_mut().zip(additional) {
+            if let Some(shard) = guard {
+                shard.reserve_insertions(entries, long_keys)?;
+            }
+        }
+
+        for (update, key_bytes) in updates.iter().zip(overflow) {
+            let shard = guards[Self::shard_idx(update.key_hash)]
+                .as_mut()
+                .expect("affected shard is locked");
+            replaced.extend(shard.insert_reserved_string(update, key_bytes));
+        }
+        Ok(replaced)
+    }
+
     /// Removes an entry by its 64-bit hash.
     ///
     /// Returns the removed `TableEntry` if found.
@@ -327,10 +391,43 @@ impl ShardedSwissTable {
     ) -> Option<R> {
         let idx = Self::shard_idx(hash);
         let shard = self.shards[idx].table.read();
+        let (entry, value) = unsafe { Self::read_payload(&shard, hash, key, now_sec) }?;
+        Some(f(entry, value))
+    }
+
+    /// Visits keys in input order while holding all their shard read locks.
+    ///
+    /// # Safety
+    ///
+    /// Indexed payloads must be live, sized correctly, and mutated or retired only
+    /// under their shard's write lock. The callback must not re-enter the table.
+    pub unsafe fn with_read_lock_entries(
+        &self,
+        keys: &[(u64, &[u8])],
+        now_sec: u32,
+        mut visit: impl FnMut(Option<(&HashEntry, &[u8])>),
+    ) {
+        let selected = Self::select_shards(keys.iter().map(|&(hash, _)| hash));
+        let guards: [_; NUM_SHARDS] =
+            std::array::from_fn(|index| selected[index].then(|| self.shards[index].table.read()));
+        for &(hash, key) in keys {
+            let shard = guards[Self::shard_idx(hash)]
+                .as_ref()
+                .expect("affected shard is locked");
+            visit(unsafe { Self::read_payload(shard, hash, key, now_sec) });
+        }
+    }
+
+    unsafe fn read_payload<'a>(
+        shard: &'a SwissTable,
+        hash: u64,
+        key: &[u8],
+        now_sec: u32,
+    ) -> Option<(&'a HashEntry, &'a [u8])> {
         let entry = shard.lookup_key_checked(hash, key, now_sec)?;
         let ptr = unsafe { kachedb_core::resolve_slot_ptr(entry.slab_block_id) }?;
         let slice = unsafe { std::slice::from_raw_parts(ptr, entry.value_len as usize) };
-        Some(f(entry, slice))
+        Some((entry, slice))
     }
 
     /// Updates the TTL of the exact key.
@@ -515,6 +612,40 @@ mod tests {
     use crate::table::hash_key;
     use std::sync::Arc;
     use std::thread;
+
+    #[test]
+    fn string_batch_reserves_space_for_colliding_overflow_keys() {
+        let table = ShardedSwissTable::with_total_capacity(64);
+        let hash = 42;
+        let keys: Vec<_> = (0..72).map(|index| vec![index; 64]).collect();
+        let old = SlabBlockId::new(1, 0);
+        table
+            .insert_typed_with_key(hash, &keys[0], old, 5, 200, crate::VALUE_TYPE_HASH)
+            .unwrap();
+        let updates: Vec<_> = keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| StringBatchEntry {
+                key_hash: hash,
+                key,
+                slab_block_id: SlabBlockId::new(2, index as u16),
+                value_len: 3,
+            })
+            .collect();
+
+        assert_eq!(table.insert_string_batch(&updates).unwrap(), [old]);
+        table.with_shard(hash, |shard| {
+            assert_eq!(shard.len(), updates.len());
+            assert!(shard.capacity() > 64);
+            for update in updates {
+                let entry = shard.lookup_key_checked(hash, update.key, 0).unwrap();
+                assert_eq!(shard.key_bytes(entry), update.key);
+                assert_eq!(entry.slab_block_id, update.slab_block_id);
+                assert_eq!(entry.value_type, crate::VALUE_TYPE_STRING);
+                assert_eq!(entry.expire_at_secs, 0);
+            }
+        });
+    }
 
     #[test]
     fn test_sharded_basic_insert_lookup_remove() {

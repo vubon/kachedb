@@ -7,6 +7,26 @@ pub const AOF_MAGIC: [u8; 2] = [0x4B, 0x41];
 /// Magic (2B) + CmdId (1B) + Timestamp (8B) + KeyLen (2B) + ValLen (4B) + CRC32 (4B) = 21B.
 pub const AOF_HEADER_OVERHEAD: usize = 21;
 
+/// Maximum encoded size of one AOF record, including framing.
+pub const MAX_AOF_RECORD_SIZE: usize = 64 * 1024 * 1024;
+
+/// Counts the space for a batch with an empty envelope key, a u32 pair
+/// count, and u16 key and u32 value lengths before each pair's bytes.
+pub(crate) fn mset_fits_aof_record(pairs: &[(&[u8], &[u8])]) -> bool {
+    let header = AOF_HEADER_OVERHEAD + size_of::<u32>();
+    let pair_header = size_of::<u16>() + size_of::<u32>();
+    pairs
+        .iter()
+        .try_fold(header, |bytes, (key, value)| {
+            let bytes = bytes
+                .checked_add(pair_header)?
+                .checked_add(key.len())?
+                .checked_add(value.len())?;
+            (bytes <= MAX_AOF_RECORD_SIZE).then_some(bytes)
+        })
+        .is_some()
+}
+
 /// AOF operation codes.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
