@@ -14,6 +14,7 @@
 pub mod accept;
 pub mod aof_encode;
 pub mod connection;
+pub mod durability;
 pub mod engine;
 pub mod error;
 pub mod shutdown;
@@ -26,7 +27,7 @@ pub use accept::{
     AcceptDispatcher, create_dispatch_channels, dec_active_clients, get_active_clients,
     get_max_clients, inc_active_clients, set_max_clients,
 };
-pub use aof_encode::{AofOp, emit_aof, encode_frame, set_aof_channel};
+pub use aof_encode::{AofOp, encode_frame};
 pub use connection::{Connection, DEFAULT_VECTORS, get_requirepass, set_requirepass};
 pub use engine::WorkerThread;
 pub use error::NetError;

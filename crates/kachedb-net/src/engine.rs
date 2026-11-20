@@ -52,21 +52,25 @@ pub(crate) fn maintain_slabs(
     pool.drain_inbox();
     pool.tick_second(now);
     wheel.advance_expired_entries(now, expired);
-    for event in expired.drain(..) {
-        let (Some(key), Some(generation)) = (event.key.as_deref(), event.generation) else {
-            continue;
-        };
-        if let Some(entry) = table.remove_key_if_expired(
-            event.key_hash,
-            key,
-            event.slab_block_id,
-            event.expire_at_sec,
-            generation,
-            now,
-        ) && let Err(error) = pool.deallocate(entry.slab_block_id)
-        {
-            log::error!("Failed to retire expired slab: {error}");
-        }
+    if !expired.is_empty() {
+        crate::durability::with_commit_fence(|| {
+            for event in expired.drain(..) {
+                let (Some(key), Some(generation)) = (event.key.as_deref(), event.generation) else {
+                    continue;
+                };
+                if let Some(entry) = table.remove_key_if_expired(
+                    event.key_hash,
+                    key,
+                    event.slab_block_id,
+                    event.expire_at_sec,
+                    generation,
+                    now,
+                ) && let Err(error) = pool.deallocate(entry.slab_block_id)
+                {
+                    log::error!("Failed to retire expired slab: {error}");
+                }
+            }
+        });
     }
     if now % 10 == 0 {
         pool.reclaim_empty_arenas();

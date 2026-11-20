@@ -22,7 +22,7 @@ Zero CPU cycles or lock contention are added to client queries.
                                  │
                    (AES-256-GCM / ChaCha20-Poly1305)
                                  ▼
-              [ KDB\x06 Authenticated Ciphertext Stream ]
+              [ KDB\x07 Authenticated Ciphertext Stream ]
                                  │
                       [ dump.kdb on Disk ]
 ```
@@ -86,15 +86,15 @@ snapshot-encryption-key "your_strong_secret_passphrase_here"
 
 ---
 
-## 📦 Wire Format Specification (`KDB\x06`)
+## 📦 Wire Format Specification (`KDB\x07`)
 
-Snapshot V6 retains the encrypted envelope introduced in V3.
+Snapshot V7 retains the encrypted envelope introduced in V3. The payload includes an optional AOF checkpoint and HNSW graph state.
 
 ```text
 +---------------------------------------------------------------------------------+
 | Offset | Field                  | Size (Bytes) | Description                    |
 +--------+------------------------+--------------+--------------------------------+
-| 0      | Magic Header           | 4            | b"KDB\x06"                     |
+| 0      | Magic Header           | 4            | b"KDB\x07"                     |
 | 4      | Timestamp              | 8            | Unix Epoch seconds (u64 LE)    |
 | 12     | Flags                  | 4            | Bit 0: Encrypted (1=yes, 0=no) |
 |        |                        |              | Bits 1..3: Cipher Suite Code   |
@@ -115,7 +115,7 @@ Snapshot V6 retains the encrypted envelope introduced in V3.
 ```
 
 ### Backward Compatibility
-* Legacy plaintext snapshots can be read without an encryption key. KV entries without original key bytes require migration. [Snapshot recovery rules](../commands/scanning.md#-snapshot-durability--recovery-format-v6)
+* Legacy plaintext snapshots can be read without an encryption key. KV entries without original key bytes require migration. [Snapshot recovery rules](../commands/scanning.md#-snapshot-durability--recovery-format-v7)
 * Unencrypted **`KDB\x03`** snapshots (`flags = 0`) hydrate state directly with zero decryption overhead.
 
 ---

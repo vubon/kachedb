@@ -1,10 +1,9 @@
 //! Key expiry and TTL command execution handlers.
 
-use kachedb_core::{HashedTimingWheel, SlabPool};
+use kachedb_core::{HashedTimingWheel, pool::SlotAllocator};
 use kachedb_hash::{ShardedSwissTable, hash_key};
 use kachedb_proto_resp::{Command, encode_integer};
 
-use crate::aof_encode::{AofOp, emit_aof};
 use crate::error::NetError;
 
 /// Executes key TTL and expiration commands.
@@ -12,7 +11,7 @@ pub fn handle_expiry(
     cmd: Command<'_>,
     write_buf: &mut Vec<u8>,
     table: &ShardedSwissTable,
-    pool: &mut SlabPool,
+    pool: &mut impl SlotAllocator,
     now_sec: u32,
     timing_wheel: Option<&mut HashedTimingWheel>,
 ) -> Result<bool, NetError> {
@@ -57,7 +56,7 @@ pub fn handle_expiry(
 
     let hash = hash_key(key);
     let updated = if let Some(deadline) = deadline {
-        let updated = table.with_shard_mut(hash, |shard| {
+        table.with_shard_mut(hash, |shard| {
             let Some(block) = shard
                 .lookup_key_checked(hash, key, now_sec)
                 .map(|entry| entry.slab_block_id)
@@ -72,11 +71,7 @@ pub fn handle_expiry(
                 wheel.schedule_key(hash, key, block, deadline);
             }
             true
-        });
-        if updated {
-            emit_aof(AofOp::Expire, key, deadline.to_string().as_bytes(), now_sec);
-        }
-        updated
+        })
     } else {
         let removed = table.with_shard_mut(hash, |shard| {
             shard.lookup_key_checked(hash, key, now_sec)?;
@@ -84,7 +79,6 @@ pub fn handle_expiry(
         });
         if let Some(entry) = removed {
             let _ = pool.deallocate(entry.slab_block_id);
-            emit_aof(AofOp::Del, key, &[], now_sec);
         }
         removed.is_some()
     };

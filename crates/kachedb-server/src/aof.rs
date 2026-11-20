@@ -3,81 +3,19 @@
 //! Provides binary crash-consistent persistence with `.kaof` frames, CRC32 integrity checks,
 //! and configurable `fsync` policies (`always`, `everysec`, `no`).
 
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender, bounded};
+use crossbeam_channel::{Receiver, RecvTimeoutError};
+use kachedb_net::aof_encode::encode_checked_frame;
+pub use kachedb_net::aof_encode::{AOF_HEADER_OVERHEAD, AOF_MAGIC, AofOp, encode_frame};
+pub use kachedb_net::durability::AppendFsync;
+use kachedb_net::durability::{AofDispatch, Checkpoint, WriterRequest};
 use thiserror::Error;
-
-/// Magic bytes embedded at the beginning of every `.kaof` frame: "KA" (0x4B, 0x41).
-pub const AOF_MAGIC: [u8; 2] = [0x4B, 0x41];
-
-/// Minimum frame size with 0-byte key and 0-byte value:
-/// Magic (2B) + CmdId (1B) + Timestamp (8B) + KeyLen (2B) + ValLen (4B) + CRC32 (4B) = 21B.
-pub const AOF_HEADER_OVERHEAD: usize = 21;
-
-/// AOF operation codes.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AofOp {
-    Set = 0x01,
-    Del = 0x02,
-    Expire = 0x03,
-    VAdd = 0x04,
-    VIndexCreate = 0x05,
-    VIndexDrop = 0x06,
-    HSet = 0x07,
-    HDel = 0x08,
-}
-
-impl TryFrom<u8> for AofOp {
-    type Error = AofError;
-
-    fn try_from(val: u8) -> Result<Self, Self::Error> {
-        match val {
-            0x01 => Ok(Self::Set),
-            0x02 => Ok(Self::Del),
-            0x03 => Ok(Self::Expire),
-            0x04 => Ok(Self::VAdd),
-            0x05 => Ok(Self::VIndexCreate),
-            0x06 => Ok(Self::VIndexDrop),
-            0x07 => Ok(Self::HSet),
-            0x08 => Ok(Self::HDel),
-            other => Err(AofError::InvalidOpCode(other)),
-        }
-    }
-}
-
-/// Fsync policy for flushing dirty AOF writes to disk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AppendFsync {
-    /// Fsync on every batch of writes. Maximum durability.
-    Always,
-    /// Fsync once per second in background. Balance of speed and 1s durability guarantee.
-    #[default]
-    EverySec,
-    /// Never explicitly fsync. Rely on OS page cache flushing. Maximum throughput.
-    No,
-}
-
-impl AppendFsync {
-    pub fn parse(s: &str) -> Option<Self> {
-        if s.eq_ignore_ascii_case("always") {
-            Some(Self::Always)
-        } else if s.eq_ignore_ascii_case("everysec") {
-            Some(Self::EverySec)
-        } else if s.eq_ignore_ascii_case("no") {
-            Some(Self::No)
-        } else {
-            None
-        }
-    }
-}
 
 #[derive(Debug, Error)]
 pub enum AofError {
@@ -98,45 +36,30 @@ pub enum AofError {
     UnexpectedEof,
     #[error("Cannot rewrite AOF for an entry without original key bytes")]
     MissingKeyBytes,
+    #[error("Invalid AOF record: {0}")]
+    InvalidRecord(&'static str),
+    #[error("AOF replay rejected a mutation: {0}")]
+    Apply(String),
+    #[error("AOF and snapshot cannot be combined: {0}")]
+    Migration(&'static str),
+    #[error("AOF worker terminated unexpectedly")]
+    WriterStopped,
+    #[error("AOF record at byte {offset} is invalid: {source}")]
+    AtOffset { offset: u64, source: Box<AofError> },
 }
 
 /// A parsed `.kaof` frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AofFrame {
+pub struct AofFrame<'a> {
     pub op: AofOp,
     pub timestamp_sec: u64,
-    pub key: Vec<u8>,
-    pub value: Vec<u8>,
-}
-
-/// Encodes an AOF mutation into a binary `.kaof` frame with CRC32.
-#[allow(dead_code)]
-pub fn encode_frame(op: AofOp, key: &[u8], value: &[u8], timestamp_sec: u64) -> Vec<u8> {
-    let key_len = key.len() as u16;
-    let val_len = value.len() as u32;
-    let total_len = AOF_HEADER_OVERHEAD + key.len() + value.len();
-
-    let mut buf = Vec::with_capacity(total_len);
-    buf.extend_from_slice(&AOF_MAGIC);
-    buf.push(op as u8);
-    buf.extend_from_slice(&timestamp_sec.to_le_bytes());
-    buf.extend_from_slice(&key_len.to_le_bytes());
-    buf.extend_from_slice(key);
-    buf.extend_from_slice(&val_len.to_le_bytes());
-    buf.extend_from_slice(value);
-
-    // Compute CRC32 from OpCode (offset 2) through end of value
-    let mut hasher = crc32fast::Hasher::new();
-    hasher.update(&buf[2..]);
-    let crc = hasher.finalize();
-
-    buf.extend_from_slice(&crc.to_le_bytes());
-    buf
+    pub key: &'a [u8],
+    pub value: &'a [u8],
 }
 
 /// Attempts to decode a single `.kaof` frame from a byte buffer.
 /// Returns `Ok(Some((frame, consumed_bytes)))` on success, or `Ok(None)` if buffer has incomplete frame.
-pub fn decode_frame(src: &[u8]) -> Result<Option<(AofFrame, usize)>, AofError> {
+pub fn decode_frame(src: &[u8]) -> Result<Option<(AofFrame<'_>, usize)>, AofError> {
     if src.len() < AOF_HEADER_OVERHEAD {
         return Ok(None);
     }
@@ -145,7 +68,7 @@ pub fn decode_frame(src: &[u8]) -> Result<Option<(AofFrame, usize)>, AofError> {
         return Err(AofError::CorruptMagic);
     }
 
-    let op = AofOp::try_from(src[2])?;
+    let op = AofOp::try_from(src[2]).map_err(|_| AofError::InvalidOpCode(src[2]))?;
     let timestamp_sec = u64::from_le_bytes([
         src[3], src[4], src[5], src[6], src[7], src[8], src[9], src[10],
     ]);
@@ -168,8 +91,8 @@ pub fn decode_frame(src: &[u8]) -> Result<Option<(AofFrame, usize)>, AofError> {
         return Ok(None);
     }
 
-    let key = src[13..val_offset].to_vec();
-    let value = src[val_offset + 4..val_offset + 4 + val_len].to_vec();
+    let key = &src[13..val_offset];
+    let value = &src[val_offset + 4..val_offset + 4 + val_len];
 
     let crc_offset = val_offset + 4 + val_len;
     let stored_crc = u32::from_le_bytes([
@@ -201,125 +124,136 @@ pub fn decode_frame(src: &[u8]) -> Result<Option<(AofFrame, usize)>, AofError> {
     )))
 }
 
-/// Asynchronous background AOF file writer.
+pub fn open_locked(path: &Path, create: bool) -> Result<File, AofError> {
+    let file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(create)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(AofError::InvalidRecord("AOF must be a regular file"));
+    }
+    file.try_lock().map_err(std::io::Error::from)?;
+    Ok(file)
+}
+
+/// An opened journal and the worker responsible for its ordered writes.
 pub struct AofWriter {
-    tx: Sender<Vec<u8>>,
-    running: Arc<AtomicBool>,
-    worker_handle: Option<JoinHandle<()>>,
+    dispatch: Arc<AofDispatch>,
+    worker_handle: Option<JoinHandle<Result<(), AofError>>>,
 }
 
 impl AofWriter {
-    /// Starts the background AOF writer thread for the given file path and fsync policy.
-    pub fn start(path: impl Into<PathBuf>, policy: AppendFsync) -> Result<Self, AofError> {
-        let path = path.into();
-        let (tx, rx) = bounded::<Vec<u8>>(65536);
-        let running = Arc::new(AtomicBool::new(true));
-        let running_clone = Arc::clone(&running);
-
-        let handle = thread::Builder::new()
+    pub fn start(
+        mut file: File,
+        path: &Path,
+        policy: AppendFsync,
+        checkpoint: Checkpoint,
+        initialize: Option<bool>,
+    ) -> Result<Self, AofError> {
+        if let Some(requires_snapshot) = initialize {
+            let mut header = checkpoint.generation.to_vec();
+            header.push(u8::from(requires_snapshot));
+            file.write_all(&encode_checked_frame(AofOp::Generation, &[], &header, 0))?;
+            file.sync_all()?;
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            std::fs::File::open(parent)?.sync_all()?;
+        }
+        let (dispatch, rx) = AofDispatch::new(checkpoint, policy);
+        let worker_dispatch = dispatch.clone();
+        let worker_handle = thread::Builder::new()
             .name("kachedb-aof-writer".into())
             .spawn(move || {
-                Self::writer_loop(path, policy, rx, running_clone);
-            })
-            .map_err(AofError::Io)?;
-
+                let result = Self::writer_loop(&mut file, policy, &rx, &worker_dispatch);
+                if let Err(error) = &result {
+                    log::error!("AOF writer failed: {error}");
+                }
+                worker_dispatch.fail();
+                result
+            })?;
         Ok(Self {
-            tx,
-            running,
-            worker_handle: Some(handle),
+            dispatch,
+            worker_handle: Some(worker_handle),
         })
     }
 
-    /// Returns a sender channel handle for worker threads to push mutation frames.
-    pub fn channel(&self) -> Sender<Vec<u8>> {
-        self.tx.clone()
-    }
-
-    /// Appends a mutation command frame asynchronously to the AOF.
-    #[allow(dead_code)]
-    pub fn append(&self, op: AofOp, key: &[u8], value: &[u8]) {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let frame = encode_frame(op, key, value, ts);
-        let _ = self.tx.try_send(frame);
-    }
-
-    /// Appends raw pre-encoded frame bytes directly to the AOF.
-    #[allow(dead_code)]
-    pub fn append_raw(&self, frame: Vec<u8>) {
-        let _ = self.tx.try_send(frame);
+    pub fn dispatch(&self) -> Arc<AofDispatch> {
+        self.dispatch.clone()
     }
 
     fn writer_loop(
-        path: PathBuf,
+        file: &mut std::fs::File,
         policy: AppendFsync,
-        rx: Receiver<Vec<u8>>,
-        running: Arc<AtomicBool>,
-    ) {
-        let mut file = match OpenOptions::new().create(true).append(true).open(&path) {
-            Ok(f) => f,
-            Err(e) => {
-                log::error!("AofWriter: failed to open AOF file at {:?}: {e}", path);
-                return;
-            }
-        };
-
-        let mut last_fsync = Instant::now();
-        let mut batch_buf = Vec::with_capacity(128 * 1024);
-
-        while running.load(Ordering::Relaxed) || !rx.is_empty() {
-            // Receive first item with 100ms timeout
+        rx: &Receiver<WriterRequest>,
+        dispatch: &AofDispatch,
+    ) -> Result<(), AofError> {
+        let mut last_sync = Instant::now();
+        let mut dirty = false;
+        loop {
             match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(frame) => {
-                    batch_buf.extend_from_slice(&frame);
-                    // Drain any additional pending frames
-                    while let Ok(f) = rx.try_recv() {
-                        batch_buf.extend_from_slice(&f);
-                        if batch_buf.len() >= 64 * 1024 {
-                            break;
+                Ok(WriterRequest::Record {
+                    bytes,
+                    done,
+                    permit,
+                }) => {
+                    let result = file.write_all(&bytes).and_then(|()| {
+                        if done.is_some() {
+                            file.sync_data()
+                        } else {
+                            Ok(())
                         }
+                    });
+                    if let Err(error) = result {
+                        dispatch.fail();
+                        return Err(error.into());
                     }
-
-                    if let Err(e) = file.write_all(&batch_buf) {
-                        log::error!("AofWriter: failed to write batch to {:?}: {e}", path);
+                    dirty = done.is_none();
+                    if let Some(done) = done {
+                        let _ = done.send(());
                     }
-                    batch_buf.clear();
-
-                    if policy == AppendFsync::Always {
-                        let _ = file.sync_data();
-                    }
+                    drop(permit);
                 }
-                Err(_) => {
-                    // Timeout tick: check periodic fsync
+                Ok(WriterRequest::Sync(done)) => {
+                    file.sync_all()?;
+                    let _ = done.send(());
+                    last_sync = Instant::now();
+                    dirty = false;
                 }
+                Ok(WriterRequest::Stop) => {
+                    file.sync_all()?;
+                    return Ok(());
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return Err(AofError::WriterStopped),
             }
-
-            if policy == AppendFsync::EverySec && last_fsync.elapsed() >= Duration::from_secs(1) {
-                let _ = file.sync_data();
-                last_fsync = Instant::now();
+            if dirty
+                && policy == AppendFsync::EverySec
+                && last_sync.elapsed() >= Duration::from_secs(1)
+            {
+                file.sync_data()?;
+                last_sync = Instant::now();
+                dirty = false;
             }
         }
-
-        // Final flush before thread termination
-        let _ = file.flush();
-        let _ = file.sync_all();
-        log::info!("AofWriter: safely stopped, flushed AOF to {:?}", path);
     }
 
-    /// Explicitly stops the background AOF writer thread and joins it.
-    pub fn stop(&mut self) {
-        self.running.store(false, Ordering::Relaxed);
+    pub fn stop(&mut self) -> Result<(), AofError> {
         if let Some(handle) = self.worker_handle.take() {
-            let _ = handle.join();
+            self.dispatch.stop();
+            handle.join().map_err(|_| AofError::WriterStopped)??;
         }
+        Ok(())
     }
 }
 
 impl Drop for AofWriter {
     fn drop(&mut self) {
-        self.stop();
+        if let Err(error) = self.stop() {
+            log::error!("AOF shutdown failed: {error}");
+        }
     }
 }
 

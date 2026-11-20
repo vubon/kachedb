@@ -6,7 +6,6 @@ use kachedb_proto_resp::{
 };
 use kachedb_vector::VectorIndexRegistry;
 
-use crate::aof_encode::{AofOp, emit_aof};
 use crate::error::NetError;
 
 /// Executes vector index and similarity search commands.
@@ -27,16 +26,19 @@ pub fn handle_vectors(
             tag_mask,
             parent_key,
         } => {
-            if vector_bytes.len() != dim * 4 {
+            if dim.checked_mul(4) != Some(vector_bytes.len()) {
                 encode_error(
                     write_buf,
                     &format!(
-                        "ERR vector byte length {} does not match dimension {} (expected {} bytes)",
+                        "ERR vector byte length {} does not match dimension {}",
                         vector_bytes.len(),
                         dim,
-                        dim * 4
                     ),
                 );
+                return Ok(true);
+            }
+            if id.is_empty() || dim == 0 {
+                encode_error(write_buf, "ERR vector ID and dimension must be nonempty");
                 return Ok(true);
             }
 
@@ -46,43 +48,16 @@ pub fn handle_vectors(
                 .map(|chunk| f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                 .collect();
 
-            let inserted_ok = if let Some(hnsw) = vectors.get_hnsw(index) {
-                match hnsw.insert(id, &floats, payload, ttl_sec, now_sec) {
-                    Ok(()) => {
-                        encode_integer(write_buf, 1);
-                        true
-                    }
-                    Err(e) => {
-                        encode_error(write_buf, &format!("ERR {e}"));
-                        false
-                    }
-                }
+            let inserted = if let Some(hnsw) = vectors.get_hnsw(index) {
+                hnsw.insert(id, &floats, payload, ttl_sec, now_sec)
             } else {
-                let vec_idx = vectors.get_or_create(index);
-                match vec_idx.insert(id, &floats, payload, ttl_sec, now_sec, tag_mask, parent_key) {
-                    Ok(()) => {
-                        encode_integer(write_buf, 1);
-                        true
-                    }
-                    Err(e) => {
-                        encode_error(write_buf, &format!("ERR {e}"));
-                        false
-                    }
-                }
+                vectors
+                    .get_or_create(index)
+                    .insert(id, &floats, payload, ttl_sec, now_sec, tag_mask, parent_key)
             };
-
-            if inserted_ok {
-                let mut val =
-                    Vec::with_capacity(4 + vector_bytes.len() + payload.map_or(0, |p| p.len()));
-                val.extend_from_slice(&(dim as u32).to_le_bytes());
-                val.extend_from_slice(vector_bytes);
-                if let Some(p) = payload {
-                    val.extend_from_slice(p);
-                }
-                let mut k = index.to_vec();
-                k.push(0);
-                k.extend_from_slice(id);
-                emit_aof(AofOp::VAdd, &k, &val, now_sec);
+            match inserted {
+                Ok(()) => encode_integer(write_buf, 1),
+                Err(error) => encode_error(write_buf, &format!("ERR {error}")),
             }
         }
         Command::VSearch {
@@ -340,6 +315,13 @@ pub fn handle_vectors(
             metric,
             quantization,
         } => {
+            if dim == 0
+                || u32::try_from(dim).is_err()
+                || m.is_some_and(|m| m.checked_mul(2).is_none())
+            {
+                encode_error(write_buf, "ERR invalid HNSW dimension or M parameter");
+                return Ok(true);
+            }
             let metric_val = metric
                 .and_then(|m| std::str::from_utf8(m).ok())
                 .and_then(kachedb_vector::VectorMetric::parse)
@@ -353,15 +335,10 @@ pub fn handle_vectors(
             let ef_s = ef_search.unwrap_or(50);
 
             vectors.create_hnsw(name, dim, m_val, ef_c, ef_s, metric_val, quant_val);
-            let val = (dim as u32).to_le_bytes();
-            emit_aof(AofOp::VIndexCreate, name, &val, now_sec);
             encode_simple_string(write_buf, "OK");
         }
         Command::VIndexDrop { name } => {
             let dropped = vectors.drop_hnsw(name) || vectors.delete_index(name);
-            if dropped {
-                emit_aof(AofOp::VIndexDrop, name, &[], now_sec);
-            }
             encode_integer(write_buf, if dropped { 1 } else { 0 });
         }
         Command::VIndexInfo { name } => {

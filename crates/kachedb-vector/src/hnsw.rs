@@ -113,6 +113,14 @@ struct HnswInner {
     rng_state: u64,
 }
 
+/// A checkpoint of the graph, including its node IDs and insertion state.
+pub struct HnswGraph {
+    pub entry_point: Option<(u32, usize)>,
+    pub nodes: Vec<Option<HnswNode>>,
+    pub layers: Vec<Vec<(u32, Vec<u32>)>>,
+    pub rng_state: u64,
+}
+
 impl HnswInner {
     fn random_level(&mut self, ml: f64) -> usize {
         self.rng_state ^= self.rng_state << 13;
@@ -265,10 +273,7 @@ impl HnswIndex {
             l2_normalize(&mut processed_vec);
         }
 
-        let expire_at_secs = ttl_sec
-            .map(|s| if now_sec > 0 { now_sec + s } else { s })
-            .unwrap_or(0);
-
+        let expire_at_secs = ttl_sec.map_or(0, |ttl| now_sec.saturating_add(ttl));
         let (vector_fp32, vector_sq8) = match self.quantization {
             QuantizationMode::None => (Some(processed_vec.clone()), None),
             QuantizationMode::SQ8 => {
@@ -585,6 +590,47 @@ impl HnswIndex {
             }
         }
         false
+    }
+
+    pub fn snapshot_graph(&self) -> HnswGraph {
+        let inner = self.inner.read();
+        HnswGraph {
+            entry_point: inner.entry_point,
+            nodes: inner.nodes.clone(),
+            layers: inner
+                .layers
+                .iter()
+                .map(|layer| {
+                    layer
+                        .iter()
+                        .map(|(&id, neighbors)| (id, neighbors.clone()))
+                        .collect()
+                })
+                .collect(),
+            rng_state: inner.rng_state,
+        }
+    }
+
+    /// Installs a validated graph and reconstructs the lookup map from its nodes.
+    pub fn restore_graph(&self, graph: HnswGraph) -> bool {
+        let mut key_map = AHashMap::new();
+        for node in graph.nodes.iter().flatten() {
+            if key_map.insert(node.key.clone(), node.id).is_some() {
+                return false;
+            }
+        }
+        *self.inner.write() = HnswInner {
+            entry_point: graph.entry_point,
+            nodes: graph.nodes,
+            key_map,
+            layers: graph
+                .layers
+                .into_iter()
+                .map(|layer| layer.into_iter().collect())
+                .collect(),
+            rng_state: graph.rng_state,
+        };
+        true
     }
 
     /// Returns index statistics.

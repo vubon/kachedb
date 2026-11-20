@@ -1,11 +1,11 @@
 //! `kachedb-server` — Asynchronous Snapshot Persistence Engine (`dump.kdb`).
 //!
-//! Provides zero-lock background point-in-time snapshot persistence for KacheDB's
+//! Provides background point-in-time snapshot persistence for KacheDB's
 //! SIMD vector indexes and SwissTable in-memory key-value cache with hardware-accelerated
 //! authenticated streaming encryption (AES-256-GCM / ChaCha20-Poly1305).
 //!
-//! Format Specification (v6):
-//! - Magic Header: `b"KDB\x06"` (4 bytes)
+//! Format Specification (v7):
+//! - Magic Header: `b"KDB\x07"` (4 bytes)
 //! - Created Timestamp: `u64` (8 bytes, Unix epoch seconds)
 //! - Flags: `u32` (4 bytes, bit 0: encrypted, bits 1..3: cipher suite)
 //! - If encrypted:
@@ -15,13 +15,16 @@
 //!     - For each chunk: `chunk_len: u32`, `ciphertext + 16-byte auth tag`
 //!     - EOF sentinel: `0u32` (4 bytes of 0)
 //! - If unencrypted:
-//!   - Payload stream directly:
+//!   - Payload stream directly (the decrypted stream uses the same layout):
+//!     - Checkpoint flag, then generation (16 bytes) and sequence (u64) when present.
 //!     - Vector Section:
 //!       - `num_indexes: u32`
-//!       - For each index: `name_len: u16`, `name`, `dim: u32`, `num_entries: u32`
-//!         - For each entry: `key_len: u16`, `key`, `dim: u32`, `vector: [f32]`,
+//!       - Each index begins with a kind byte. Flat is 0 and HNSW is 1.
+//!       - Flat indexes: `name_len: u16`, `name`, `dim: u32`, `num_entries: u32`
+//!         - Each slot begins with a presence byte. A present entry carries `key_len: u16`, `key`, `dim: u32`, `vector: [f32]`,
 //!           `has_payload: u8`, `payload`, `expire_at_secs: u32`, `tag_mask: u64`,
 //!           `has_parent_key: u8`, `parent_key`
+//!       - HNSW indexes store parameters, node slots, graph edges, and RNG state.
 //!     - KV SwissTable Section:
 //!       - `num_entries: u32`
 //!       - For each entry: `key_hash: u64`, `key_len: u16`, `key: [u8]`, `value_type: u8`,
@@ -37,16 +40,18 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crc32fast::Hasher;
-use kachedb_core::{SlabClassType, SlabPool, resolve_slot_ptr};
-use kachedb_hash::{
-    HashSlotFrame, ShardedSwissTable, VALUE_TYPE_HASH, VALUE_TYPE_STRING, hash_key,
-};
-use kachedb_vector::{VectorEntry, VectorIndexRegistry};
+use kachedb_core::pool::SlotAllocator;
+use kachedb_hash::{ShardedSwissTable, hash_key};
+use kachedb_net::durability::{self, Checkpoint};
+use kachedb_vector::{VectorEntry, VectorIndexRegistry, index::FlatVectorSnapshot};
 use thiserror::Error;
 
 use crate::crypto::{
     ChunkDecryptor, ChunkEncryptor, CipherSuite, CryptoError, EncryptionKey, NONCE_LEN, SALT_LEN,
 };
+
+#[path = "snapshot_hnsw.rs"]
+mod hnsw;
 
 /// Magic bytes for KacheDB snapshot format v2 (Hybrid Context Engine enabled).
 pub const KDB_SNAPSHOT_MAGIC_V2: [u8; 4] = *b"KDB\x02";
@@ -63,57 +68,11 @@ pub const KDB_SNAPSHOT_MAGIC_V5: [u8; 4] = *b"KDB\x05";
 /// Magic bytes for KacheDB snapshot format v6 (all KV entries have original keys).
 pub const KDB_SNAPSHOT_MAGIC_V6: [u8; 4] = *b"KDB\x06";
 
+/// Magic bytes for snapshots with journal checkpoints and HNSW indexes.
+pub const KDB_SNAPSHOT_MAGIC_V7: [u8; 4] = *b"KDB\x07";
+
 /// Canonical active magic bytes for new snapshots.
-pub const KDB_SNAPSHOT_MAGIC: [u8; 4] = KDB_SNAPSHOT_MAGIC_V6;
-
-#[inline]
-fn hash_slab_class(needed_bytes: usize) -> Option<SlabClassType> {
-    if needed_bytes <= 128 {
-        Some(SlabClassType::AppSmall)
-    } else if needed_bytes <= 512 {
-        Some(SlabClassType::AppMedium)
-    } else if needed_bytes <= 4096 {
-        Some(SlabClassType::AppLarge)
-    } else {
-        None
-    }
-}
-
-#[allow(clippy::type_complexity)]
-fn parse_pairs_from_encoded(encoded: &[u8]) -> Option<smallvec::SmallVec<[(&[u8], &[u8]); 16]>> {
-    if encoded.len() < 2 {
-        return None;
-    }
-    let count = u16::from_le_bytes([encoded[0], encoded[1]]) as usize;
-    let mut offset = 2;
-    let mut pairs = smallvec::SmallVec::with_capacity(count);
-    for _ in 0..count {
-        if offset + 2 > encoded.len() {
-            return None;
-        }
-        let f_len = u16::from_le_bytes([encoded[offset], encoded[offset + 1]]) as usize;
-        offset += 2;
-        if offset + f_len > encoded.len() {
-            return None;
-        }
-        let f = &encoded[offset..offset + f_len];
-        offset += f_len;
-
-        if offset + 2 > encoded.len() {
-            return None;
-        }
-        let v_len = u16::from_le_bytes([encoded[offset], encoded[offset + 1]]) as usize;
-        offset += 2;
-        if offset + v_len > encoded.len() {
-            return None;
-        }
-        let v = &encoded[offset..offset + v_len];
-        offset += v_len;
-
-        pairs.push((f, v));
-    }
-    Some(pairs)
-}
+pub const KDB_SNAPSHOT_MAGIC: [u8; 4] = KDB_SNAPSHOT_MAGIC_V7;
 
 /// Flag indicating that snapshot payload is encrypted.
 pub const FLAG_ENCRYPTED: u32 = 0x01;
@@ -124,6 +83,12 @@ pub enum SnapshotError {
     Io(#[from] std::io::Error),
     #[error("Snapshot slab error: {0}")]
     Slab(#[from] kachedb_core::CoreError),
+    #[error("Invalid snapshot: {0}")]
+    Invalid(&'static str),
+    #[error(transparent)]
+    Aof(#[from] crate::aof::AofError),
+    #[error("Snapshot checkpoint failed: {0}")]
+    Admission(#[from] durability::AdmissionError),
     #[error("Corrupt snapshot magic header")]
     CorruptMagic,
     #[error(
@@ -182,6 +147,7 @@ pub struct SnapshotStats {
     pub total_vectors: usize,
     pub total_kv_entries: usize,
     pub bytes_written: usize,
+    pub checkpoint: Option<Checkpoint>,
 }
 
 /// Internal streaming payload writer supporting transparent chunked AEAD encryption.
@@ -287,6 +253,31 @@ impl<'a> PayloadWriter<'a> {
     }
 }
 
+struct SnapshotTempFile {
+    path: PathBuf,
+}
+
+impl SnapshotTempFile {
+    fn create(target: &Path) -> Result<(Self, File), SnapshotError> {
+        let mut nonce = [0; 8];
+        crate::crypto::generate_random_bytes(&mut nonce)?;
+        let mut temp = target.as_os_str().to_owned();
+        temp.push(format!(".{:016x}.tmp", u64::from_le_bytes(nonce)));
+        let path = PathBuf::from(temp);
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        Ok((Self { path }, file))
+    }
+}
+
+impl Drop for SnapshotTempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// Writes an atomic, point-in-time binary snapshot of all vector indexes and SwissTable keys.
 pub fn save_snapshot(
     target_path: &Path,
@@ -295,12 +286,46 @@ pub fn save_snapshot(
     now_sec: u32,
     encryption: Option<&SnapshotEncryptionConfig>,
 ) -> Result<SnapshotStats, SnapshotError> {
-    let tmp_path = target_path.with_extension("tmp");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&tmp_path)?;
+    let (flat, graphs, kv_items, checkpoint) = durability::with_commit_fence(|| {
+        let capture_at = if durability::dispatch().is_some() {
+            0
+        } else {
+            now_sec
+        };
+        let flat = vectors.snapshot_flat_slots(capture_at);
+        let graphs: Vec<_> = vectors
+            .hnsw_indexes()
+            .into_iter()
+            .map(|(name, index)| {
+                let graph = index.snapshot_graph();
+                (name, index, graph)
+            })
+            .collect();
+
+        let mut items = Vec::new();
+        for shard in 0..table.shard_count() {
+            // Workers keep published slots alive until unlinking under the shard write lock.
+            let entries = unsafe { table.snapshot_shard_with_payloads(shard, capture_at) }?;
+            if entries.iter().any(|entry| !entry.has_key) {
+                return Err(SnapshotError::MissingKeyBytes);
+            }
+            items.extend(entries);
+        }
+        let checkpoint = durability::dispatch()
+            .map(|writer| writer.checkpoint())
+            .transpose()?;
+        Ok::<_, SnapshotError>((flat, graphs, items, checkpoint))
+    })?;
+    let checkpoint = checkpoint
+        .map(|(checkpoint, synced)| {
+            synced
+                .recv()
+                .map_err(|_| crate::aof::AofError::WriterStopped)?;
+            Ok::<_, SnapshotError>(checkpoint)
+        })
+        .transpose()?;
+
+    let (temporary, mut file) = SnapshotTempFile::create(target_path)?;
 
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -363,33 +388,54 @@ pub fn save_snapshot(
         }
     };
 
+    writer.write_bytes(&[u8::from(checkpoint.is_some())])?;
+    if let Some(checkpoint) = checkpoint {
+        writer.write_bytes(&checkpoint.generation)?;
+        writer.write_bytes(&checkpoint.sequence.to_le_bytes())?;
+    }
+
     // 2. Vector Indexes Section
-    let index_snapshots = vectors.snapshot_all(now_sec);
-    let num_indexes = index_snapshots.len() as u32;
+    let num_indexes = u32::try_from(flat.len() + graphs.len())
+        .map_err(|_| SnapshotError::Invalid("too many indexes"))?;
     writer.write_bytes(&num_indexes.to_le_bytes())?;
 
     let mut total_vectors = 0;
-    for (name, dim_opt, entries) in index_snapshots {
-        let name_len = name.len() as u16;
+    for (name, index, graph) in graphs {
+        writer.write_bytes(&[1])?;
+        total_vectors += hnsw::write_index(&mut writer, &name, &index, &graph)?;
+    }
+    for FlatVectorSnapshot {
+        name,
+        dimension,
+        slots,
+    } in flat
+    {
+        writer.write_bytes(&[0])?;
+        let name_len = u16::try_from(name.len())
+            .map_err(|_| SnapshotError::Invalid("index name is too long"))?;
         writer.write_bytes(&name_len.to_le_bytes())?;
         writer.write_bytes(&name)?;
 
-        let dim = dim_opt.unwrap_or(0) as u32;
+        let dim = u32::try_from(dimension.unwrap_or(0))
+            .map_err(|_| SnapshotError::Invalid("index dimension is too large"))?;
         writer.write_bytes(&dim.to_le_bytes())?;
 
-        let num_entries = entries.len() as u32;
+        let num_entries = u32::try_from(slots.len())
+            .map_err(|_| SnapshotError::Invalid("too many vector slots"))?;
         writer.write_bytes(&num_entries.to_le_bytes())?;
-        total_vectors += entries.len();
-
-        for entry in entries {
-            let key_len = entry.key.len() as u16;
+        for slot in slots {
+            writer.write_bytes(&[u8::from(slot.is_some())])?;
+            let Some(entry) = slot else { continue };
+            total_vectors += 1;
+            let key_len = u16::try_from(entry.key.len())
+                .map_err(|_| SnapshotError::Invalid("vector key is too long"))?;
             writer.write_bytes(&key_len.to_le_bytes())?;
             writer.write_bytes(&entry.key)?;
 
             let entry_dim = entry.vector.len() as u32;
             writer.write_bytes(&entry_dim.to_le_bytes())?;
             for &f in &entry.vector {
-                writer.write_bytes(&f.to_ne_bytes())?;
+                writer.write_bytes(&f.to_le_bytes())?;
             }
 
             if let Some(ref payload) = entry.payload {
@@ -406,7 +452,8 @@ pub fn save_snapshot(
 
             if let Some(ref parent_key) = entry.parent_key {
                 writer.write_bytes(&[1])?; // HasParentKey = true
-                let pk_len = parent_key.len() as u16;
+                let pk_len = u16::try_from(parent_key.len())
+                    .map_err(|_| SnapshotError::Invalid("vector parent key is too long"))?;
                 writer.write_bytes(&pk_len.to_le_bytes())?;
                 writer.write_bytes(parent_key)?;
             } else {
@@ -416,40 +463,20 @@ pub fn save_snapshot(
     }
 
     // 3. KV SwissTable Section
-    type KvSnapshotItem = (u64, Vec<u8>, u8, Vec<u8>, u32);
-    let mut total_kv = 0;
-    let mut kv_items: Vec<KvSnapshotItem> = Vec::new();
-    for shard_idx in 0..table.shard_count() {
-        // Workers keep published slots alive until unlinking under the shard write lock.
-        let entries = unsafe { table.snapshot_shard_with_payloads(shard_idx, now_sec) }?;
-        for item in entries {
-            if !item.has_key {
-                return Err(SnapshotError::MissingKeyBytes);
-            }
-            kv_items.push((
-                item.key_hash,
-                item.key_bytes,
-                item.value_type,
-                item.val_bytes,
-                item.expire_at,
-            ));
-        }
-    }
-
-    let num_kv_entries = kv_items.len() as u32;
+    let num_kv_entries =
+        u32::try_from(kv_items.len()).map_err(|_| SnapshotError::Invalid("too many KV entries"))?;
     writer.write_bytes(&num_kv_entries.to_le_bytes())?;
-    total_kv += kv_items.len();
 
-    for (key_hash, key_bytes, val_type, val_bytes, expire_at) in kv_items {
-        writer.write_bytes(&key_hash.to_le_bytes())?;
-        let key_len = key_bytes.len() as u16;
+    for item in kv_items {
+        writer.write_bytes(&item.key_hash.to_le_bytes())?;
+        let key_len = item.key_bytes.len() as u16;
         writer.write_bytes(&key_len.to_le_bytes())?;
-        writer.write_bytes(&key_bytes)?;
-        writer.write_bytes(&[val_type])?;
-        let val_len = val_bytes.len() as u32;
+        writer.write_bytes(&item.key_bytes)?;
+        writer.write_bytes(&[item.value_type])?;
+        let val_len = item.val_bytes.len() as u32;
         writer.write_bytes(&val_len.to_le_bytes())?;
-        writer.write_bytes(&val_bytes)?;
-        writer.write_bytes(&expire_at.to_le_bytes())?;
+        writer.write_bytes(&item.val_bytes)?;
+        writer.write_bytes(&item.expire_at.to_le_bytes())?;
     }
 
     // 4. Finish payload writer
@@ -465,14 +492,20 @@ pub fn save_snapshot(
     drop(file);
 
     // 6. Atomic Rename Swap
-    std::fs::rename(&tmp_path, target_path)?;
+    std::fs::rename(&temporary.path, target_path)?;
+    let parent = target_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    File::open(parent)?.sync_all()?;
 
     Ok(SnapshotStats {
         timestamp_sec: ts,
         vector_indexes: num_indexes as usize,
         total_vectors,
-        total_kv_entries: total_kv,
+        total_kv_entries: num_kv_entries as usize,
         bytes_written: total_bytes,
+        checkpoint,
     })
 }
 
@@ -480,15 +513,26 @@ pub fn save_snapshot(
 pub fn load_snapshot(
     path: &Path,
     table: &ShardedSwissTable,
-    pool: &mut SlabPool,
+    pool: &mut impl SlotAllocator,
     vectors: &VectorIndexRegistry,
     encryption: Option<&SnapshotEncryptionConfig>,
 ) -> Result<Option<SnapshotStats>, SnapshotError> {
-    if !path.exists() {
-        return Ok(None);
-    }
+    load_snapshot_for_recovery(path, table, pool, vectors, encryption, |_| Ok(true))
+}
 
-    let mut file = File::open(path)?;
+pub fn load_snapshot_for_recovery(
+    path: &Path,
+    table: &ShardedSwissTable,
+    pool: &mut impl SlotAllocator,
+    vectors: &VectorIndexRegistry,
+    encryption: Option<&SnapshotEncryptionConfig>,
+    select: impl FnOnce(Option<Checkpoint>) -> Result<bool, SnapshotError>,
+) -> Result<Option<SnapshotStats>, SnapshotError> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
 
@@ -526,8 +570,11 @@ pub fn load_snapshot(
         || magic == KDB_SNAPSHOT_MAGIC_V4
         || magic == KDB_SNAPSHOT_MAGIC_V5
         || magic == KDB_SNAPSHOT_MAGIC_V6
+        || magic == KDB_SNAPSHOT_MAGIC_V7
     {
-        let version = if magic == KDB_SNAPSHOT_MAGIC_V6 {
+        let version = if magic == KDB_SNAPSHOT_MAGIC_V7 {
+            7u8
+        } else if magic == KDB_SNAPSHOT_MAGIC_V6 {
             6u8
         } else if magic == KDB_SNAPSHOT_MAGIC_V5 {
             5u8
@@ -603,9 +650,16 @@ pub fn load_snapshot(
         return Err(SnapshotError::CorruptMagic);
     };
 
-    // 3. Hydrate state from payload
+    let (checkpoint, payload) = if version >= 7 {
+        read_checkpoint(&payload)?
+    } else {
+        (None, payload.as_ref())
+    };
+    if !select(checkpoint)? {
+        return Ok(None);
+    }
     let (num_indexes, total_vectors, total_kv) =
-        hydrate_payload(&payload, version, table, pool, vectors)?;
+        hydrate_payload(payload, version, table, pool, vectors)?;
 
     log::info!(
         "Snapshot hydration: restored {} vector indexes ({} vectors), {} KV entries from {:?}",
@@ -621,7 +675,33 @@ pub fn load_snapshot(
         total_vectors,
         total_kv_entries: total_kv,
         bytes_written: data.len(),
+        checkpoint,
     }))
+}
+
+fn read_checkpoint(payload: &[u8]) -> Result<(Option<Checkpoint>, &[u8]), SnapshotError> {
+    match payload.split_first() {
+        Some((0, payload)) => Ok((None, payload)),
+        Some((1, payload)) if payload.len() >= 24 => Ok((
+            Some(Checkpoint {
+                generation: payload[..16].try_into().unwrap(),
+                sequence: u64::from_le_bytes(payload[16..24].try_into().unwrap()),
+            }),
+            &payload[24..],
+        )),
+        Some((flag, _)) if *flag > 1 => Err(SnapshotError::Invalid("invalid checkpoint flag")),
+        _ => Err(SnapshotError::UnexpectedEof),
+    }
+}
+
+fn read_presence(payload: &[u8], cursor: &mut usize) -> Result<bool, SnapshotError> {
+    let flag = payload.get(*cursor).ok_or(SnapshotError::UnexpectedEof)?;
+    *cursor += 1;
+    match flag {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(SnapshotError::Invalid("invalid snapshot presence flag")),
+    }
 }
 
 /// Helper function to hydrate vector indexes and SwissTable keys from an unencrypted payload byte slice.
@@ -629,7 +709,7 @@ fn hydrate_payload(
     payload: &[u8],
     version: u8,
     table: &ShardedSwissTable,
-    pool: &mut SlabPool,
+    pool: &mut impl SlotAllocator,
     vectors: &VectorIndexRegistry,
 ) -> Result<(usize, usize, usize), SnapshotError> {
     let mut cursor = 0;
@@ -649,6 +729,20 @@ fn hydrate_payload(
 
     let mut total_vectors = 0;
     for _ in 0..num_indexes {
+        if version >= 7 {
+            let kind = payload.get(cursor).ok_or(SnapshotError::UnexpectedEof)?;
+            cursor += 1;
+            match kind {
+                0 => {}
+                1 => {
+                    let (remaining, count) = hnsw::read_index(&payload[cursor..], vectors)?;
+                    cursor = content_len - remaining.len();
+                    total_vectors += count;
+                    continue;
+                }
+                _ => return Err(SnapshotError::Invalid("unknown vector index kind")),
+            }
+        }
         if cursor + 10 > content_len {
             return Err(SnapshotError::UnexpectedEof);
         }
@@ -676,8 +770,22 @@ fn hydrate_payload(
         ]) as usize;
         cursor += 4;
 
-        let mut entries = Vec::with_capacity(num_entries);
+        let min_slot_size = if version >= 7 { 1 } else { 20 };
+        if num_entries > (content_len - cursor) / min_slot_size {
+            return Err(SnapshotError::UnexpectedEof);
+        }
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(num_entries)
+            .map_err(|_| SnapshotError::Invalid("cannot reserve flat vector slots"))?;
         for _ in 0..num_entries {
+            if version >= 7 {
+                let flag = read_presence(payload, &mut cursor)?;
+                if !flag {
+                    slots.push(None);
+                    continue;
+                }
+            }
             if cursor + 6 > content_len {
                 return Err(SnapshotError::UnexpectedEof);
             }
@@ -697,25 +805,28 @@ fn hydrate_payload(
             ]) as usize;
             cursor += 4;
 
+            if entry_dim != dim {
+                return Err(SnapshotError::Invalid("vector has the wrong dimension"));
+            }
             let vec_bytes_len = entry_dim * 4;
             if cursor + vec_bytes_len + 1 > content_len {
                 return Err(SnapshotError::UnexpectedEof);
             }
-            let mut vector = Vec::with_capacity(entry_dim);
-            for i in 0..entry_dim {
-                let offset = cursor + i * 4;
-                vector.push(f32::from_ne_bytes([
-                    payload[offset],
-                    payload[offset + 1],
-                    payload[offset + 2],
-                    payload[offset + 3],
-                ]));
-            }
+            let decode = if version >= 7 {
+                f32::from_le_bytes
+            } else {
+                f32::from_ne_bytes
+            };
+            let vector = payload[cursor..cursor + vec_bytes_len]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .copied()
+                .map(decode)
+                .collect();
             cursor += vec_bytes_len;
 
-            let has_payload = payload[cursor];
-            cursor += 1;
-            let p_opt = if has_payload == 1 {
+            let p_opt = if read_presence(payload, &mut cursor)? {
                 if cursor + 4 > content_len {
                     return Err(SnapshotError::UnexpectedEof);
                 }
@@ -736,7 +847,7 @@ fn hydrate_payload(
                 None
             };
 
-            if cursor + 12 > content_len {
+            if cursor + 13 > content_len {
                 return Err(SnapshotError::UnexpectedEof);
             }
             let expire_at_secs = u32::from_le_bytes([
@@ -759,9 +870,7 @@ fn hydrate_payload(
             ]);
             cursor += 8;
 
-            let has_parent = payload[cursor];
-            cursor += 1;
-            let parent_key = if has_parent == 1 {
+            let parent_key = if read_presence(payload, &mut cursor)? {
                 if cursor + 2 > content_len {
                     return Err(SnapshotError::UnexpectedEof);
                 }
@@ -777,19 +886,28 @@ fn hydrate_payload(
                 None
             };
 
-            entries.push(VectorEntry {
+            if key.is_empty() || dim == 0 {
+                return Err(SnapshotError::Invalid("empty flat vector key or dimension"));
+            }
+            slots.push(Some(VectorEntry {
                 key,
                 vector,
                 payload: p_opt,
                 expire_at_secs,
                 tag_mask,
                 parent_key,
-            });
+            }));
+            total_vectors += 1;
         }
 
-        total_vectors += entries.len();
-        let dim_opt = if dim > 0 { Some(dim) } else { None };
-        vectors.restore_snapshot(&name, dim_opt, entries);
+        let dimension = (dim != 0).then_some(dim);
+        if !vectors.restore_flat_slots(FlatVectorSnapshot {
+            name,
+            dimension,
+            slots,
+        }) {
+            return Err(SnapshotError::Invalid("duplicate flat index or key"));
+        }
     }
 
     // 2. Hydrate SwissTable KV Section
@@ -863,51 +981,16 @@ fn hydrate_payload(
             ]);
             cursor += 4;
 
-            if value_type == VALUE_TYPE_HASH {
-                if let Some(pairs) = parse_pairs_from_encoded(val_bytes)
-                    && let Some(target_class) =
-                        hash_slab_class(HashSlotFrame::needed_bytes(None, &pairs))
-                    && let Ok(block_id) = pool.allocate(target_class)
-                {
-                    if let Some(ptr) = unsafe { resolve_slot_ptr(block_id) } {
-                        let slot = unsafe {
-                            std::slice::from_raw_parts_mut(ptr, target_class.slot_bytes())
-                        };
-                        if HashSlotFrame::build_from_pairs(slot, val_bytes).is_ok() {
-                            let _ = table.insert_typed_with_key(
-                                key_hash,
-                                key_bytes,
-                                block_id,
-                                target_class.slot_bytes() as u32,
-                                expire_at,
-                                VALUE_TYPE_HASH,
-                            );
-                            total_kv += 1;
-                        } else {
-                            let _ = pool.deallocate(block_id);
-                        }
-                    } else {
-                        let _ = pool.deallocate(block_id);
-                    }
-                }
-            } else if let Some(class) = SlabClassType::for_size(val_len)
-                && let Ok(block_id) = pool.allocate(class)
-                && let Some(ptr) = unsafe { resolve_slot_ptr(block_id) }
-            {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(val_bytes.as_ptr(), ptr, val_len);
-                }
-                let _ = table.insert_typed_with_key(
-                    key_hash,
-                    key_bytes,
-                    block_id,
-                    val_len as u32,
-                    expire_at,
-                    VALUE_TYPE_STRING,
-                );
-                total_kv += 1;
-            }
+            crate::aof_recovery::restore_value(
+                table, pool, key_hash, key_bytes, value_type, val_bytes, expire_at,
+            )?;
+            total_kv += 1;
         }
+    } else if version >= 7 {
+        return Err(SnapshotError::UnexpectedEof);
+    }
+    if cursor != content_len {
+        return Err(SnapshotError::Invalid("trailing snapshot bytes"));
     }
 
     Ok((num_indexes, total_vectors, total_kv))
@@ -1042,6 +1125,8 @@ impl Drop for SnapshotWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kachedb_core::{SlabClassType, SlabPool, resolve_slot_ptr};
+    use kachedb_hash::{HashSlotFrame, VALUE_TYPE_HASH, VALUE_TYPE_STRING};
 
     #[test]
     fn test_snapshot_roundtrip_vectors_and_kv_unencrypted() {
@@ -1093,7 +1178,7 @@ mod tests {
 
         // Verify on-disk file: magic is KDB\x06 and flags have FLAG_ENCRYPTED == 0 (plaintext)
         let raw_bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&raw_bytes[0..4], &KDB_SNAPSHOT_MAGIC_V6);
+        assert_eq!(&raw_bytes[0..4], &KDB_SNAPSHOT_MAGIC_V7);
         let flags =
             u32::from_le_bytes([raw_bytes[12], raw_bytes[13], raw_bytes[14], raw_bytes[15]]);
         assert_eq!(flags & FLAG_ENCRYPTED, 0);
@@ -1213,7 +1298,7 @@ mod tests {
 
         // Verify that raw file on disk is encrypted (magic is KDB\x06, flags indicate encrypted)
         let raw_bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&raw_bytes[0..4], &KDB_SNAPSHOT_MAGIC_V6);
+        assert_eq!(&raw_bytes[0..4], &KDB_SNAPSHOT_MAGIC_V7);
         let flags =
             u32::from_le_bytes([raw_bytes[12], raw_bytes[13], raw_bytes[14], raw_bytes[15]]);
         assert_ne!(flags & FLAG_ENCRYPTED, 0);

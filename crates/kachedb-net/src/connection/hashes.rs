@@ -1,6 +1,6 @@
 //! Redis Hash command execution handlers (`HSET`, `HGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`, `HSCAN`).
 
-use kachedb_core::{HashedTimingWheel, SlabClassType, SlabPool, resolve_slot_ptr};
+use kachedb_core::{HashedTimingWheel, SlabClassType, pool::SlotAllocator, resolve_slot_ptr};
 use kachedb_hash::{
     CompiledPattern, HashSlotFrame, MAX_PATTERN_LEN, ShardedSwissTable, VALUE_TYPE_HASH, hash_key,
 };
@@ -8,7 +8,6 @@ use kachedb_proto_resp::{
     Command, encode_array_header, encode_bulk_string, encode_error, encode_integer, encode_null,
 };
 
-use crate::aof_encode::{AofOp, emit_aof};
 use crate::error::NetError;
 
 /// Sizing helper for Redis Hash Megaslab allocations, strictly isolating
@@ -31,7 +30,7 @@ pub fn handle_hashes(
     cmd: Command<'_>,
     write_buf: &mut Vec<u8>,
     table: &ShardedSwissTable,
-    pool: &mut SlabPool,
+    pool: &mut impl SlotAllocator,
     now_sec: u32,
     mut timing_wheel: Option<&mut HashedTimingWheel>,
 ) -> Result<bool, NetError> {
@@ -41,7 +40,6 @@ pub fn handle_hashes(
             let pair_refs: smallvec::SmallVec<[(&[u8], &[u8]); 8]> =
                 pairs.iter().map(|(f, v)| (*f, *v)).collect();
             let mut new_fields_count = 0i64;
-            let mut aof_pairs_payload = Vec::new();
 
             let res: Result<(), &str> = table.with_shard_mut(h, |shard| {
                 let old_slot = match shard.lookup_key_checked(h, key, now_sec) {
@@ -100,7 +98,7 @@ pub fn handle_hashes(
                     }
 
                     // Slot expansion needed: allocate target_class
-                    let new_block_id = match pool.allocate(target_class) {
+                    let new_block_id = match pool.reserve(h, target_class) {
                         Ok(id) => id,
                         Err(_) => {
                             return Err("OOM command not allowed when used memory > 'maxmemory'");
@@ -174,7 +172,7 @@ pub fn handle_hashes(
                     }
                 } else {
                     // New key insertion
-                    let block_id = match pool.allocate(target_class) {
+                    let block_id = match pool.reserve(h, target_class) {
                         Ok(id) => id,
                         Err(_) => {
                             return Err("OOM command not allowed when used memory > 'maxmemory'");
@@ -229,14 +227,6 @@ pub fn handle_hashes(
 
             match res {
                 Ok(()) => {
-                    aof_pairs_payload.extend_from_slice(&(pairs.len() as u16).to_le_bytes());
-                    for (f, v) in &pairs {
-                        aof_pairs_payload.extend_from_slice(&(f.len() as u16).to_le_bytes());
-                        aof_pairs_payload.extend_from_slice(f);
-                        aof_pairs_payload.extend_from_slice(&(v.len() as u16).to_le_bytes());
-                        aof_pairs_payload.extend_from_slice(v);
-                    }
-                    emit_aof(AofOp::HSet, key, &aof_pairs_payload, now_sec);
                     encode_integer(write_buf, new_fields_count);
                 }
                 Err(err) => {
@@ -274,7 +264,6 @@ pub fn handle_hashes(
             let mut deleted_count = 0i64;
             let mut should_delete_key = false;
             let mut block_to_free = None;
-            let mut aof_fields_payload = Vec::new();
 
             let res: Result<(), &str> = table.with_shard_mut(h, |shard| {
                 if let Some(entry) = shard.lookup_key_checked(h, key, now_sec) {
@@ -290,9 +279,6 @@ pub fn handle_hashes(
                         for f in &fields {
                             if HashSlotFrame::delete(slot, f) {
                                 deleted_count += 1;
-                                aof_fields_payload
-                                    .extend_from_slice(&(f.len() as u16).to_le_bytes());
-                                aof_fields_payload.extend_from_slice(f);
                             }
                         }
                         if HashSlotFrame::live_count(slot) == 0 {
@@ -311,12 +297,6 @@ pub fn handle_hashes(
                         if let Some(id) = block_to_free {
                             let _ = pool.deallocate(id);
                         }
-                    }
-                    if deleted_count > 0 {
-                        let mut full_aof = Vec::with_capacity(2 + aof_fields_payload.len());
-                        full_aof.extend_from_slice(&(deleted_count as u16).to_le_bytes());
-                        full_aof.extend_from_slice(&aof_fields_payload);
-                        emit_aof(AofOp::HDel, key, &full_aof, now_sec);
                     }
                     encode_integer(write_buf, deleted_count);
                 }

@@ -5,7 +5,9 @@ mod aof_recovery;
 mod aof_rewrite;
 mod config;
 pub mod crypto;
+mod recovery_pool;
 mod snapshot;
+mod storage;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +33,20 @@ fn main() {
     let _ = simple_logger();
 
     let config = ServerConfig::parse_args();
+    if config.aof_repair {
+        match aof_recovery::repair(&config.aof_path) {
+            Ok(Some(backup)) => println!(
+                "Repaired {:?}. Original saved to {:?}",
+                config.aof_path, backup
+            ),
+            Ok(None) => println!("AOF {:?} has no framing damage", config.aof_path),
+            Err(error) => {
+                eprintln!("AOF repair failed for {:?}: {error}", config.aof_path);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
     println!(
         r#"
@@ -165,55 +181,21 @@ fn main() {
 
     let enc_config = config.snapshot_encryption_config();
 
-    // 1. If snapshot exists, hydrate in-memory state from snapshot binary first
-    let mut initial_pool =
-        kachedb_core::SlabPool::new(0, config.pool_mb_per_core * 1024 * 1024).ok();
-    if config.snapshot_enabled
-        && config.snapshot_path.exists()
-        && let Some(ref mut pool) = initial_pool
-    {
-        match snapshot::load_snapshot(
-            &config.snapshot_path,
-            &shared_table,
-            pool,
-            &kachedb_net::DEFAULT_VECTORS,
-            Some(&enc_config),
-        ) {
-            Ok(Some(stats)) => println!(
-                "💾 Hydrated snapshot successfully: {} vectors across {} indexes, {} KV keys from {:?}",
-                stats.total_vectors,
-                stats.vector_indexes,
-                stats.total_kv_entries,
-                config.snapshot_path
-            ),
-            Ok(None) => {}
-            Err(
-                e @ (snapshot::SnapshotError::MissingKeyBytes
-                | snapshot::SnapshotError::LegacyKeyDigestMismatch),
-            ) => {
-                eprintln!("Cannot start with snapshot {:?}: {e}", config.snapshot_path);
-                std::process::exit(1);
-            }
-            Err(e) => eprintln!("⚠️ Snapshot hydration error: {e}"),
+    let (recovery_pools, aof_writer) = match storage::start(
+        &config,
+        &shared_table,
+        &kachedb_net::DEFAULT_VECTORS,
+        &enc_config,
+    ) {
+        Ok(storage) => storage,
+        Err(error) => {
+            eprintln!(
+                "Persistence startup failed (snapshot {:?}, AOF {:?}): {error}",
+                config.snapshot_path, config.aof_path,
+            );
+            std::process::exit(1);
         }
-    }
-
-    // 2. If AOF is enabled, replay delta mutations to restore in-memory state
-    if config.aof_enabled {
-        let aof_path = &config.aof_path;
-        if aof_path.exists()
-            && let Some(ref mut pool) = initial_pool
-        {
-            match aof_recovery::replay(aof_path, &shared_table, pool, &kachedb_net::DEFAULT_VECTORS)
-            {
-                Ok(count) => println!(
-                    "📦 Replayed {count} AOF frames successfully from {:?}",
-                    config.aof_path
-                ),
-                Err(e) => eprintln!("⚠️ AOF recovery error: {e}"),
-            }
-        }
-    }
+    };
 
     // Capture restored deadlines before any worker can change the table.
     let now = SystemTime::now()
@@ -224,22 +206,6 @@ fn main() {
         kachedb_core::HashedTimingWheel::new(u32::try_from(now).unwrap_or(u32::MAX));
     shared_table.schedule_restored_expirations(&mut recovered_wheel);
     let mut recovered_wheel = Some(recovered_wheel);
-
-    // Launch background AOF writer thread
-    let aof_writer = if config.aof_enabled {
-        match aof::AofWriter::start(&config.aof_path, config.appendfsync) {
-            Ok(writer) => {
-                kachedb_net::set_aof_channel(writer.channel());
-                Some(writer)
-            }
-            Err(e) => {
-                eprintln!("⚠️ Failed to initialize AOF writer: {e}");
-                None
-            }
-        }
-    } else {
-        None
-    };
 
     // Launch background snapshot worker thread
     let snapshot_worker = if config.snapshot_enabled {
@@ -263,17 +229,11 @@ fn main() {
     let mut worker_handles = Vec::with_capacity(config.num_workers);
 
     // Spawn worker threads (accept-dispatch mode)
-    for (core_id, receiver) in receivers.into_iter().enumerate() {
+    for (core_id, (receiver, pool)) in receivers.into_iter().zip(recovery_pools.0).enumerate() {
         let shutdown_worker = shutdown.clone();
         let barrier = shutdown_barrier.clone();
         let shm_enabled = config.shm_enabled;
         let worker_table = shared_table.clone();
-        let pool_bytes = config.pool_mb_per_core * 1024 * 1024;
-        let worker_pool = if core_id == 0 {
-            initial_pool.take()
-        } else {
-            None
-        };
         let worker_tls = tls_config.clone();
         let worker_wheel = if core_id == 0 {
             recovered_wheel.take()
@@ -303,29 +263,13 @@ fn main() {
                     None
                 };
 
-                let mut worker = if let Some(pool) = worker_pool {
-                    kachedb_net::WorkerThread::with_channel_and_pool(
-                        core_id as u16,
-                        pool,
-                        worker_table,
-                        receiver,
-                    )
-                    .with_tls(worker_tls)
-                } else {
-                    match kachedb_net::WorkerThread::with_channel(
-                        core_id as u16,
-                        pool_bytes,
-                        worker_table,
-                        receiver,
-                    ) {
-                        Ok(w) => w.with_tls(worker_tls),
-                        Err(e) => {
-                            log::error!("Worker [{core_id}]: failed to initialize: {e}");
-                            eprintln!("FATAL: Worker [{core_id}] failed to initialize: {e}. Aborting process.");
-                            std::process::abort();
-                        }
-                    }
-                };
+                let mut worker = kachedb_net::WorkerThread::with_channel_and_pool(
+                    core_id as u16,
+                    pool,
+                    worker_table,
+                    receiver,
+                )
+                .with_tls(worker_tls);
                 if let Some(wheel) = worker_wheel {
                     worker.timing_wheel = wheel;
                 }
@@ -428,14 +372,16 @@ fn main() {
     }
 
     // 7. Flush and stop AOF writer if enabled
-    if let Some(mut aof) = aof_writer {
-        aof.stop();
-    }
+    let aof_result = aof_writer.map(|mut aof| aof.stop()).transpose();
 
     if config.shm_enabled {
         cleanup_stale_shm(config.num_workers);
     }
 
+    if let Err(error) = aof_result {
+        eprintln!("AOF shutdown failed: {error}");
+        std::process::exit(1);
+    }
     println!("🛑 KacheDB server stopped gracefully.");
 }
 

@@ -40,7 +40,7 @@
 * [**2 MB Megaslab Memory Engine**](./architecture/memory-engine.md): Slotted slab bump allocator, 64-byte cache-line alignment, and S3-FIFO quota manager.
 * [**Token Radix Prefix Tree**](./architecture/radix-prefix-tree.md): Hierarchical `&[u32]` token prefix tree, sub-microsecond prefill lookup, and Epoch RCU concurrency.
 * [**Zero-Copy Shared Memory IPC**](./architecture/zero-copy-ipc.md): POSIX `/dev/shm` lock-free ring buffers and PCIe line-rate tensor sharing.
-* [**Snapshot Encryption-at-Rest**](./architecture/snapshot-encryption.md): Hardware-accelerated AES-256-GCM / ChaCha20-Poly1305 streaming AEAD encryption, HKDF key derivation, and `KDB\x06` snapshots.
+* [**Snapshot Encryption-at-Rest**](./architecture/snapshot-encryption.md): Hardware-accelerated AES-256-GCM / ChaCha20-Poly1305 streaming AEAD encryption, HKDF key derivation, and `KDB\x07` snapshots.
 
 ---
 

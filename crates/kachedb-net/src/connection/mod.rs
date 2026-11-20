@@ -3,6 +3,9 @@
 pub mod admin;
 pub mod expiry;
 pub mod hashes;
+pub use hashes::hash_slab_class;
+mod journal;
+pub use journal::{replay_mset, replayable_command};
 pub mod scan;
 pub mod strings;
 pub mod vectors;
@@ -182,15 +185,16 @@ impl Connection {
             match parse_command_frame(slice)? {
                 Some((Ok(cmd), consumed)) => {
                     self.read_pos += consumed;
-                    let keep_alive = Self::execute_command_full(
+                    let keep_alive = journal::execute(
                         cmd,
+                        &slice[..consumed],
                         &mut self.write_buf,
                         table,
                         pool,
                         self.current_sec,
                         vectors,
                         timing_wheel.as_deref_mut(),
-                        Some(&mut self.client_state),
+                        &mut self.client_state,
                     )?;
                     if !keep_alive {
                         return Ok(false);
@@ -273,7 +277,7 @@ impl Connection {
         cmd: Command<'_>,
         write_buf: &mut Vec<u8>,
         table: &ShardedSwissTable,
-        pool: &mut SlabPool,
+        pool: &mut impl kachedb_core::pool::SlotAllocator,
         now_sec: u32,
         vectors: &VectorIndexRegistry,
         timing_wheel: Option<&mut HashedTimingWheel>,

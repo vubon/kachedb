@@ -241,11 +241,8 @@ client.hdel("session:agent_42", "status")
 
 ---
 
-## 💾 Durability & Snapshots (Format V6)
+## 💾 Durability & Snapshots (Format V7)
 
-KacheDB persists Redis Hash entries with full ACID durability:
-1. **Append-Only File (AOF):** Hash mutations are logged as logical opcode pairs:
-   - `0x07` (`HSet`): `[key_len, key, field_len, field, val_len, val]`
-   - `0x08` (`HDel`): `[key_len, key, field_len, field]`
-   - Background AOF rewrite through `BGREWRITEAOF` is currently unavailable.
-2. **Snapshot Format V6 (`KDB\x06`).** Plaintext and encrypted snapshots preserve original key bytes, a value type, and encoded field-value pairs. See the [snapshot recovery rules](./scanning.md#-snapshot-durability--recovery-format-v6).
+AOF hash records store the resulting field-value pairs and absolute expiration deadline. An explicit zero deadline represents a persistent hash. Legacy hash AOF records use the recorded evaluation second during replay, so a hash recreated at its original deadline starts with only the new fields.
+
+Plaintext and encrypted V7 snapshots preserve original key bytes, value types, hash field-value pairs, and the AOF checkpoint when available. [Snapshot recovery rules](./scanning.md#-snapshot-durability--recovery-format-v7)

@@ -131,9 +131,7 @@ impl VectorIndex {
         let mut normalized_vec = vector.to_vec();
         l2_normalize(&mut normalized_vec);
 
-        let expire_at_secs = ttl_sec
-            .map(|s| if now_sec > 0 { now_sec + s } else { s })
-            .unwrap_or(0);
+        let expire_at_secs = ttl_sec.map_or(0, |ttl| now_sec.saturating_add(ttl));
 
         let new_entry = VectorEntry {
             key: key.to_vec(),
@@ -339,6 +337,13 @@ impl VectorIndex {
     }
 }
 
+/// A flat index view retaining slot positions and the configured dimension.
+pub struct FlatVectorSnapshot {
+    pub name: Vec<u8>,
+    pub dimension: Option<usize>,
+    pub slots: Vec<Option<VectorEntry>>,
+}
+
 /// Thread-safe global registry of named vector indexes.
 #[derive(Default)]
 pub struct VectorIndexRegistry {
@@ -459,6 +464,68 @@ impl VectorIndexRegistry {
             snapshots.push((name.clone(), dim, entries));
         }
         snapshots
+    }
+
+    pub fn snapshot_flat_slots(&self, now: u32) -> Vec<FlatVectorSnapshot> {
+        self.indexes
+            .read()
+            .iter()
+            .map(|(name, index)| {
+                let dimension = *index.dimension.read();
+                let slots = index
+                    .entries
+                    .read()
+                    .iter()
+                    .map(|slot| {
+                        slot.as_ref()
+                            .filter(|entry| {
+                                now == 0 || entry.expire_at_secs == 0 || now < entry.expire_at_secs
+                            })
+                            .cloned()
+                    })
+                    .collect();
+                FlatVectorSnapshot {
+                    name: name.clone(),
+                    dimension,
+                    slots,
+                }
+            })
+            .collect()
+    }
+
+    /// Installs a checkpoint while preserving tombstones and vector iteration order.
+    pub fn restore_flat_slots(&self, snapshot: FlatVectorSnapshot) -> bool {
+        let mut index = VectorIndex::new(String::from_utf8_lossy(&snapshot.name));
+        *index.dimension.get_mut() = snapshot.dimension;
+        for (position, slot) in snapshot.slots.iter().enumerate() {
+            if let Some(entry) = slot
+                && index
+                    .key_map
+                    .get_mut()
+                    .insert(entry.key.clone(), position)
+                    .is_some()
+            {
+                return false;
+            }
+        }
+        *index.entries.get_mut() = snapshot.slots;
+        let mut indexes = self.indexes.write();
+        match indexes.entry(snapshot.name) {
+            std::collections::hash_map::Entry::Occupied(_) => false,
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(Arc::new(index));
+                true
+            }
+        }
+    }
+
+    /// Returns registered HNSW indexes with their original binary names.
+    pub fn hnsw_indexes(&self) -> Vec<(Vec<u8>, Arc<crate::hnsw::HnswIndex>)> {
+        self.hnsw_indexes
+            .read()
+            .iter()
+            .map(|(name, index)| (name.clone(), index.clone()))
+            .collect()
     }
 
     /// Restores a named index snapshot into the registry.
