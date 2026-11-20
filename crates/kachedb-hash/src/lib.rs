@@ -18,10 +18,11 @@
 //! use kachedb_core::SlabBlockId;
 //!
 //! let mut table = SwissTable::with_capacity(1024);
-//! let hash = hash_key(b"user:session:42");
-//! table.insert(hash, SlabBlockId(7), 512).unwrap();
+//! let key = b"user:session:42";
+//! let hash = hash_key(key);
+//! table.insert_with_key(hash, key, SlabBlockId(7), 512).unwrap();
 //!
-//! if let Some(entry) = table.lookup(hash) {
+//! if let Some(entry) = table.lookup_key_checked(hash, key, 0) {
 //!     println!("slab_block_id = {:?}, value_len = {}", entry.slab_block_id, entry.value_len);
 //! }
 //! ```
@@ -33,7 +34,7 @@ pub mod sharded;
 pub mod table;
 
 pub use entry::{
-    ACCESS_BIT_ACCESSED, HashEntry, INLINE_KEY_CAPACITY, TableEntry, VALUE_TYPE_HASH,
+    ACCESS_BIT_ACCESSED, HashEntry, INLINE_KEY_CAPACITY, MAX_KEY_LEN, TableEntry, VALUE_TYPE_HASH,
     VALUE_TYPE_STRING,
 };
 pub use glob::{CompiledPattern, MAX_PATTERN_LEN, glob_match};

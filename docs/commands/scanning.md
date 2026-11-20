@@ -188,9 +188,9 @@ for field, value in r.hscan_iter("device:metadata"):
 
 ---
 
-## 💾 Snapshot Durability & Recovery (Format V5)
+## 💾 Snapshot Durability & Recovery (Format V6)
 
-In **Snapshot Format V5 (`KDB\x05`)**, all key byte slices are serialized with explicit 16-bit length prefixes alongside their value payloads:
-- **Lossless Reconstruction:** Restoring a V5 snapshot immediately populates both the Swiss Table SIMD index and the `HashEntry` inline SSO bytes (or `overflow_keys` map for long keys).
-- **Backward Compatibility:** KacheDB transparently reads legacy `KDB\x02`, `KDB\x03`, and `KDB\x04` snapshots. Legacy anonymous keys are logged with a telemetry warning and lazily upgraded to named entries whenever updated over TCP (`SET`, `HSET`, `EXPIRE`, `PERSIST`).
+Snapshot V6 (`KDB\x06`) stores the original bytes of every key. A zero-length key is an empty key. Distinct keys with the same digest remain independent. Key lengths use 16 bits, so writes accept keys up to 65,535 bytes.
+
+V5 snapshots with known key bytes can still be loaded. V2–V4 snapshots with KV entries and V5 snapshots with anonymous entries require migration from a source containing the original keys, such as a complete AOF. Startup reports a migration error and preserves the original snapshot.
 

@@ -324,10 +324,10 @@ impl WorkerThread {
                 self.timing_wheel
                     .advance_expired_entries(now_sec, &mut expired_entries);
                 for entry in &expired_entries {
-                    if let Some(removed) = self
-                        .table
-                        .remove_if_matching(entry.key_hash, entry.slab_block_id)
-                    {
+                    if let Some(removed) = entry.key.as_deref().and_then(|key| {
+                        self.table
+                            .remove_key_if_matching(entry.key_hash, key, entry.slab_block_id)
+                    }) {
                         let _ = self.pool.deallocate(removed.slab_block_id);
                     }
                 }
@@ -459,10 +459,10 @@ impl WorkerThread {
                 self.timing_wheel
                     .advance_expired_entries(now_sec, &mut expired_entries);
                 for entry in &expired_entries {
-                    if let Some(removed) = self
-                        .table
-                        .remove_if_matching(entry.key_hash, entry.slab_block_id)
-                    {
+                    if let Some(removed) = entry.key.as_deref().and_then(|key| {
+                        self.table
+                            .remove_key_if_matching(entry.key_hash, key, entry.slab_block_id)
+                    }) {
                         let _ = self.pool.deallocate(removed.slab_block_id);
                     }
                 }

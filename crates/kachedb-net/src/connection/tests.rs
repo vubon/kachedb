@@ -1735,7 +1735,7 @@ fn execute_scan_empty_and_full_cycle_with_filters() {
 }
 
 #[test]
-fn execute_hscan_and_anonymous_key_upgrade_flow() {
+fn execute_hscan_flow() {
     use smallvec::smallvec;
 
     let mut conn = Connection::new();
@@ -1868,77 +1868,61 @@ fn execute_hscan_and_anonymous_key_upgrade_flow() {
     assert!(filtered_items.contains(&b"admin".to_vec()));
     assert!(filtered_items.contains(&b"meta:team".to_vec()));
     assert!(filtered_items.contains(&b"core".to_vec()));
+}
 
-    // 6. Simulate pre-V5 anonymous key (`key_len == 0`) via `table.insert`
-    let anon_key = b"legacy:v4:key";
-    let anon_hash = kachedb_hash::hash_key(anon_key);
-    let block_id = pool
+#[test]
+fn empty_key_roundtrips_and_oversized_mset_key_leaves_state_unchanged() {
+    let mut conn = Connection::new();
+    let table = ShardedSwissTable::new();
+    let mut pool = SlabPool::new(0, 16 * 1024 * 1024).unwrap();
+    let hash = kachedb_hash::hash_key(b"");
+    let other = pool
         .allocate(kachedb_core::SlabClassType::AppSmall)
         .unwrap();
-    table.insert(anon_hash, block_id, 5);
-    assert_eq!(table.anonymous_key_count(), 1);
-
-    // INFO reports anonymous_keys:1
-    Connection::execute_command_full(
-        Command::Info { section: None },
-        &mut conn.write_buf,
-        &table,
-        &mut pool,
-        100,
-        &DEFAULT_VECTORS,
-        None,
-        None,
-    )
-    .unwrap();
-    let info_str = String::from_utf8_lossy(&conn.write_buf);
-    assert!(info_str.contains("anonymous_keys:1"));
+    table.insert_with_key(hash, b"colliding-key", other, 0);
+    let mut input =
+        &b"*3\r\n$3\r\nSET\r\n$0\r\n\r\n$5\r\nvalue\r\n*2\r\n$3\r\nGET\r\n$0\r\n\r\n"[..];
+    conn.read_from(&mut input).unwrap();
+    assert!(conn.process_incoming(&table, &mut pool).unwrap());
+    assert_eq!(conn.write_buf, b"+OK\r\n$5\r\nvalue\r\n");
+    assert_eq!(table.anonymous_key_count(), 0);
     conn.write_buf.clear();
 
-    // Upgrading via SET populates key name and drops anonymous_key_count to 0
-    Connection::execute_command_full(
-        Command::Set {
-            key: anon_key,
-            value: b"upgraded",
-            ttl_ms: None,
+    let too_long = vec![b'x'; kachedb_hash::MAX_KEY_LEN + 1];
+    Connection::execute_command(
+        Command::MSet {
+            pairs: smallvec::smallvec![
+                (b"".as_slice(), b"new".as_slice()),
+                (too_long.as_slice(), b"rejected".as_slice())
+            ],
         },
         &mut conn.write_buf,
         &table,
         &mut pool,
-        100,
-        &DEFAULT_VECTORS,
-        None,
-        None,
     )
     .unwrap();
+    assert_eq!(
+        conn.write_buf,
+        b"-ERR key exceeds the maximum length of 65535 bytes\r\n"
+    );
     conn.write_buf.clear();
-    assert_eq!(table.anonymous_key_count(), 0);
 
-    // 7. Simulate pre-V5 anonymous key upgraded lazily via EXPIRE and PERSIST
-    let anon_exp_key = b"legacy:v4:expire_upgrade";
-    let anon_exp_hash = kachedb_hash::hash_key(anon_exp_key);
-    let exp_block = pool
-        .allocate(kachedb_core::SlabClassType::AppSmall)
-        .unwrap();
-    table.insert(anon_exp_hash, exp_block, 5);
-    assert_eq!(table.anonymous_key_count(), 1);
-
-    Connection::execute_command_full(
-        Command::Expire {
-            key: anon_exp_key,
-            seconds: 60,
-        },
+    Connection::execute_command(
+        Command::Get { key: b"" },
         &mut conn.write_buf,
         &table,
         &mut pool,
-        100,
-        &DEFAULT_VECTORS,
-        None,
-        None,
     )
     .unwrap();
-    assert_eq!(conn.write_buf, b":1\r\n");
-    conn.write_buf.clear();
-    assert_eq!(table.anonymous_key_count(), 0);
+    assert_eq!(conn.write_buf, b"$5\r\nvalue\r\n");
+    assert_eq!(table.len(), 2);
+    assert_eq!(
+        table
+            .lookup_key_checked(hash, b"colliding-key", 0)
+            .unwrap()
+            .slab_block_id,
+        other,
+    );
 }
 
 #[test]

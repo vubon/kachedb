@@ -170,7 +170,7 @@ pub fn handle_admin(
         }
         Command::Type { key } => {
             let h = hash_key(key);
-            if let Some(entry) = table.lookup_checked(h, now_sec) {
+            if let Some(entry) = table.lookup_key_checked(h, key, now_sec) {
                 if entry.value_type == VALUE_TYPE_HASH {
                     encode_simple_string(write_buf, "hash");
                 } else {

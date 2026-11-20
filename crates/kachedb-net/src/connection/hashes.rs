@@ -41,7 +41,7 @@ pub fn handle_hashes(
             let pair_refs: smallvec::SmallVec<[(&[u8], &[u8]); 8]> =
                 pairs.iter().map(|(f, v)| (*f, *v)).collect();
             let needed_bytes = table.with_shard(h, |shard| {
-                let old_slot = shard.lookup_checked(h, now_sec).and_then(|e| {
+                let old_slot = shard.lookup_key_checked(h, key, now_sec).and_then(|e| {
                     if e.value_type == VALUE_TYPE_HASH {
                         unsafe {
                             resolve_slot_ptr(e.slab_block_id)
@@ -71,7 +71,7 @@ pub fn handle_hashes(
             let mut aof_pairs_payload = Vec::new();
 
             let res: Result<(), &str> = table.with_shard_mut(h, |shard| {
-                if let Some(entry) = shard.lookup_checked(h, now_sec) {
+                if let Some(entry) = shard.lookup_key_checked(h, key, now_sec) {
                     if entry.value_type != VALUE_TYPE_HASH {
                         return Err(
                             "WRONGTYPE Operation against a key holding the wrong kind of value",
@@ -112,7 +112,6 @@ pub fn handle_hashes(
                     }
 
                     if in_place_success {
-                        shard.ensure_key_name(h, key);
                         return Ok(());
                     }
 
@@ -179,7 +178,7 @@ pub fn handle_hashes(
                             let _ = pool.deallocate(old_block_id);
                             if old_expire > 0 {
                                 if let Some(ref mut wheel) = timing_wheel {
-                                    wheel.schedule(h, new_block_id, old_expire);
+                                    wheel.schedule_key(h, key, new_block_id, old_expire);
                                 }
                             }
                             Ok(())
@@ -264,7 +263,7 @@ pub fn handle_hashes(
         Command::HGet { key, field } => {
             let h = hash_key(key);
             table.with_shard(h, |shard| {
-                if let Some(entry) = shard.lookup_checked(h, now_sec) {
+                if let Some(entry) = shard.lookup_key_checked(h, key, now_sec) {
                     if entry.value_type != VALUE_TYPE_HASH {
                         encode_error(
                             write_buf,
@@ -294,7 +293,7 @@ pub fn handle_hashes(
             let mut aof_fields_payload = Vec::new();
 
             let res: Result<(), &str> = table.with_shard_mut(h, |shard| {
-                if let Some(entry) = shard.lookup_checked(h, now_sec) {
+                if let Some(entry) = shard.lookup_key_checked(h, key, now_sec) {
                     if entry.value_type != VALUE_TYPE_HASH {
                         return Err(
                             "WRONGTYPE Operation against a key holding the wrong kind of value",
@@ -315,7 +314,7 @@ pub fn handle_hashes(
                         if HashSlotFrame::live_count(slot) == 0 {
                             should_delete_key = true;
                             block_to_free = Some(entry.slab_block_id);
-                            shard.remove(h);
+                            shard.remove_key(h, key);
                         }
                     }
                 }
@@ -345,7 +344,7 @@ pub fn handle_hashes(
         Command::HExists { key, field } => {
             let h = hash_key(key);
             table.with_shard(h, |shard| {
-                if let Some(entry) = shard.lookup_checked(h, now_sec) {
+                if let Some(entry) = shard.lookup_key_checked(h, key, now_sec) {
                     if entry.value_type != VALUE_TYPE_HASH {
                         encode_error(
                             write_buf,
@@ -373,7 +372,7 @@ pub fn handle_hashes(
         Command::HLen { key } => {
             let h = hash_key(key);
             table.with_shard(h, |shard| {
-                if let Some(entry) = shard.lookup_checked(h, now_sec) {
+                if let Some(entry) = shard.lookup_key_checked(h, key, now_sec) {
                     if entry.value_type != VALUE_TYPE_HASH {
                         encode_error(
                             write_buf,
@@ -394,7 +393,7 @@ pub fn handle_hashes(
         Command::HGetAll { key } => {
             let h = hash_key(key);
             table.with_shard(h, |shard| {
-                if let Some(entry) = shard.lookup_checked(h, now_sec) {
+                if let Some(entry) = shard.lookup_key_checked(h, key, now_sec) {
                     if entry.value_type != VALUE_TYPE_HASH {
                         encode_error(
                             write_buf,
@@ -437,7 +436,7 @@ pub fn handle_hashes(
             let compiled = pattern.map(CompiledPattern::new);
             let h = hash_key(key);
             table.with_shard(h, |shard| {
-                if let Some(entry) = shard.lookup_checked(h, now_sec) {
+                if let Some(entry) = shard.lookup_key_checked(h, key, now_sec) {
                     if entry.value_type != VALUE_TYPE_HASH {
                         encode_error(
                             write_buf,

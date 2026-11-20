@@ -25,7 +25,7 @@
 * ⚡ **Microsecond App Cache**: Wire-compatible Redis & Valkey engine (RESP2 / RESP3 wire protocol) powered by an AVX-512 / NEON SIMD Swiss Table, an explicit 2 MB Megaslab bump allocator, S3-FIFO eviction, and strictly bounded $\mathcal{O}(1)$ timing wheels.
 * 🔍 **Keyspace & Hash Cursor Scanning**: Non-blocking `SCAN` and `HSCAN` cursor iteration across 256 shards using home-bucket bit-reversed cursors, zero-allocation glob pattern matching (`*`, `?`, `[...]`), ReDoS backtracking protection, and 40-byte inline Short String Optimization (SSO).
 * 🤖 **LLM KV-Cache Offloader**: Hierarchical `&[u32]` token prefix tree and zero-copy POSIX Shared Memory (`/dev/shm`) lock-free SPSC ring buffers for vLLM, SGLang, and PyTorch (17.6M msgs/sec, sub-50ns tensor sharing, 0 socket copies).
-* 🔒 **Encrypted ACID Durability**: Append-Only File (AOF) and Snapshot Format V5 (`KDB\x05`) with streaming hardware-accelerated `AES-256-GCM` or `ChaCha20-Poly1305` encryption-at-rest.
+* 🔒 **Encrypted ACID Durability**: Append-Only File (AOF) and Snapshot Format V6 (`KDB\x06`) with streaming hardware-accelerated `AES-256-GCM` or `ChaCha20-Poly1305` encryption-at-rest.
 
 ---
 
@@ -46,7 +46,7 @@
 | **Lookup Hit Latency** | 15–30 ns | 15–30 ns | 8–15 ns | **1.96 ns (L1 Cache Line)** |
 | **Async Network Engine** | `epoll` / `kqueue` | `epoll` / `kqueue` | `epoll` fiber pool | **Accept-Dispatch epoll + TCP_NODELAY** |
 | **TTL Expiration Engine** | Probabilistic Sampling | Probabilistic Sampling | Active Scanning | **$\mathcal{O}(1)$ 3,600-Bucket Timing Wheel** |
-| **Durability & Snapshots** | RDB / AOF | RDB / AOF | Snapshot | **Snapshot V5 (`KDB\x05`) + AOF + AEAD Encryption** |
+| **Durability & Snapshots** | RDB / AOF | RDB / AOF | Snapshot | **Snapshot V6 (`KDB\x06`) + AOF + AEAD Encryption** |
 | **LLM KV-Cache Prefix Tree** | ❌ None | ❌ None | ❌ None | **✅ Native `&[u32]` Token Radix** |
 | **Zero-Copy PyTorch IPC** | ❌ TCP Socket Serialization | ❌ TCP Socket Serialization | ❌ TCP Socket | **✅ `/dev/shm` Lock-Free Ring** |
 
@@ -182,7 +182,7 @@ KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can 
 |                                 STORAGE & ZERO-COPY TRANSPORT                                 |
 |   - POSIX Shared Memory (/dev/shm) Lock-Free SPSC Ring Buffer IPC (17.66M msgs/sec)           |
 |   - Accept-Dispatch Thread-per-Core TCP Engine (epoll + TCP_NODELAY / mio) (3.56M QPS)        |
-|   - Encrypted Durability (AOF Rewrite + Snapshot V5 KDB\x05 with AES-256-GCM / ChaCha20)      |
+|   - Encrypted Durability (AOF + Snapshot V6 KDB\x06 with AES-256-GCM / ChaCha20)      |
 +-----------------------------------------------------------------------------------------------+
 ```
 
@@ -232,8 +232,8 @@ kachedb/
 │   ├── kachedb-shm/              # Zero-copy POSIX /dev/shm SPSC ring buffer IPC
 │   ├── kachedb-proto-resp/       # Zero-allocation streaming RESP2/RESP3 wire parser
 │   ├── kachedb-net/              # Thread-per-core async TCP engine (io_uring / mio) with non-blocking SCAN
-│   ├── kachedb-server/           # Multi-core daemon runtime executable with Snapshot V5 & AOF rewrite
-│   ├── kachedb-cli/              # Interactive CLI admin, REPL & KDB\x05 forensic inspection tool
+│   ├── kachedb-server/           # Multi-core daemon runtime executable with Snapshot V6 & AOF
+│   ├── kachedb-cli/              # Interactive CLI admin, REPL & KDB\x06 forensic inspection tool
 │   └── kachedb-bench/            # Standalone multi-connection pipelined load generator
 ├── bindings/
 │   └── python/                   # Zero-copy Python client (scan_iter, hscan_iter, PyTorch & vLLM IPC)

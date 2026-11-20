@@ -177,6 +177,13 @@ fn main() {
                 config.snapshot_path
             ),
             Ok(None) => {}
+            Err(
+                e @ (snapshot::SnapshotError::MissingKeyBytes
+                | snapshot::SnapshotError::LegacyKeyDigestMismatch),
+            ) => {
+                eprintln!("Cannot start with snapshot {:?}: {e}", config.snapshot_path);
+                std::process::exit(1);
+            }
             Err(e) => eprintln!("⚠️ Snapshot hydration error: {e}"),
         }
     }

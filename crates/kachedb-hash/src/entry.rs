@@ -17,6 +17,7 @@ use kachedb_core::SlabBlockId;
 /// - `0` — not accessed since last eviction sweep.
 /// - `1` — accessed at least once; entry is promotion candidate.
 pub const ACCESS_BIT_ACCESSED: u8 = 1;
+const KEY_PRESENT: u8 = 1 << 1;
 
 /// Value type tag indicating standard Redis string payload.
 pub const VALUE_TYPE_STRING: u8 = 0;
@@ -26,6 +27,8 @@ pub const VALUE_TYPE_HASH: u8 = 1;
 /// Maximum key byte length stored inline inside a 64-byte `HashEntry` (Small String Optimization).
 /// Keys longer than 40 bytes store their 40-byte prefix inline and full bytes in `SwissTable::overflow_keys`.
 pub const INLINE_KEY_CAPACITY: usize = 40;
+/// Largest key representable in the table and its persistence formats.
+pub const MAX_KEY_LEN: usize = u16::MAX as usize;
 
 /// Copyable snapshot of key metadata retrieved from a Swiss Table lookup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +41,8 @@ pub struct TableEntry {
     pub expire_at_secs: u32,
     /// Type descriptor for stored value (0 = String, 1 = Hash).
     pub value_type: u8,
+    /// Whether the original key bytes are known, including a zero-length key.
+    pub has_key: bool,
 }
 
 const _: () = assert!(
@@ -55,9 +60,9 @@ const _: () = assert!(
 /// | 8      | `slab_block_id`  | 4 B  | Opaque handle into the slab pool                |
 /// | 12     | `value_len`      | 4 B  | Byte length of the stored value                 |
 /// | 16     | `expire_at_secs` | 4 B  | Absolute expiration epoch seconds               |
-/// | 20     | `access_flags`   | 1 B  | S3-FIFO atomic access frequency bit             |
+/// | 20     | `access_flags`   | 1 B  | S3-FIFO access and key presence bits            |
 /// | 21     | `value_type`     | 1 B  | Type descriptor (0 = String, 1 = Hash)          |
-/// | 22     | `key_len`        | 2 B  | Full byte length of key (0 = anonymous legacy)  |
+/// | 22     | `key_len`        | 2 B  | Full byte length of key                        |
 /// | 24–63  | `inline_key`     | 40 B | Inline SSO key bytes (or 40-byte prefix if >40B)|
 #[repr(C, align(64))]
 pub struct HashEntry {
@@ -69,12 +74,12 @@ pub struct HashEntry {
     pub value_len: u32,
     /// Absolute expiration timestamp in epoch seconds (0 = persistent / no TTL).
     pub expire_at_secs: u32,
-    /// S3-FIFO single-bit frequency counter.
+    /// S3-FIFO frequency and key-presence flags.
     /// Updated with a lock-free `fetch_or(1, Relaxed)` on every GET.
     pub access_flags: AtomicU8,
     /// Type descriptor for stored value (0 = String, 1 = Hash).
     pub value_type: u8,
-    /// Full byte length of the raw key (0 = anonymous legacy key; > 40 = full key in overflow_keys).
+    /// Full byte length of the raw key (over 40 bytes uses overflow storage).
     pub key_len: u16,
     /// Inline Small String Optimization (SSO) key buffer (full key if <= 40B, or 40B prefix if > 40B).
     pub inline_key: [u8; INLINE_KEY_CAPACITY],
@@ -170,13 +175,23 @@ impl HashEntry {
     /// Populates `key_len` and `inline_key` (up to `INLINE_KEY_CAPACITY` bytes) from `key`.
     #[inline(always)]
     pub fn set_inline_key(&mut self, key: &[u8]) {
-        let len = key.len().min(u16::MAX as usize);
-        self.key_len = len as u16;
-        let copy_len = len.min(INLINE_KEY_CAPACITY);
+        self.key_len = u16::try_from(key.len()).expect("key exceeds MAX_KEY_LEN");
+        let copy_len = key.len().min(INLINE_KEY_CAPACITY);
         self.inline_key[..copy_len].copy_from_slice(&key[..copy_len]);
         if copy_len < INLINE_KEY_CAPACITY {
             self.inline_key[copy_len..].fill(0);
         }
+        *self.access_flags.get_mut() |= KEY_PRESENT;
+    }
+
+    /// Distinguishes named entries, including empty keys, from anonymous entries.
+    #[inline(always)]
+    pub fn has_key(&self) -> bool {
+        self.access_flags.load(Ordering::Relaxed) & KEY_PRESENT != 0
+    }
+
+    pub(crate) fn clear_accessed(&mut self) {
+        *self.access_flags.get_mut() &= !ACCESS_BIT_ACCESSED;
     }
 
     /// Returns the inline key bytes (up to 40 bytes).
@@ -208,7 +223,10 @@ impl HashEntry {
     /// Returns `true` if the entry was accessed since the last eviction sweep.
     #[inline(always)]
     pub fn test_and_clear_accessed(&self) -> bool {
-        self.access_flags.swap(0, Ordering::Relaxed) > 0
+        self.access_flags
+            .fetch_and(!ACCESS_BIT_ACCESSED, Ordering::Relaxed)
+            & ACCESS_BIT_ACCESSED
+            != 0
     }
 
     /// Returns a copyable `TableEntry` snapshot of this entry.
@@ -219,6 +237,7 @@ impl HashEntry {
             value_len: self.value_len,
             expire_at_secs: self.expire_at_secs,
             value_type: self.value_type,
+            has_key: self.has_key(),
         }
     }
 

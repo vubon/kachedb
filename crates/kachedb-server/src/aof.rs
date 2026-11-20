@@ -94,6 +94,8 @@ pub enum AofError {
     #[error("Unexpected end of AOF file")]
     #[allow(dead_code)]
     UnexpectedEof,
+    #[error("Cannot rewrite AOF for an entry without original key bytes")]
+    MissingKeyBytes,
 }
 
 /// A parsed `.kaof` frame.
