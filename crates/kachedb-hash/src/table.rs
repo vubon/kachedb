@@ -30,7 +30,9 @@ use std::collections::HashMap;
 
 use kachedb_core::SlabBlockId;
 
-use crate::entry::{HashEntry, INLINE_KEY_CAPACITY, SnapshotPayloadEntry, TableEntry};
+use crate::entry::{
+    HashEntry, INLINE_KEY_CAPACITY, SnapshotPayloadEntry, StringBatchEntry, TableEntry,
+};
 use crate::glob::CompiledPattern;
 
 // ─── Control byte sentinels ───────────────────────────────────────────────────
@@ -251,7 +253,7 @@ impl SwissTable {
     }
 
     #[inline]
-    fn key_slot(&self, hash: u64, key: &[u8]) -> Option<usize> {
+    pub(crate) fn key_slot(&self, hash: u64, key: &[u8]) -> Option<usize> {
         self.probe::<false>(hash, |slot| self.matches_key(slot, key))
             .0
     }
@@ -395,17 +397,69 @@ impl SwissTable {
             return Ok(Some(self.replace_value(slot, entry)));
         }
         if self.count * LOAD_FACTOR_DEN >= self.capacity * LOAD_FACTOR_NUM {
-            self.resize(self.capacity * 2);
+            self.try_resize(self.capacity * 2)
+                .expect("SwissTable growth allocation failed");
             vacant = self.probe::<true>(hash, |_| false).1;
         }
         let slot = vacant.ok_or(())?;
-        self.ctrl[slot] = h2(hash);
-        self.entries[slot] = entry;
-        if let Some(key) = key {
-            self.store_entry_key(slot, key);
-        }
-        self.count += 1;
+        let overflow = key
+            .filter(|key| key.len() > INLINE_KEY_CAPACITY)
+            .map(Box::from);
+        self.insert_at(slot, entry, key, overflow);
         Ok(None)
+    }
+
+    pub(crate) fn reserve_insertions(
+        &mut self,
+        additional: usize,
+        extra_overflow: usize,
+    ) -> Result<(), ()> {
+        let needed = self.count.checked_add(additional).ok_or(())?;
+        let mut capacity = self.capacity;
+        while needed > capacity / LOAD_FACTOR_DEN * LOAD_FACTOR_NUM {
+            capacity = capacity.checked_mul(2).ok_or(())?;
+        }
+        if capacity != self.capacity {
+            self.try_resize(capacity)?;
+        }
+        self.overflow_keys
+            .try_reserve(extra_overflow)
+            .map_err(|_| ())
+    }
+
+    /// Applies a prepared and capacity-reserved string insertion without allocating.
+    pub(crate) fn insert_reserved_string(
+        &mut self,
+        update: &StringBatchEntry<'_>,
+        overflow: Option<Box<[u8]>>,
+    ) -> Option<SlabBlockId> {
+        let entry = HashEntry::new(update.key_hash, update.slab_block_id, update.value_len);
+        let (existing, vacant) =
+            self.probe::<true>(update.key_hash, |slot| self.matches_key(slot, update.key));
+        if let Some(slot) = existing {
+            return Some(self.replace_value(slot, entry));
+        }
+        let slot = vacant.expect("batch has reserved space for every new key");
+        self.insert_at(slot, entry, Some(update.key), overflow);
+        None
+    }
+
+    fn insert_at(
+        &mut self,
+        slot: usize,
+        mut entry: HashEntry,
+        key: Option<&[u8]>,
+        overflow: Option<Box<[u8]>>,
+    ) {
+        if let Some(key) = key {
+            entry.set_inline_key(key);
+        }
+        if let Some(bytes) = overflow {
+            self.overflow_keys.insert(slot, bytes);
+        }
+        self.ctrl[slot] = h2(entry.key_hash);
+        self.entries[slot] = entry;
+        self.count += 1;
     }
 
     fn replace_value(&mut self, slot: usize, value: HashEntry) -> SlabBlockId {
@@ -623,7 +677,7 @@ impl SwissTable {
         if self.capacity > MIN_SHRINK_CAPACITY
             && self.count * SHRINK_LOAD_FACTOR_DEN < self.capacity
         {
-            self.resize(self.capacity / 2);
+            let _ = self.try_resize(self.capacity / 2);
         }
         snapshot
     }
@@ -809,16 +863,25 @@ impl SwissTable {
     // ── Private ──────────────────────────────────────────────────────────────
 
     /// Doubles the capacity and rehashes all live entries.
-    fn resize(&mut self, new_capacity: usize) {
+    fn try_resize(&mut self, new_capacity: usize) -> Result<(), ()> {
         let new_capacity = new_capacity.next_power_of_two().max(GROUP_SIZE);
         log::debug!(
             "SwissTable: resizing {old} → {new_capacity}",
             old = self.capacity
         );
 
-        let mut new_ctrl = vec![CTRL_EMPTY; new_capacity];
-        let mut new_entries = Vec::with_capacity(new_capacity);
+        let mut new_ctrl = Vec::new();
+        new_ctrl.try_reserve_exact(new_capacity).map_err(|_| ())?;
+        new_ctrl.resize(new_capacity, CTRL_EMPTY);
+        let mut new_entries = Vec::new();
+        new_entries
+            .try_reserve_exact(new_capacity)
+            .map_err(|_| ())?;
         new_entries.resize_with(new_capacity, HashEntry::default);
+        let mut new_overflow = HashMap::new();
+        new_overflow
+            .try_reserve(self.overflow_keys.len())
+            .map_err(|_| ())?;
         let mut old_overflow = std::mem::take(&mut self.overflow_keys);
 
         for (idx, entry) in self.entries.drain(..).enumerate() {
@@ -831,7 +894,7 @@ impl SwissTable {
                     if let Some(slot) = group.first_available() {
                         new_ctrl[slot] = fp;
                         if let Some(key) = old_overflow.remove(&idx) {
-                            self.overflow_keys.insert(slot, key);
+                            new_overflow.insert(slot, key);
                         }
                         new_entries[slot] = entry;
                         break;
@@ -843,8 +906,10 @@ impl SwissTable {
 
         self.ctrl = new_ctrl;
         self.entries = new_entries;
+        self.overflow_keys = new_overflow;
         self.capacity = new_capacity;
         self.compact_cursor = 0; // reset compaction cursor after resize
+        Ok(())
     }
 
     // ── Improvement 3: Idle-Time Tombstone Compaction ─────────────────────────

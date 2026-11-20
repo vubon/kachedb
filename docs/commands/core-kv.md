@@ -65,7 +65,8 @@ with KacheClient() as client:
 ---
 
 ### `MSET` & `MGET`
-Batch operations that store and retrieve multiple keys in a single network round-trip.
+
+`MSET` applies the entire batch in memory. If validation or allocation fails, existing keys keep their values and TTLs. The last value wins when a key appears more than once. `MGET` reads all requested keys under shared shard locks, so a concurrent `MSET` appears as a complete update.
 
 #### Syntax
 ```text

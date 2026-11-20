@@ -35,7 +35,7 @@ pub mod table;
 
 pub use entry::{
     ACCESS_BIT_ACCESSED, HashEntry, INLINE_KEY_CAPACITY, MAX_KEY_LEN, SnapshotPayloadEntry,
-    TableEntry, VALUE_TYPE_HASH, VALUE_TYPE_STRING,
+    StringBatchEntry, TableEntry, VALUE_TYPE_HASH, VALUE_TYPE_STRING,
 };
 pub use glob::{CompiledPattern, MAX_PATTERN_LEN, glob_match};
 pub use hash_frame::{FrameError, HashSlotFrame, hash_field};

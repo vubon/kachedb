@@ -2072,3 +2072,241 @@ fn restored_and_replaced_ttls_reclaim_the_current_slots() {
     assert!(table.is_empty());
     assert_eq!(pool.total_allocated_bytes(), 0);
 }
+
+#[test]
+fn oversized_mset_value_leaves_old_keys_and_ttl_unchanged() {
+    let table = ShardedSwissTable::with_total_capacity(64);
+    let mut pool = SlabPool::new(0, 16 * 1024 * 1024).unwrap();
+    let mut output = Vec::new();
+    Connection::execute_command_with_time(
+        Command::Set {
+            key: b"existing",
+            value: b"old",
+            ttl_ms: Some(60_000),
+        },
+        &mut output,
+        &table,
+        &mut pool,
+        100,
+    )
+    .unwrap();
+    output.clear();
+    let before = pool.total_allocated_bytes();
+    let oversized = vec![b'x'; 2 * 1024 * 1024 + 1];
+    let pairs: &[(&[u8], &[u8])] = &[
+        (b"existing", b"new"),
+        (b"unpublished", b"new"),
+        (b"bad", &oversized),
+    ];
+    Connection::execute_command(
+        Command::MSet {
+            pairs: smallvec::SmallVec::from_slice(pairs),
+        },
+        &mut output,
+        &table,
+        &mut pool,
+    )
+    .unwrap();
+    assert_eq!(
+        output,
+        b"-ERR value exceeds maximum supported slab size (2 MB)\r\n"
+    );
+    assert_eq!(table.len(), 1);
+    assert_eq!(
+        table.get_key_ttl(kachedb_hash::hash_key(b"existing"), b"existing", 100),
+        60
+    );
+    assert_eq!(pool.total_allocated_bytes(), before);
+    output.clear();
+    Connection::execute_command(
+        Command::Get { key: b"existing" },
+        &mut output,
+        &table,
+        &mut pool,
+    )
+    .unwrap();
+    assert_eq!(output, b"$3\r\nold\r\n");
+}
+
+#[test]
+fn mset_under_slab_pressure_rolls_back_and_duplicates_use_one_slot() {
+    let table = ShardedSwissTable::with_total_capacity(64);
+    let mut pool = SlabPool::new(0, 4 * 1024 * 1024).unwrap();
+    let mut output = Vec::new();
+    Connection::execute_command(
+        Command::Set {
+            key: b"existing",
+            value: b"old",
+            ttl_ms: Some(10_000),
+        },
+        &mut output,
+        &table,
+        &mut pool,
+    )
+    .unwrap();
+    let class = kachedb_core::SlabClassType::AppSmall;
+    for _ in 0..class.slots_per_megaslab() - 2 {
+        pool.reserve_non_evicting(class).unwrap();
+    }
+    // With one slot left, the second distinct key forces an allocation failure.
+    let before = pool.total_allocated_bytes();
+    let pairs: &[(&[u8], &[u8])] = &[(b"existing", b"new"), (b"unpublished", b"new")];
+    output.clear();
+    Connection::execute_command(
+        Command::MSet {
+            pairs: smallvec::SmallVec::from_slice(pairs),
+        },
+        &mut output,
+        &table,
+        &mut pool,
+    )
+    .unwrap();
+    assert!(output.starts_with(b"-OOM "));
+    assert_eq!(table.len(), 1);
+    assert_eq!(pool.total_allocated_bytes(), before);
+    output.clear();
+    Connection::execute_command(
+        Command::Get { key: b"existing" },
+        &mut output,
+        &table,
+        &mut pool,
+    )
+    .unwrap();
+    assert_eq!(output, b"$3\r\nold\r\n");
+
+    let pairs: &[(&[u8], &[u8])] = &[(b"existing", b"first"), (b"existing", b"last")];
+    output.clear();
+    Connection::execute_command(
+        Command::MSet {
+            pairs: smallvec::SmallVec::from_slice(pairs),
+        },
+        &mut output,
+        &table,
+        &mut pool,
+    )
+    .unwrap();
+    assert_eq!(output, b"+OK\r\n");
+    assert_eq!(
+        table.get_key_ttl(kachedb_hash::hash_key(b"existing"), b"existing", 0),
+        -1
+    );
+    assert_eq!(pool.total_allocated_bytes(), before);
+    output.clear();
+    Connection::execute_command(
+        Command::Get { key: b"existing" },
+        &mut output,
+        &table,
+        &mut pool,
+    )
+    .unwrap();
+    assert_eq!(output, b"$4\r\nlast\r\n");
+}
+
+#[test]
+fn mset_rejects_oversized_aof_record_before_slab_reservation() {
+    let table = ShardedSwissTable::with_total_capacity(64);
+    let mut pool = SlabPool::new(0, 16 * 1024 * 1024).unwrap();
+    let mut output = Vec::new();
+    let largest_value = vec![b'x'; 2 * 1024 * 1024];
+    let pairs = [(b"duplicate".as_slice(), largest_value.as_slice()); 32];
+    Connection::execute_command(
+        Command::MSet {
+            pairs: smallvec::SmallVec::from_slice(&pairs),
+        },
+        &mut output,
+        &table,
+        &mut pool,
+    )
+    .unwrap();
+    assert_eq!(
+        output,
+        b"-ERR MSET exceeds maximum AOF record size (64 MiB)\r\n"
+    );
+    assert!(table.is_empty());
+    assert_eq!(pool.arena_count(), 0);
+}
+
+#[test]
+fn mget_sees_a_complete_batch_with_overlapping_mset_writers() {
+    let table = ShardedSwissTable::with_total_capacity(64);
+    let mut pool = SlabPool::new(0, 4 * 1024 * 1024).unwrap();
+    let mut output = Vec::new();
+    let keys: [&[u8]; 2] = [b"first-key", b"second-key"];
+    let shard = |key| (kachedb_hash::hash_key(key) >> 32) as usize % kachedb_hash::NUM_SHARDS;
+    assert_ne!(shard(keys[0]), shard(keys[1]));
+    let initial = [(keys[0], b"0".as_slice()), (keys[1], b"0".as_slice())];
+    Connection::execute_command(
+        Command::MSet {
+            pairs: smallvec::SmallVec::from_slice(&initial),
+        },
+        &mut output,
+        &table,
+        &mut pool,
+    )
+    .unwrap();
+    assert_eq!(output, b"+OK\r\n");
+
+    let barrier = std::sync::Barrier::new(3);
+    let pools = std::thread::scope(|scope| {
+        let workers: Vec<_> = [
+            [(keys[0], b"1".as_slice()), (keys[1], b"1".as_slice())],
+            [(keys[1], b"2".as_slice()), (keys[0], b"2".as_slice())],
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, pairs)| {
+            let table = &table;
+            let barrier = &barrier;
+            scope.spawn(move || {
+                let mut pool = SlabPool::new(index as u16 + 1, 4 * 1024 * 1024).unwrap();
+                let mut output = Vec::new();
+                barrier.wait();
+                for _ in 0..1_000 {
+                    output.clear();
+                    Connection::execute_command(
+                        Command::MSet {
+                            pairs: smallvec::SmallVec::from_slice(&pairs),
+                        },
+                        &mut output,
+                        table,
+                        &mut pool,
+                    )
+                    .unwrap();
+                    assert_eq!(output, b"+OK\r\n");
+                }
+                pool
+            })
+        })
+        .collect();
+
+        barrier.wait();
+        for index in 0..2_000 {
+            let keys = if index % 2 == 0 {
+                keys
+            } else {
+                [keys[1], keys[0]]
+            };
+            output.clear();
+            Connection::execute_command(
+                Command::MGet {
+                    keys: smallvec::SmallVec::from_slice(&keys),
+                },
+                &mut output,
+                &table,
+                &mut pool,
+            )
+            .unwrap();
+            assert!(matches!(
+                output.as_slice(),
+                b"*2\r\n$1\r\n0\r\n$1\r\n0\r\n"
+                    | b"*2\r\n$1\r\n1\r\n$1\r\n1\r\n"
+                    | b"*2\r\n$1\r\n2\r\n$1\r\n2\r\n"
+            ));
+        }
+        workers
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    drop(pools);
+}

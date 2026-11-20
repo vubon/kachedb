@@ -30,6 +30,14 @@ pub const INLINE_KEY_CAPACITY: usize = 40;
 /// Largest key representable in the table and its persistence formats.
 pub const MAX_KEY_LEN: usize = u16::MAX as usize;
 
+/// A prepared string allocation to publish as part of an atomic batch.
+pub struct StringBatchEntry<'a> {
+    pub key_hash: u64,
+    pub key: &'a [u8],
+    pub slab_block_id: SlabBlockId,
+    pub value_len: u32,
+}
+
 /// Copyable snapshot of key metadata retrieved from a Swiss Table lookup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TableEntry {
