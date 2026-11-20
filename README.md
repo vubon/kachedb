@@ -25,7 +25,7 @@
 * ⚡ **Microsecond App Cache**: Wire-compatible Redis & Valkey engine (RESP2 / RESP3 wire protocol) powered by an AVX-512 / NEON SIMD Swiss Table, an explicit 2 MB Megaslab bump allocator, S3-FIFO eviction, and strictly bounded $\mathcal{O}(1)$ timing wheels.
 * 🔍 **Keyspace & Hash Cursor Scanning**: Non-blocking `SCAN` and `HSCAN` cursor iteration across 256 shards using home-bucket bit-reversed cursors, zero-allocation glob pattern matching (`*`, `?`, `[...]`), ReDoS backtracking protection, and 40-byte inline Short String Optimization (SSO).
 * 🤖 **LLM KV-Cache Offloader**: Hierarchical `&[u32]` token prefix tree and zero-copy POSIX Shared Memory (`/dev/shm`) lock-free SPSC ring buffers for vLLM, SGLang, and PyTorch (17.6M msgs/sec, sub-50ns tensor sharing, 0 socket copies).
-* 🔒 **Encrypted ACID Durability**: Append-Only File (AOF) with online compaction rewrite (`BGREWRITEAOF`), and Snapshot Format V5 (`KDB\x05`) with streaming hardware-accelerated `AES-256-GCM` or `ChaCha20-Poly1305` encryption-at-rest.
+* 🔒 **Encrypted ACID Durability**: Append-Only File (AOF) and Snapshot Format V5 (`KDB\x05`) with streaming hardware-accelerated `AES-256-GCM` or `ChaCha20-Poly1305` encryption-at-rest.
 
 ---
 
@@ -146,7 +146,7 @@ KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can 
 | **`PERSIST`** | `PERSIST key` | Removes TTL expiration, making key persistent. | $\mathcal{O}(1)$ |
 | **`FLUSHDB`** | `FLUSHDB` | Clears all keys and recycles slab pool memory blocks. | $\mathcal{O}(N)$ |
 | **`FLUSHALL`** | `FLUSHALL` | Clears all keys across all database instances. | $\mathcal{O}(N)$ |
-| **`BGREWRITEAOF`** | `BGREWRITEAOF` | Triggers background compaction rewrite of the Append-Only File. | $\mathcal{O}(N)$ |
+| **`BGREWRITEAOF`** | `BGREWRITEAOF` | Returns an unsupported-command error. | — |
 | **`INFO`** | `INFO [section]` | Returns real-time telemetry, memory stats, and keyspace diagnostics. | $\mathcal{O}(1)$ |
 | **`QUIT`** | `QUIT` | Closes the client connection gracefully. | $\mathcal{O}(1)$ |
 | **`COMMAND`** | `COMMAND DOCS` | Returns Redis protocol capability metadata. | $\mathcal{O}(1)$ |

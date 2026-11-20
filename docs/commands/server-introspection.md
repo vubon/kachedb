@@ -13,7 +13,7 @@ KacheDB provides self-describing runtime introspection compatible with modern Re
 | **`AUTH`** | `AUTH [username] <password>` | Authenticates the connection when `requirepass` is configured. |
 | **`CLIENT`** | `CLIENT <SETNAME \| GETNAME \| ID \| LIST>` | Inspects and configures client connection state. |
 | **`COMMAND`** | `COMMAND [DOCS]` | Returns server capability descriptors for client auto-discovery. |
-| **`BGREWRITEAOF`** | `BGREWRITEAOF` | Triggers asynchronous compaction and rewrite of the Append-Only File. |
+| **`BGREWRITEAOF`** | `BGREWRITEAOF` | Returns an unsupported-command error. |
 | **`QUIT`** | `QUIT` | Gracefully closes the client connection. |
 
 ---
@@ -150,16 +150,16 @@ OK
 ---
 
 ### `BGREWRITEAOF`
-Instructs the server to compact and rewrite the Append-Only File (`kachedb.aof`) to remove redundant commands and minimize disk space.
+
+Background AOF rewrite is currently unavailable. The command returns a RESP error and leaves the connection open.
 
 #### Syntax
 ```text
 BGREWRITEAOF
 ```
 
-#### `kachedb-cli` Example
+#### RESP error reply
 ```text
-127.0.0.1:6379> BGREWRITEAOF
-Background append only file rewriting started
+-ERR BGREWRITEAOF is currently unsupported in this version
 ```
 
