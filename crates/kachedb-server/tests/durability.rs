@@ -4,8 +4,11 @@ use std::net::{TcpListener, TcpStream};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+static NEXT_PORT_OFFSET: AtomicU16 = AtomicU16::new(0);
 
 struct Store(PathBuf);
 
@@ -65,8 +68,15 @@ impl Running {
         let mut server = Self(command.spawn().unwrap());
         let end = Instant::now() + Duration::from_secs(10);
         loop {
-            if let Ok(mut client) = Client::connect(port) {
-                assert_eq!(client.request(&[b"PING"]), Reply::Simple("PONG".into()));
+            if let Ok(client) =
+                Client::connect(port).and_then(|mut client| match client.try_request(&[b"PING"]) {
+                    Ok(Reply::Simple(ref pong)) if pong == "PONG" => Ok(client),
+                    _ => Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "not ready",
+                    )),
+                })
+            {
                 return (server, client);
             }
             assert!(
@@ -117,46 +127,85 @@ impl Client {
         Ok(Self(BufReader::new(stream)))
     }
 
-    fn request(&mut self, args: &[&[u8]]) -> Reply {
+    fn try_request(&mut self, args: &[&[u8]]) -> std::io::Result<Reply> {
         let mut wire = format!("*{}\r\n", args.len()).into_bytes();
         for arg in args {
-            write!(&mut wire, "${}\r\n", arg.len()).unwrap();
+            write!(&mut wire, "${}\r\n", arg.len())?;
             wire.extend_from_slice(arg);
             wire.extend_from_slice(b"\r\n");
         }
-        self.0.get_mut().write_all(&wire).unwrap();
-        self.read_reply()
+        self.0.get_mut().write_all(&wire)?;
+        self.try_read_reply()
     }
 
-    fn read_reply(&mut self) -> Reply {
+    fn request(&mut self, args: &[&[u8]]) -> Reply {
+        self.try_request(args).unwrap()
+    }
+
+    fn try_read_reply(&mut self) -> std::io::Result<Reply> {
         let mut line = String::new();
-        self.0.read_line(&mut line).unwrap();
-        let line = line.strip_suffix("\r\n").unwrap();
+        let bytes_read = self.0.read_line(&mut line)?;
+        if bytes_read == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "connection closed by server",
+            ));
+        }
+        let line = line.strip_suffix("\r\n").ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "missing CRLF in reply")
+        })?;
         let (kind, value) = line.split_at(1);
         match kind {
-            "+" => Reply::Simple(value.into()),
-            "-" => Reply::Error(value.into()),
-            ":" => Reply::Count(value.parse().unwrap()),
-            "$" if value == "-1" => Reply::Bulk(None),
+            "+" => Ok(Reply::Simple(value.into())),
+            "-" => Ok(Reply::Error(value.into())),
+            ":" => value
+                .parse()
+                .map(Reply::Count)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+            "$" if value == "-1" => Ok(Reply::Bulk(None)),
             "$" => {
-                let size = value.parse::<usize>().unwrap();
+                let size = value
+                    .parse::<usize>()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 let mut bytes = vec![0; size + 2];
-                self.0.read_exact(&mut bytes).unwrap();
-                assert_eq!(&bytes[size..], b"\r\n");
+                self.0.read_exact(&mut bytes)?;
+                if &bytes[size..] != b"\r\n" {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "bulk reply missing trailing CRLF",
+                    ));
+                }
                 bytes.truncate(size);
-                Reply::Bulk(Some(bytes))
+                Ok(Reply::Bulk(Some(bytes)))
             }
-            "*" => Reply::List(
-                (0..value.parse::<usize>().unwrap())
-                    .map(|_| self.read_reply())
-                    .collect(),
-            ),
-            _ => panic!("unexpected RESP reply {line:?}"),
+            "*" => {
+                let count = value
+                    .parse::<usize>()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let mut list = Vec::with_capacity(count);
+                for _ in 0..count {
+                    list.push(self.try_read_reply()?);
+                }
+                Ok(Reply::List(list))
+            }
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unexpected RESP reply {line:?}"),
+            )),
         }
     }
 }
 
 fn free_port() -> u16 {
+    for _ in 0..500 {
+        let offset = NEXT_PORT_OFFSET.fetch_add(1, Ordering::Relaxed);
+        let base = 25000 + ((std::process::id() as u32 * 37) % 20000) as u16;
+        let port = base + (offset % 15000);
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+            drop(listener);
+            return port;
+        }
+    }
     TcpListener::bind(("127.0.0.1", 0))
         .unwrap()
         .local_addr()
@@ -167,9 +216,9 @@ fn free_port() -> u16 {
 #[test]
 fn restart_replays_only_the_checkpoint_suffix() {
     let store = Store::new("checkpoint");
-    let port = free_port();
+    let port1 = free_port();
     let vector = [1.0_f32.to_ne_bytes(), 0.0_f32.to_ne_bytes()].concat();
-    let (mut server, mut client) = Running::start(&mut store.server(port, true), port);
+    let (mut server, mut client) = Running::start(&mut store.server(port1, true), port1);
     let ok = Reply::Simple("OK".into());
 
     assert_eq!(
@@ -208,13 +257,15 @@ fn restart_replays_only_the_checkpoint_suffix() {
     );
     let index_info = client.request(&[b"VINDEX", b"INFO", b"ann"]);
     assert!(matches!(index_info, Reply::List(_)));
+    drop(client);
     assert!(server.exit(libc::SIGTERM).success());
 
     let snapshot = fs::read(store.0.join("snapshot.kdb")).unwrap();
     assert_eq!(&snapshot[..4], b"KDB\x07");
     assert_eq!(snapshot[16], 1);
     assert_eq!(u64::from_le_bytes(snapshot[33..41].try_into().unwrap()), 6);
-    let (mut server, mut client) = Running::start(&mut store.server(port, true), port);
+    let port2 = free_port();
+    let (mut server, mut client) = Running::start(&mut store.server(port2, true), port2);
     assert_eq!(client.request(&[b"VINDEX", b"INFO", b"ann"]), index_info);
     assert_eq!(client.request(&[b"MSET", b"one", b"1", b"two", b"2"]), ok);
     assert_eq!(client.request(&[b"APPEND", b"two", b"2"]), Reply::Count(2));
@@ -245,10 +296,12 @@ fn restart_replays_only_the_checkpoint_suffix() {
         client.request(&[b"VINDEX", b"DROP", b"ann"]),
         Reply::Count(1)
     );
+    drop(client);
     let _ = server.exit(libc::SIGKILL);
     assert_eq!(fs::read(store.0.join("snapshot.kdb")).unwrap(), snapshot);
 
-    let (_server, mut client) = Running::start(&mut store.server(port, true), port);
+    let port3 = free_port();
+    let (_server, mut client) = Running::start(&mut store.server(port3, true), port3);
     assert_eq!(
         client.request(&[b"MGET", b"one", b"two"]),
         Reply::List(vec![
@@ -275,8 +328,10 @@ fn restart_replays_only_the_checkpoint_suffix() {
 #[test]
 fn write_failure_reports_uncertainty_and_rejects_later_mutations() {
     let store = Store::new("write-failure");
-    let port = free_port();
-    let mut command = store.server(port, false);
+    let port1 = free_port();
+    let mut command = store.server(port1, false);
+    // The limit also applies to stderr when the test runner redirects it to a file.
+    command.stderr(Stdio::null());
     // Leave enough room for the generation marker and a checked header only.
     unsafe {
         command.pre_exec(|| {
@@ -292,7 +347,7 @@ fn write_failure_reports_uncertainty_and_rejects_later_mutations() {
             Ok(())
         });
     }
-    let (mut server, mut client) = Running::start(&mut command, port);
+    let (mut server, mut client) = Running::start(&mut command, port1);
     let value = [b'x'; 128];
     let reply = client.request(&[b"SET", b"published", &value]);
     assert!(matches!(reply, Reply::Error(message) if message.contains("outcome is uncertain")));
@@ -303,18 +358,20 @@ fn write_failure_reports_uncertainty_and_rejects_later_mutations() {
     let reply = client.request(&[b"SET", b"rejected", b"value"]);
     assert!(matches!(reply, Reply::Error(message) if message.contains("writer unavailable")));
     assert_eq!(client.request(&[b"GET", b"rejected"]), Reply::Bulk(None));
-    assert!(!server.exit(libc::SIGTERM).success());
+    drop(client);
+    assert_eq!(server.exit(libc::SIGTERM).code(), Some(1));
 
-    let (_server, mut client) = Running::start(&mut store.server(port, false), port);
+    let port2 = free_port();
+    let (_server, mut client) = Running::start(&mut store.server(port2, false), port2);
     assert_eq!(client.request(&[b"GET", b"published"]), Reply::Bulk(None));
 }
 
 #[test]
 fn aof_only_restart_preserves_cross_worker_order_and_flushes() {
     let store = Store::new("ordered");
-    let port = free_port();
-    let (mut server, client) = Running::start(&mut store.server(port, false), port);
-    let second = Client::connect(port).unwrap();
+    let port1 = free_port();
+    let (mut server, client) = Running::start(&mut store.server(port1, false), port1);
+    let second = Client::connect(port1).unwrap();
     let mut replies = thread::scope(|scope| {
         let increment = |mut client: Client| {
             (0..32)
@@ -333,7 +390,8 @@ fn aof_only_restart_preserves_cross_worker_order_and_flushes() {
     assert_eq!(replies, (1..=64).collect::<Vec<_>>());
     let _ = server.exit(libc::SIGKILL);
 
-    let (mut server, mut recovered) = Running::start(&mut store.server(port, false), port);
+    let port2 = free_port();
+    let (mut server, mut recovered) = Running::start(&mut store.server(port2, false), port2);
     let ok = Reply::Simple("OK".into());
     assert_eq!(
         recovered.request(&[b"GET", b"counter"]),
@@ -346,9 +404,11 @@ fn aof_only_restart_preserves_cross_worker_order_and_flushes() {
     );
     assert_eq!(recovered.request(&[b"FLUSHALL"]), ok);
     assert_eq!(recovered.request(&[b"SET", b"retained", b"value"]), ok);
+    drop(recovered);
     let _ = server.exit(libc::SIGKILL);
 
-    let (_server, mut recovered) = Running::start(&mut store.server(port, false), port);
+    let port3 = free_port();
+    let (_server, mut recovered) = Running::start(&mut store.server(port3, false), port3);
     assert_eq!(recovered.request(&[b"DBSIZE"]), Reply::Count(1));
     assert_eq!(
         recovered.request(&[b"GET", b"retained"]),
