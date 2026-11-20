@@ -247,5 +247,5 @@ KacheDB persists Redis Hash entries with full ACID durability:
 1. **Append-Only File (AOF):** Hash mutations are logged as logical opcode pairs:
    - `0x07` (`HSet`): `[key_len, key, field_len, field, val_len, val]`
    - `0x08` (`HDel`): `[key_len, key, field_len, field]`
-   - Compaction via `BGREWRITEAOF` serializes all live hash fields using `HashSlotFrame::encode_pairs` into `AofOp::HSet` and preserves active TTLs with `AofOp::Expire`.
+   - Background AOF rewrite through `BGREWRITEAOF` is currently unavailable.
 2. **Snapshot Format V5 (`KDB\x05`):** Snapshots write a typed record header `RecordType = 0x01` (Hash) followed by length-prefixed key bytes and encoded field-value pairs, maintaining compatibility with both plaintext and encrypted snapshots (`AES-256-GCM` or `ChaCha20-Poly1305`). Transparent backward-compatibility supports loading legacy `KDB\x02`, `KDB\x03`, and `KDB\x04` dumps.

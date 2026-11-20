@@ -236,7 +236,7 @@ Available Commands in KacheDB:
       INFO [section]              - Return server runtime, memory, and stats
       CLIENT SETNAME <name>       - Assign connection name
       CLIENT GETNAME              - Get connection name
-      BGREWRITEAOF                - Trigger background AOF rewrite
+      BGREWRITEAOF                - Currently unsupported
       PING [msg]                  - Ping server
       QUIT                        - Close connection
   • Vector Engine:

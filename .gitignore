@@ -35,3 +35,7 @@ docs/benchmarks/benchmark_comparison_results*.md
 
 # mdBook generated output
 /book/
+
+# PR review reports
+reviews/
+
