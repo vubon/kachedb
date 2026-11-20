@@ -29,7 +29,7 @@ The `kachedb-server` binary accepts several command-line flags to control hardwa
 | | `--snapshot-cipher <CIPHER>` | AEAD cipher (`aes-256-gcm` or `chacha20-poly1305`) | `aes-256-gcm` | `aes-256-gcm` |
 | | `--snapshot-key <KEY>` | Secret passphrase or 64-character hex key | None | Passphrase or hex string |
 | | `--snapshot-key-file <PATH>` | Path to 32-byte raw binary master key file | None | `/etc/kachedb/snapshot.key` |
-| | `--aof <true\|false>` | Enable Append-Only File (AOF) persistence | `false` | `true` (if durability needed) |
+| | `--aof` | Enable Append-Only File (AOF) persistence | `false` | `true` (if durability needed) |
 | | `--aof-path <PATH>` | Path to Append-Only File log | `kachedb.aof` | `/var/lib/kachedb/kachedb.aof` |
 | | `--appendfsync <POLICY>` | AOF disk sync policy (`always`, `everysec`, `no`) | `everysec` | `everysec` |
 | | `--shm <true\|false>` | Enable POSIX Shared Memory (`/dev/shm`) IPC | `true` | `true` |
@@ -103,6 +103,28 @@ Memory is managed through uniform **2 MB Megaslabs**:
 * Rather than calling `malloc()` on every request, KacheDB pre-allocates contiguous megaslab page frames.
 * **Per-Core Sizing:** If `--pool-mb` is set to `256` on a 4-core machine, total initial memory allocated across the daemon is $4 \times 256\text{ MB} = 1.024\text{ GB}$.
 * **Elastic Borrowing:** The dynamic `WorkloadQuota` manager elastically allocates megaslabs between application key-value cache and tensor memory based on current demand.
+
+---
+
+## AOF Durability and Repair
+
+Set `appendfsync` in the configuration file or pass `--appendfsync` when launching the server.
+
+| Policy | When a write returns success | Full queue |
+| --- | --- | --- |
+| `always` | After the record is written and synced | Waits up to one second before rejecting the write |
+| `everysec` | After publication and queueing, with a background sync about once per second | Rejects immediately |
+| `no` | After publication and queueing, with the OS responsible for routine flushing | Rejects immediately |
+
+A rejected admission leaves the data unchanged. An error reporting an uncertain outcome means the change was already published and its record may be on disk. The server rejects further writes once it detects AOF failure. Successful checkpoints and clean shutdowns sync the journal under every policy.
+
+Startup validates journal framing and requires a compatible snapshot when the journal depends on one. It automatically removes an incomplete final record only when the length header is intact and checksummed. For framing damage or an ambiguous tail, stop the server and use the offline repair command:
+
+```bash
+kachedb-server --aof-repair --aof-file /var/lib/kachedb/kachedb.aof
+```
+
+Repair writes a separate copy of the original journal, then truncates at the end of the last valid frame. All records after that point are discarded. If the retained prefix ends before a required snapshot checkpoint, startup reports the mismatch.
 
 ---
 

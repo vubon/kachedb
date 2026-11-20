@@ -22,6 +22,7 @@ pub struct ServerConfig {
     pub shm_enabled: bool,
     /// Enable Append-Only File (AOF) persistence.
     pub aof_enabled: bool,
+    pub aof_repair: bool,
     /// Path to the `.kaof` log file.
     pub aof_path: PathBuf,
     /// AOF fsync policy (always, everysec, no).
@@ -64,6 +65,7 @@ impl Default for ServerConfig {
             maxclients: 10_000,
             shm_enabled: true,
             aof_enabled: false,
+            aof_repair: false,
             aof_path: PathBuf::from("kachedb.aof"),
             appendfsync: AppendFsync::EverySec,
             tls_cert_path: None,
@@ -349,6 +351,10 @@ impl ServerConfig {
                     config.shm_enabled = false;
                     i += 1;
                 }
+                "--aof-repair" => {
+                    config.aof_repair = true;
+                    i += 1;
+                }
                 "--aof" => {
                     config.aof_enabled = true;
                     i += 1;
@@ -457,6 +463,7 @@ fn print_help() {
          --maxclients <N>          Maximum simultaneous client connections (default: 10000)
          --no-shm                  Disable POSIX shared memory (/dev/shm) IPC
          --aof                     Enable Append-Only File (AOF) persistence
+         --aof-repair              Back up a damaged AOF and truncate to its last valid frame
          --aof-file <PATH>         Path to AOF log file (default: kachedb.aof)
          --appendfsync <POLICY>    AOF fsync policy: always, everysec, no (default: everysec)
          --snapshot-encryption     Enable snapshot encryption-at-rest

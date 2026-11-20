@@ -2,14 +2,16 @@
 
 use std::collections::HashMap;
 
-use kachedb_core::{HashedTimingWheel, SlabBlockId, SlabClassType, SlabPool, resolve_slot_ptr};
+use kachedb_core::{
+    HashedTimingWheel, SlabBlockId, SlabClassType, pool::SlotAllocator, resolve_slot_ptr,
+};
 use kachedb_hash::{ShardedSwissTable, StringBatchEntry, SwissTable, VALUE_TYPE_STRING, hash_key};
 use kachedb_proto_resp::{
     Command, encode_array_header, encode_bulk_string, encode_error, encode_integer, encode_null,
     encode_simple_string,
 };
 
-use crate::aof_encode::{AofOp, emit_aof, mset_fits_aof_record};
+use crate::aof_encode::mset_fits_aof_record;
 use crate::error::NetError;
 
 const WRONG_TYPE: &str = "WRONGTYPE Operation against a key holding the wrong kind of value";
@@ -24,9 +26,13 @@ enum Arithmetic {
     Subtract(i64),
 }
 
-fn prepare_string(pool: &mut SlabPool, value: &[u8]) -> Result<SlabBlockId, &'static str> {
+fn prepare_string(
+    pool: &mut impl SlotAllocator,
+    hash: u64,
+    value: &[u8],
+) -> Result<SlabBlockId, &'static str> {
     let class = SlabClassType::for_size(value.len()).ok_or(SIZE_ERROR)?;
-    let block = pool.reserve_non_evicting(class).map_err(|_| OOM_ERROR)?;
+    let block = pool.reserve(hash, class).map_err(|_| OOM_ERROR)?;
     // This slot is unpublished and exclusively owned by the current worker.
     let Some(ptr) = (unsafe { resolve_slot_ptr(block) }) else {
         let _ = pool.deallocate(block);
@@ -39,14 +45,14 @@ fn prepare_string(pool: &mut SlabPool, value: &[u8]) -> Result<SlabBlockId, &'st
 /// Writes a new allocation and publishes it under the key's shard write lock.
 fn store_string(
     shard: &mut SwissTable,
-    pool: &mut SlabPool,
+    pool: &mut impl SlotAllocator,
     hash: u64,
     key: &[u8],
     value: &[u8],
     expires: u32,
     wheel: Option<&mut HashedTimingWheel>,
 ) -> Result<(), &'static str> {
-    let block = prepare_string(pool, value)?;
+    let block = prepare_string(pool, hash, value)?;
     let old = match shard.insert_with_ttl_and_key(hash, key, block, value.len() as u32, expires) {
         Ok(old) => old,
         Err(()) => {
@@ -65,9 +71,9 @@ fn store_string(
     Ok(())
 }
 
-fn store_string_batch(
+pub(super) fn store_string_batch(
     table: &ShardedSwissTable,
-    pool: &mut SlabPool,
+    pool: &mut impl SlotAllocator,
     pairs: &[(&[u8], &[u8])],
 ) -> Result<(), &'static str> {
     if pairs
@@ -94,10 +100,11 @@ fn store_string_batch(
 
     let publish = (|| {
         for (key, value) in final_values {
+            let hash = hash_key(key);
             prepared.push(StringBatchEntry {
-                key_hash: hash_key(key),
+                key_hash: hash,
                 key,
-                slab_block_id: prepare_string(pool, value)?,
+                slab_block_id: prepare_string(pool, hash, value)?,
                 value_len: value.len() as u32,
             });
         }
@@ -125,7 +132,7 @@ fn execute_arithmetic(
     arithmetic: Arithmetic,
     write_buf: &mut Vec<u8>,
     table: &ShardedSwissTable,
-    pool: &mut SlabPool,
+    pool: &mut impl SlotAllocator,
     now: u32,
     wheel: Option<&mut HashedTimingWheel>,
 ) {
@@ -173,7 +180,7 @@ pub fn handle_strings(
     cmd: Command<'_>,
     write_buf: &mut Vec<u8>,
     table: &ShardedSwissTable,
-    pool: &mut SlabPool,
+    pool: &mut impl SlotAllocator,
     now_sec: u32,
     timing_wheel: Option<&mut HashedTimingWheel>,
 ) -> Result<bool, NetError> {
@@ -205,7 +212,6 @@ pub fn handle_strings(
             });
             match result {
                 Ok(()) => {
-                    emit_aof(AofOp::Set, key, value, now_sec);
                     encode_simple_string(write_buf, "OK");
                 }
                 Err(error) => encode_error(write_buf, error),
@@ -235,7 +241,6 @@ pub fn handle_strings(
                 let h = hash_key(key);
                 if let Some(entry) = table.remove_key(h, key) {
                     let _ = pool.deallocate(entry.slab_block_id);
-                    emit_aof(AofOp::Del, key, &[], now_sec);
                     deleted += 1;
                 }
             }

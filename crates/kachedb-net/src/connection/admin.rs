@@ -1,6 +1,6 @@
 //! Administrative, server, and session command execution handlers (`PING`, `ECHO`, `HELLO`, `CLIENT`, `INFO`, `DBSIZE`, `TYPE`, `FLUSHDB`, `FLUSHALL`).
 
-use kachedb_core::SlabPool;
+use kachedb_core::pool::SlotAllocator;
 use kachedb_hash::{ShardedSwissTable, VALUE_TYPE_HASH, hash_key};
 use kachedb_proto_resp::{
     ClientSubcommand, Command, encode_array_header, encode_bulk_string, encode_error,
@@ -16,7 +16,7 @@ pub fn handle_admin(
     cmd: Command<'_>,
     write_buf: &mut Vec<u8>,
     table: &ShardedSwissTable,
-    pool: &mut SlabPool,
+    pool: &mut impl SlotAllocator,
     vectors: &VectorIndexRegistry,
     now_sec: u32,
     mut client_state: Option<&mut ClientState>,

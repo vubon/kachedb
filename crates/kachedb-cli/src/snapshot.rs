@@ -58,6 +58,7 @@ pub fn parse_snapshot_info(data: &[u8]) -> Result<SnapshotInfo, String> {
         || magic == b"KDB\x04"
         || magic == b"KDB\x05"
         || magic == b"KDB\x06"
+        || magic == b"KDB\x07"
     {
         let ts = u64::from_le_bytes([
             data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
@@ -84,7 +85,9 @@ pub fn parse_snapshot_info(data: &[u8]) -> Result<SnapshotInfo, String> {
             (None, None, None)
         };
 
-        let format_version = if magic == b"KDB\x06" {
+        let format_version = if magic == b"KDB\x07" {
+            "v7 (AOF Checkpoints and HNSW)".to_string()
+        } else if magic == b"KDB\x06" {
             "v6 (Exact Key Identity)".to_string()
         } else if magic == b"KDB\x05" {
             "v5 (Keyspace SCAN + Typed KV + Redis Hashes)".to_string()
@@ -286,6 +289,7 @@ mod tests {
         for (magic, version) in [
             (b"KDB\x05", "v5 (Keyspace SCAN + Typed KV + Redis Hashes)"),
             (b"KDB\x06", "v6 (Exact Key Identity)"),
+            (b"KDB\x07", "v7 (AOF Checkpoints and HNSW)"),
         ] {
             let mut buf = Vec::new();
             buf.extend_from_slice(magic);

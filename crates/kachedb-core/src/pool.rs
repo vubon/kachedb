@@ -469,6 +469,32 @@ fn now_secs() -> u32 {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
+/// Non-evicting allocation used by live commands and startup replay.
+pub trait SlotAllocator {
+    fn reserve(&mut self, key_hash: u64, class: SlabClassType) -> Result<SlabBlockId, CoreError>;
+    fn deallocate(&mut self, block: SlabBlockId) -> Result<(), CoreError>;
+    fn total_allocated_bytes(&self) -> usize;
+    fn arena_count(&self) -> usize;
+}
+
+impl SlotAllocator for SlabPool {
+    fn reserve(&mut self, _key_hash: u64, class: SlabClassType) -> Result<SlabBlockId, CoreError> {
+        self.reserve_non_evicting(class)
+    }
+
+    fn deallocate(&mut self, block: SlabBlockId) -> Result<(), CoreError> {
+        SlabPool::deallocate(self, block)
+    }
+
+    fn total_allocated_bytes(&self) -> usize {
+        SlabPool::total_allocated_bytes(self)
+    }
+
+    fn arena_count(&self) -> usize {
+        SlabPool::arena_count(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

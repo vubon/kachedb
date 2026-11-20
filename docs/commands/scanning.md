@@ -188,9 +188,11 @@ for field, value in r.hscan_iter("device:metadata"):
 
 ---
 
-## 💾 Snapshot Durability & Recovery (Format V6)
+## 💾 Snapshot Durability & Recovery (Format V7)
 
-Snapshot V6 (`KDB\x06`) stores the original bytes of every key. A zero-length key is an empty key. Distinct keys with the same digest remain independent. Key lengths use 16 bits, so writes accept keys up to 65,535 bytes.
+Snapshot V7 (`KDB\x07`) stores the original bytes of every key. A zero-length key is an empty key. Distinct keys with the same digest remain independent. Key lengths use 16 bits, so writes accept keys up to 65,535 bytes.
 
-V5 snapshots with known key bytes can still be loaded. V2–V4 snapshots with KV entries and V5 snapshots with anonymous entries require migration from a source containing the original keys, such as a complete AOF. Startup reports a migration error and preserves the original snapshot.
+V6 snapshots and V5 snapshots with known key bytes can still be loaded. V2–V4 snapshots with KV entries and V5 snapshots with anonymous entries require migration from a source containing the original keys, such as a complete AOF. Startup reports a migration error and preserves the original snapshot.
 
+
+When AOF is enabled, a snapshot stores the generation and highest included AOF sequence. Recovery validates that pair before restoring the snapshot and applies only later log records. An older snapshot paired with a nonempty legacy AOF without a provable base requires migration from a known complete source. See the [AOF configuration and repair procedure](../getting-started/configuration.md#aof-durability-and-repair).
