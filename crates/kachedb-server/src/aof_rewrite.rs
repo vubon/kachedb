@@ -74,7 +74,7 @@ impl BgRewriteJob {
         // Iterate through all table shards
         for shard_idx in 0..table.shard_count() {
             let entries = table.snapshot_shard_with_keys(shard_idx);
-            for (key_hash, key_bytes, entry) in entries {
+            for (_, key_bytes, entry) in entries {
                 let expire_at = entry.expire_at_secs;
                 let block_id = entry.slab_block_id;
                 let val_len = entry.value_len;
@@ -82,27 +82,24 @@ impl BgRewriteJob {
                     continue; // Skip expired keys
                 }
 
+                if !entry.has_key {
+                    return Err(AofError::MissingKeyBytes);
+                }
                 if let Some(ptr) = unsafe { resolve_slot_ptr(block_id) } {
                     let val_slice = unsafe { std::slice::from_raw_parts(ptr, val_len as usize) };
-                    let fallback_hash_bytes = key_hash.to_le_bytes();
-                    let effective_key: &[u8] = if key_bytes.is_empty() {
-                        &fallback_hash_bytes
-                    } else {
-                        &key_bytes
-                    };
                     if entry.value_type == VALUE_TYPE_HASH {
                         let mut encoded = Vec::new();
                         HashSlotFrame::encode_pairs(val_slice, &mut encoded);
-                        let frame_bytes = encode_frame(AofOp::HSet, effective_key, &encoded, ts);
+                        let frame_bytes = encode_frame(AofOp::HSet, &key_bytes, &encoded, ts);
                         buf.extend_from_slice(&frame_bytes);
                     } else {
-                        let frame_bytes = encode_frame(AofOp::Set, effective_key, val_slice, ts);
+                        let frame_bytes = encode_frame(AofOp::Set, &key_bytes, val_slice, ts);
                         buf.extend_from_slice(&frame_bytes);
                     }
                     if expire_at > 0 {
                         let expire_str = expire_at.to_string();
                         let exp_frame =
-                            encode_frame(AofOp::Expire, effective_key, expire_str.as_bytes(), ts);
+                            encode_frame(AofOp::Expire, &key_bytes, expire_str.as_bytes(), ts);
                         buf.extend_from_slice(&exp_frame);
                     }
                     count += 1;

@@ -20,10 +20,12 @@ use crate::pool::SlabPool;
 pub const WHEEL_BUCKETS: usize = 3600;
 
 /// Descriptor of an item scheduled for temporal expiration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpireEntry {
     /// 64-bit hash of the key in SwissTable.
     pub key_hash: u64,
+    /// Original key bytes, when scheduled for a named table entry.
+    pub key: Option<Box<[u8]>>,
     /// Slab block handle.
     pub slab_block_id: SlabBlockId,
     /// Absolute expiration timestamp in epoch seconds.
@@ -56,11 +58,32 @@ impl HashedTimingWheel {
     /// Schedules a key hash and slab slot handle for expiration in O(1) time.
     #[inline(always)]
     pub fn schedule(&mut self, key_hash: u64, slot_id: SlabBlockId, expire_at_sec: u32) {
-        let entry = ExpireEntry {
+        self.schedule_entry(ExpireEntry {
             key_hash,
+            key: None,
             slab_block_id: slot_id,
             expire_at_sec,
-        };
+        });
+    }
+
+    /// Schedules expiration for the exact key, even if another key shares its digest.
+    pub fn schedule_key(
+        &mut self,
+        key_hash: u64,
+        key: &[u8],
+        slot_id: SlabBlockId,
+        expire_at_sec: u32,
+    ) {
+        self.schedule_entry(ExpireEntry {
+            key_hash,
+            key: Some(key.into()),
+            slab_block_id: slot_id,
+            expire_at_sec,
+        });
+    }
+
+    fn schedule_entry(&mut self, entry: ExpireEntry) {
+        let expire_at_sec = entry.expire_at_sec;
 
         if expire_at_sec <= self.current_tick_sec {
             // Already expired; target current head for immediate reclamation on next tick
@@ -87,8 +110,7 @@ impl HashedTimingWheel {
             let bucket_idx = (self.current_tick_sec as usize) % WHEEL_BUCKETS;
             let expired_slots = &mut self.buckets[bucket_idx];
 
-            out.extend_from_slice(expired_slots.as_slice());
-            expired_slots.clear();
+            out.extend(expired_slots.drain(..));
             self.current_tick_sec += 1;
         }
     }
@@ -163,19 +185,21 @@ mod tests {
         let slot1 = SlabBlockId::new(0, 1);
         let slot2 = SlabBlockId::new(0, 2);
 
-        wheel.schedule(12345, slot1, 105);
-        wheel.schedule(67890, slot2, 108);
+        wheel.schedule_key(12345, b"first", slot1, 105);
+        wheel.schedule_key(12345, b"", slot2, 108);
 
         let mut expired = Vec::new();
         wheel.advance_expired_entries(106, &mut expired);
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0].key_hash, 12345);
+        assert_eq!(expired[0].key.as_deref(), Some(b"first".as_slice()));
         assert_eq!(expired[0].slab_block_id, slot1);
 
         expired.clear();
         wheel.advance_expired_entries(110, &mut expired);
         assert_eq!(expired.len(), 1);
-        assert_eq!(expired[0].key_hash, 67890);
+        assert_eq!(expired[0].key_hash, 12345);
+        assert_eq!(expired[0].key.as_deref(), Some(b"".as_slice()));
         assert_eq!(expired[0].slab_block_id, slot2);
     }
 

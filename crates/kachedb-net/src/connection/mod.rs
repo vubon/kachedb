@@ -14,7 +14,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, LazyLock, RwLock};
 
 use kachedb_core::{HashedTimingWheel, SlabPool};
-use kachedb_hash::ShardedSwissTable;
+use kachedb_hash::{MAX_KEY_LEN, ShardedSwissTable};
 use kachedb_proto_resp::{Command, encode_error, encode_simple_string, parse_command_frame};
 use kachedb_vector::VectorIndexRegistry;
 
@@ -314,6 +314,14 @@ impl Connection {
             }
         }
 
+        if Self::has_oversized_write_key(&cmd) {
+            encode_error(
+                write_buf,
+                "ERR key exceeds the maximum length of 65535 bytes",
+            );
+            return Ok(true);
+        }
+
         match cmd {
             // Administrative, server, and session commands
             Command::Ping { .. }
@@ -401,6 +409,27 @@ impl Connection {
                 }
                 Ok(true)
             }
+        }
+    }
+
+    fn has_oversized_write_key(cmd: &Command<'_>) -> bool {
+        match cmd {
+            Command::Set { key, .. }
+            | Command::Append { key, .. }
+            | Command::Incr { key }
+            | Command::Decr { key }
+            | Command::IncrBy { key, .. }
+            | Command::DecrBy { key, .. }
+            | Command::Expire { key, .. }
+            | Command::PExpire { key, .. }
+            | Command::ExpireAt { key, .. }
+            | Command::PExpireAt { key, .. }
+            | Command::Persist { key }
+            | Command::HSet { key, .. }
+            | Command::HDel { key, .. } => key.len() > MAX_KEY_LEN,
+            Command::MSet { pairs } => pairs.iter().any(|(key, _)| key.len() > MAX_KEY_LEN),
+            Command::Del { keys } => keys.iter().any(|key| key.len() > MAX_KEY_LEN),
+            _ => false,
         }
     }
 

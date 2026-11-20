@@ -22,7 +22,7 @@ Zero CPU cycles or lock contention are added to client queries.
                                  │
                    (AES-256-GCM / ChaCha20-Poly1305)
                                  ▼
-              [ KDB\x03 Authenticated Ciphertext Stream ]
+              [ KDB\x06 Authenticated Ciphertext Stream ]
                                  │
                       [ dump.kdb on Disk ]
 ```
@@ -86,15 +86,15 @@ snapshot-encryption-key "your_strong_secret_passphrase_here"
 
 ---
 
-## 📦 Wire Format Specification (`KDB\x03`)
+## 📦 Wire Format Specification (`KDB\x06`)
 
-Binary snapshots use the `KDB\x03` file format:
+Snapshot V6 retains the encrypted envelope introduced in V3.
 
 ```text
 +---------------------------------------------------------------------------------+
 | Offset | Field                  | Size (Bytes) | Description                    |
 +--------+------------------------+--------------+--------------------------------+
-| 0      | Magic Header           | 4            | b"KDB\x03"                     |
+| 0      | Magic Header           | 4            | b"KDB\x06"                     |
 | 4      | Timestamp              | 8            | Unix Epoch seconds (u64 LE)    |
 | 12     | Flags                  | 4            | Bit 0: Encrypted (1=yes, 0=no) |
 |        |                        |              | Bits 1..3: Cipher Suite Code   |
@@ -115,7 +115,7 @@ Binary snapshots use the `KDB\x03` file format:
 ```
 
 ### Backward Compatibility
-* Legacy **`KDB\x02`** unencrypted snapshots automatically detect the `b"KDB\x02"` magic header and hydrate state without key prompts.
+* Legacy plaintext snapshots can be read without an encryption key. KV entries without original key bytes require migration. [Snapshot recovery rules](../commands/scanning.md#-snapshot-durability--recovery-format-v6)
 * Unencrypted **`KDB\x03`** snapshots (`flags = 0`) hydrate state directly with zero decryption overhead.
 
 ---

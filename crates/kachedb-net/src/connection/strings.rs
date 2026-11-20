@@ -20,7 +20,7 @@ pub fn execute_incr_by(
     now_sec: u32,
 ) -> Result<bool, NetError> {
     let h = hash_key(key);
-    let (new_val, expire_at_secs) = if let Some(entry) = table.lookup_checked(h, now_sec) {
+    let (new_val, expire_at_secs) = if let Some(entry) = table.lookup_key_checked(h, key, now_sec) {
         if entry.value_type != VALUE_TYPE_STRING {
             encode_error(
                 write_buf,
@@ -121,7 +121,7 @@ pub fn handle_strings(
     match cmd {
         Command::Get { key } => {
             let h = hash_key(key);
-            if let Some(entry) = table.lookup_checked(h, now_sec) {
+            if let Some(entry) = table.lookup_key_checked(h, key, now_sec) {
                 if entry.value_type != VALUE_TYPE_STRING {
                     encode_error(
                         write_buf,
@@ -192,7 +192,7 @@ pub fn handle_strings(
                     // Schedule in TimingWheel if key has TTL
                     if expire_at_secs > 0 {
                         if let Some(ref mut wheel) = timing_wheel {
-                            wheel.schedule(h, block_id, expire_at_secs);
+                            wheel.schedule_key(h, key, block_id, expire_at_secs);
                         }
                     }
 
@@ -211,7 +211,7 @@ pub fn handle_strings(
             encode_array_header(write_buf, keys.len());
             for key in keys {
                 let h = hash_key(key);
-                if let Some(entry) = table.lookup_checked(h, now_sec) {
+                if let Some(entry) = table.lookup_key_checked(h, key, now_sec) {
                     if entry.value_type == VALUE_TYPE_STRING {
                         if let Some(ptr) = unsafe { resolve_slot_ptr(entry.slab_block_id) } {
                             let val_slice = unsafe {
@@ -276,7 +276,7 @@ pub fn handle_strings(
             let mut deleted = 0i64;
             for key in keys {
                 let h = hash_key(key);
-                if let Some(entry) = table.remove(h) {
+                if let Some(entry) = table.remove_key(h, key) {
                     let _ = pool.deallocate(entry.slab_block_id);
                     emit_aof(AofOp::Del, key, &[], now_sec);
                     deleted += 1;
@@ -288,7 +288,7 @@ pub fn handle_strings(
             let mut count = 0i64;
             for key in keys {
                 let h = hash_key(key);
-                if table.lookup_checked(h, now_sec).is_some() {
+                if table.lookup_key_checked(h, key, now_sec).is_some() {
                     count += 1;
                 }
             }
@@ -309,7 +309,7 @@ pub fn handle_strings(
         Command::Append { key, value } => {
             let h = hash_key(key);
             let (combined_val, expire_at_secs) =
-                if let Some(entry) = table.lookup_checked(h, now_sec) {
+                if let Some(entry) = table.lookup_key_checked(h, key, now_sec) {
                     if entry.value_type != VALUE_TYPE_STRING {
                         encode_error(
                             write_buf,
@@ -381,7 +381,7 @@ pub fn handle_strings(
         }
         Command::Strlen { key } => {
             let h = hash_key(key);
-            if let Some(entry) = table.lookup_checked(h, now_sec) {
+            if let Some(entry) = table.lookup_key_checked(h, key, now_sec) {
                 encode_integer(write_buf, entry.value_len as i64);
             } else {
                 encode_integer(write_buf, 0);

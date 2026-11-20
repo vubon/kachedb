@@ -23,6 +23,16 @@ pub fn replay(
     pool: &mut SlabPool,
     vectors: &VectorIndexRegistry,
 ) -> Result<usize, AofError> {
+    replay_with_hash(path, table, pool, vectors, hash_key)
+}
+
+fn replay_with_hash(
+    path: &Path,
+    table: &ShardedSwissTable,
+    pool: &mut SlabPool,
+    vectors: &VectorIndexRegistry,
+    key_hash: impl Fn(&[u8]) -> u64,
+) -> Result<usize, AofError> {
     if !path.exists() {
         return Ok(0);
     }
@@ -42,7 +52,7 @@ pub fn replay(
     while offset < data.len() {
         match decode_frame(&data[offset..]) {
             Ok(Some((frame, consumed))) => {
-                apply_frame(&frame, table, pool, vectors);
+                apply_frame(&frame, table, pool, vectors, &key_hash);
                 offset += consumed;
                 last_valid_offset = offset;
                 count += 1;
@@ -102,6 +112,7 @@ fn apply_frame(
     table: &ShardedSwissTable,
     pool: &mut SlabPool,
     vectors: &VectorIndexRegistry,
+    key_hash: &impl Fn(&[u8]) -> u64,
 ) {
     match frame.op {
         AofOp::Set => {
@@ -113,7 +124,7 @@ fn apply_frame(
                 unsafe {
                     std::ptr::copy_nonoverlapping(frame.value.as_ptr(), ptr, val_len);
                 }
-                let h = hash_key(&frame.key);
+                let h = key_hash(&frame.key);
                 let old = table.insert_with_key(h, &frame.key, block_id, val_len as u32);
                 if let Some(old_id) = old {
                     let _ = pool.deallocate(old_id);
@@ -121,8 +132,8 @@ fn apply_frame(
             }
         }
         AofOp::Del => {
-            let h = hash_key(&frame.key);
-            if let Some(entry) = table.remove(h) {
+            let h = key_hash(&frame.key);
+            if let Some(entry) = table.remove_key(h, &frame.key) {
                 let _ = pool.deallocate(entry.slab_block_id);
             }
         }
@@ -130,11 +141,8 @@ fn apply_frame(
             if let Ok(ts_str) = std::str::from_utf8(&frame.value)
                 && let Ok(expire_at) = ts_str.parse::<u32>()
             {
-                let h = hash_key(&frame.key);
-                table.with_shard_mut(h, |shard| {
-                    shard.ensure_key_name(h, &frame.key);
-                });
-                table.update_ttl(h, expire_at, 0);
+                let h = key_hash(&frame.key);
+                table.update_key_ttl(h, &frame.key, expire_at, 0);
             }
         }
         AofOp::HSet => {
@@ -172,9 +180,9 @@ fn apply_frame(
                 pairs.push((f, v));
             }
 
-            let h = hash_key(&frame.key);
+            let h = key_hash(&frame.key);
             let needed_bytes = table.with_shard(h, |shard| {
-                let old_slot = shard.lookup_checked(h, 0).and_then(|e| {
+                let old_slot = shard.lookup_key_checked(h, &frame.key, 0).and_then(|e| {
                     if e.value_type == VALUE_TYPE_HASH {
                         unsafe {
                             resolve_slot_ptr(e.slab_block_id)
@@ -193,7 +201,7 @@ fn apply_frame(
             };
 
             table.with_shard_mut(h, |shard| {
-                if let Some(entry) = shard.lookup_checked(h, 0) {
+                if let Some(entry) = shard.lookup_key_checked(h, &frame.key, 0) {
                     if entry.value_type != VALUE_TYPE_HASH {
                         return;
                     }
@@ -207,7 +215,6 @@ fn apply_frame(
                         for (f, v) in &pairs {
                             let _ = HashSlotFrame::upsert(slot, f, v);
                         }
-                        shard.ensure_key_name(h, &frame.key);
                         return;
                     }
 
@@ -306,10 +313,10 @@ fn apply_frame(
                 fields.push(f);
             }
 
-            let h = hash_key(&frame.key);
+            let h = key_hash(&frame.key);
             let mut block_to_free = None;
             table.with_shard_mut(h, |shard| {
-                if let Some(entry) = shard.lookup_checked(h, 0) {
+                if let Some(entry) = shard.lookup_key_checked(h, &frame.key, 0) {
                     if entry.value_type != VALUE_TYPE_HASH {
                         return;
                     }
@@ -322,7 +329,7 @@ fn apply_frame(
                         }
                         if HashSlotFrame::live_count(slot) == 0 {
                             block_to_free = Some(entry.slab_block_id);
-                            shard.remove(h);
+                            shard.remove_key(h, &frame.key);
                         }
                     }
                 }
@@ -440,5 +447,50 @@ mod tests {
         assert!(table.lookup(hash_key(b"baz")).is_some());
 
         let _ = std::fs::remove_file(&path);
+    }
+    #[test]
+    fn aof_replay_keeps_colliding_and_empty_keys_independent() {
+        let path = std::env::temp_dir().join(format!(
+            "test_aof_collision_{}.kaof",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = [b'a'; 64];
+        let mut second = first;
+        second[63] = b'b';
+        std::fs::write(
+            &path,
+            [
+                encode_frame(AofOp::Set, &first, b"first", 100),
+                encode_frame(AofOp::Set, &second, b"second", 101),
+                encode_frame(AofOp::Set, b"", b"empty", 102),
+                encode_frame(AofOp::Expire, &second, b"200", 103),
+                encode_frame(AofOp::Del, &first, b"", 104),
+            ]
+            .concat(),
+        )
+        .unwrap();
+
+        let table = ShardedSwissTable::new();
+        let mut pool = SlabPool::new(0, 4 * 1024 * 1024).unwrap();
+        let vectors = VectorIndexRegistry::new();
+        let collision = 42;
+        assert_eq!(
+            replay_with_hash(&path, &table, &mut pool, &vectors, |_| collision).unwrap(),
+            5
+        );
+        assert_eq!(table.len(), 2);
+        assert!(table.lookup_key_checked(collision, &first, 0).is_none());
+        assert_eq!(table.get_key_ttl(collision, &second, 105), 95);
+        assert_eq!(table.get_key_ttl(collision, b"", 105), -1);
+        for (key, value) in [(second.as_slice(), b"second".as_slice()), (b"", b"empty")] {
+            let entry = table.lookup_key_checked(collision, key, 105).unwrap();
+            let ptr = unsafe { resolve_slot_ptr(entry.slab_block_id) }.unwrap();
+            let restored = unsafe { std::slice::from_raw_parts(ptr, entry.value_len as usize) };
+            assert_eq!(restored, value);
+        }
+        std::fs::remove_file(path).unwrap();
     }
 }

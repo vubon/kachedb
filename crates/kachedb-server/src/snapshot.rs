@@ -4,8 +4,8 @@
 //! SIMD vector indexes and SwissTable in-memory key-value cache with hardware-accelerated
 //! authenticated streaming encryption (AES-256-GCM / ChaCha20-Poly1305).
 //!
-//! Format Specification (v3):
-//! - Magic Header: `b"KDB\x03"` (4 bytes)
+//! Format Specification (v6):
+//! - Magic Header: `b"KDB\x06"` (4 bytes)
 //! - Created Timestamp: `u64` (8 bytes, Unix epoch seconds)
 //! - Flags: `u32` (4 bytes, bit 0: encrypted, bits 1..3: cipher suite)
 //! - If encrypted:
@@ -24,7 +24,8 @@
 //!           `has_parent_key: u8`, `parent_key`
 //!     - KV SwissTable Section:
 //!       - `num_entries: u32`
-//!       - For each entry: `key_hash: u64`, `val_len: u32`, `val: [u8]`, `expire_at_secs: u32`
+//!       - For each entry: `key_hash: u64`, `key_len: u16`, `key: [u8]`, `value_type: u8`,
+//!         `val_len: u32`, `val: [u8]`, `expire_at_secs: u32`. Zero-length keys are named.
 //! - Checksum Trailer: `crc32: u32` (4 bytes, IEEE 802.3 CRC32 over all preceding bytes)
 
 use std::fs::{File, OpenOptions};
@@ -37,7 +38,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crc32fast::Hasher;
 use kachedb_core::{SlabClassType, SlabPool, resolve_slot_ptr};
-use kachedb_hash::{HashSlotFrame, ShardedSwissTable, VALUE_TYPE_HASH, VALUE_TYPE_STRING};
+use kachedb_hash::{
+    HashSlotFrame, ShardedSwissTable, VALUE_TYPE_HASH, VALUE_TYPE_STRING, hash_key,
+};
 use kachedb_vector::{VectorEntry, VectorIndexRegistry};
 use thiserror::Error;
 
@@ -57,9 +60,11 @@ pub const KDB_SNAPSHOT_MAGIC_V4: [u8; 4] = *b"KDB\x04";
 /// Magic bytes for KacheDB snapshot format v5 (Keyspace SCAN + Key Name Persistence).
 pub const KDB_SNAPSHOT_MAGIC_V5: [u8; 4] = *b"KDB\x05";
 
+/// Magic bytes for KacheDB snapshot format v6 (all KV entries have original keys).
+pub const KDB_SNAPSHOT_MAGIC_V6: [u8; 4] = *b"KDB\x06";
+
 /// Canonical active magic bytes for new snapshots.
-#[allow(dead_code)]
-pub const KDB_SNAPSHOT_MAGIC: [u8; 4] = KDB_SNAPSHOT_MAGIC_V5;
+pub const KDB_SNAPSHOT_MAGIC: [u8; 4] = KDB_SNAPSHOT_MAGIC_V6;
 
 #[inline]
 fn hash_slab_class(needed_bytes: usize) -> Option<SlabClassType> {
@@ -132,6 +137,14 @@ pub enum SnapshotError {
     Crypto(#[from] CryptoError),
     #[error("Encryption key required to load encrypted snapshot")]
     EncryptionKeyRequired,
+    #[error(
+        "Snapshot lacks original key bytes; recover from a complete AOF or migrate the snapshot before startup"
+    )]
+    MissingKeyBytes,
+    #[error(
+        "Legacy snapshot key digest does not match its stored bytes; recover from a complete AOF or migrate the snapshot before startup"
+    )]
+    LegacyKeyDigestMismatch,
 }
 
 /// Configuration options for snapshot encryption-at-rest.
@@ -313,8 +326,8 @@ pub fn save_snapshot(
     };
 
     // 1. Magic Header & Metadata
-    hasher.update(&KDB_SNAPSHOT_MAGIC_V5);
-    file.write_all(&KDB_SNAPSHOT_MAGIC_V5)?;
+    hasher.update(&KDB_SNAPSHOT_MAGIC);
+    file.write_all(&KDB_SNAPSHOT_MAGIC)?;
     hasher.update(&ts.to_le_bytes());
     file.write_all(&ts.to_le_bytes())?;
     hasher.update(&flags.to_le_bytes());
@@ -411,6 +424,9 @@ pub fn save_snapshot(
             if expire_at > 0 && now_sec > 0 && now_sec >= expire_at {
                 continue;
             }
+            if !entry.has_key {
+                return Err(SnapshotError::MissingKeyBytes);
+            }
             if let Some(ptr) = unsafe { resolve_slot_ptr(entry.slab_block_id) } {
                 let val_slice =
                     unsafe { std::slice::from_raw_parts(ptr, entry.value_len as usize) };
@@ -432,9 +448,9 @@ pub fn save_snapshot(
 
     for (key_hash, key_bytes, val_type, val_bytes, expire_at) in kv_items {
         writer.write_bytes(&key_hash.to_le_bytes())?;
-        let key_len = (key_bytes.len().min(u16::MAX as usize)) as u16;
+        let key_len = key_bytes.len() as u16;
         writer.write_bytes(&key_len.to_le_bytes())?;
-        writer.write_bytes(&key_bytes[..key_len as usize])?;
+        writer.write_bytes(&key_bytes)?;
         writer.write_bytes(&[val_type])?;
         let val_len = val_bytes.len() as u32;
         writer.write_bytes(&val_len.to_le_bytes())?;
@@ -515,8 +531,11 @@ pub fn load_snapshot(
     } else if magic == KDB_SNAPSHOT_MAGIC_V3
         || magic == KDB_SNAPSHOT_MAGIC_V4
         || magic == KDB_SNAPSHOT_MAGIC_V5
+        || magic == KDB_SNAPSHOT_MAGIC_V6
     {
-        let version = if magic == KDB_SNAPSHOT_MAGIC_V5 {
+        let version = if magic == KDB_SNAPSHOT_MAGIC_V6 {
+            6u8
+        } else if magic == KDB_SNAPSHOT_MAGIC_V5 {
             5u8
         } else if magic == KDB_SNAPSHOT_MAGIC_V4 {
             4u8
@@ -790,267 +809,111 @@ fn hydrate_payload(
         ]) as usize;
         cursor += 4;
 
+        if version < 5 && num_kv > 0 {
+            return Err(SnapshotError::MissingKeyBytes);
+        }
         for _ in 0..num_kv {
-            if version >= 5 {
-                if cursor + 8 + 2 > content_len {
-                    return Err(SnapshotError::UnexpectedEof);
+            if cursor + 8 + 2 > content_len {
+                return Err(SnapshotError::UnexpectedEof);
+            }
+            let key_hash = u64::from_le_bytes([
+                payload[cursor],
+                payload[cursor + 1],
+                payload[cursor + 2],
+                payload[cursor + 3],
+                payload[cursor + 4],
+                payload[cursor + 5],
+                payload[cursor + 6],
+                payload[cursor + 7],
+            ]);
+            cursor += 8;
+
+            let key_len = u16::from_le_bytes([payload[cursor], payload[cursor + 1]]) as usize;
+            cursor += 2;
+            if cursor + key_len + 1 + 4 > content_len {
+                return Err(SnapshotError::UnexpectedEof);
+            }
+            let key_bytes = &payload[cursor..cursor + key_len];
+            cursor += key_len;
+            if version == 5 {
+                if key_bytes.is_empty() {
+                    return Err(SnapshotError::MissingKeyBytes);
                 }
-                let key_hash = u64::from_le_bytes([
-                    payload[cursor],
-                    payload[cursor + 1],
-                    payload[cursor + 2],
-                    payload[cursor + 3],
-                    payload[cursor + 4],
-                    payload[cursor + 5],
-                    payload[cursor + 6],
-                    payload[cursor + 7],
-                ]);
-                cursor += 8;
-
-                let key_len = u16::from_le_bytes([payload[cursor], payload[cursor + 1]]) as usize;
-                cursor += 2;
-                if cursor + key_len + 1 + 4 > content_len {
-                    return Err(SnapshotError::UnexpectedEof);
-                }
-                let key_bytes = &payload[cursor..cursor + key_len];
-                cursor += key_len;
-
-                let value_type = payload[cursor];
-                cursor += 1;
-
-                let val_len = u32::from_le_bytes([
-                    payload[cursor],
-                    payload[cursor + 1],
-                    payload[cursor + 2],
-                    payload[cursor + 3],
-                ]) as usize;
-                cursor += 4;
-
-                if cursor + val_len + 4 > content_len {
-                    return Err(SnapshotError::UnexpectedEof);
-                }
-                let val_bytes = &payload[cursor..cursor + val_len];
-                cursor += val_len;
-
-                let expire_at = u32::from_le_bytes([
-                    payload[cursor],
-                    payload[cursor + 1],
-                    payload[cursor + 2],
-                    payload[cursor + 3],
-                ]);
-                cursor += 4;
-
-                if value_type == VALUE_TYPE_HASH {
-                    if let Some(pairs) = parse_pairs_from_encoded(val_bytes)
-                        && let Some(target_class) =
-                            hash_slab_class(HashSlotFrame::needed_bytes(None, &pairs))
-                        && let Ok(block_id) = pool.allocate(target_class)
-                    {
-                        if let Some(ptr) = unsafe { resolve_slot_ptr(block_id) } {
-                            let slot = unsafe {
-                                std::slice::from_raw_parts_mut(ptr, target_class.slot_bytes())
-                            };
-                            if HashSlotFrame::build_from_pairs(slot, val_bytes).is_ok() {
-                                if key_bytes.is_empty() {
-                                    let _ = table.insert_typed(
-                                        key_hash,
-                                        block_id,
-                                        target_class.slot_bytes() as u32,
-                                        expire_at,
-                                        VALUE_TYPE_HASH,
-                                    );
-                                } else {
-                                    let _ = table.insert_typed_with_key(
-                                        key_hash,
-                                        key_bytes,
-                                        block_id,
-                                        target_class.slot_bytes() as u32,
-                                        expire_at,
-                                        VALUE_TYPE_HASH,
-                                    );
-                                }
-                                total_kv += 1;
-                            } else {
-                                let _ = pool.deallocate(block_id);
-                            }
-                        } else {
-                            let _ = pool.deallocate(block_id);
-                        }
-                    }
-                } else if let Some(class) = SlabClassType::for_size(val_len)
-                    && let Ok(block_id) = pool.allocate(class)
-                    && let Some(ptr) = unsafe { resolve_slot_ptr(block_id) }
-                {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(val_bytes.as_ptr(), ptr, val_len);
-                    }
-                    if key_bytes.is_empty() {
-                        let _ = table.insert_typed(
-                            key_hash,
-                            block_id,
-                            val_len as u32,
-                            expire_at,
-                            VALUE_TYPE_STRING,
-                        );
-                    } else {
-                        let _ = table.insert_typed_with_key(
-                            key_hash,
-                            key_bytes,
-                            block_id,
-                            val_len as u32,
-                            expire_at,
-                            VALUE_TYPE_STRING,
-                        );
-                    }
-                    total_kv += 1;
-                }
-            } else if version >= 4 {
-                if cursor + 8 + 1 + 4 > content_len {
-                    return Err(SnapshotError::UnexpectedEof);
-                }
-                let key_hash = u64::from_le_bytes([
-                    payload[cursor],
-                    payload[cursor + 1],
-                    payload[cursor + 2],
-                    payload[cursor + 3],
-                    payload[cursor + 4],
-                    payload[cursor + 5],
-                    payload[cursor + 6],
-                    payload[cursor + 7],
-                ]);
-                cursor += 8;
-
-                let value_type = payload[cursor];
-                cursor += 1;
-
-                let val_len = u32::from_le_bytes([
-                    payload[cursor],
-                    payload[cursor + 1],
-                    payload[cursor + 2],
-                    payload[cursor + 3],
-                ]) as usize;
-                cursor += 4;
-
-                if cursor + val_len + 4 > content_len {
-                    return Err(SnapshotError::UnexpectedEof);
-                }
-                let val_bytes = &payload[cursor..cursor + val_len];
-                cursor += val_len;
-
-                let expire_at = u32::from_le_bytes([
-                    payload[cursor],
-                    payload[cursor + 1],
-                    payload[cursor + 2],
-                    payload[cursor + 3],
-                ]);
-                cursor += 4;
-
-                if value_type == VALUE_TYPE_HASH {
-                    if let Some(pairs) = parse_pairs_from_encoded(val_bytes)
-                        && let Some(target_class) =
-                            hash_slab_class(HashSlotFrame::needed_bytes(None, &pairs))
-                        && let Ok(block_id) = pool.allocate(target_class)
-                    {
-                        if let Some(ptr) = unsafe { resolve_slot_ptr(block_id) } {
-                            let slot = unsafe {
-                                std::slice::from_raw_parts_mut(ptr, target_class.slot_bytes())
-                            };
-                            if HashSlotFrame::build_from_pairs(slot, val_bytes).is_ok() {
-                                let _ = table.insert_typed(
-                                    key_hash,
-                                    block_id,
-                                    target_class.slot_bytes() as u32,
-                                    expire_at,
-                                    VALUE_TYPE_HASH,
-                                );
-                                total_kv += 1;
-                            } else {
-                                let _ = pool.deallocate(block_id);
-                            }
-                        } else {
-                            let _ = pool.deallocate(block_id);
-                        }
-                    }
-                } else if let Some(class) = SlabClassType::for_size(val_len)
-                    && let Ok(block_id) = pool.allocate(class)
-                    && let Some(ptr) = unsafe { resolve_slot_ptr(block_id) }
-                {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(val_bytes.as_ptr(), ptr, val_len);
-                    }
-                    let _ = table.insert_typed(
-                        key_hash,
-                        block_id,
-                        val_len as u32,
-                        expire_at,
-                        VALUE_TYPE_STRING,
-                    );
-                    total_kv += 1;
-                }
-            } else {
-                if cursor + 16 > content_len {
-                    return Err(SnapshotError::UnexpectedEof);
-                }
-                let key_hash = u64::from_le_bytes([
-                    payload[cursor],
-                    payload[cursor + 1],
-                    payload[cursor + 2],
-                    payload[cursor + 3],
-                    payload[cursor + 4],
-                    payload[cursor + 5],
-                    payload[cursor + 6],
-                    payload[cursor + 7],
-                ]);
-                cursor += 8;
-
-                let val_len = u32::from_le_bytes([
-                    payload[cursor],
-                    payload[cursor + 1],
-                    payload[cursor + 2],
-                    payload[cursor + 3],
-                ]) as usize;
-                cursor += 4;
-
-                if cursor + val_len + 4 > content_len {
-                    return Err(SnapshotError::UnexpectedEof);
-                }
-                let val_bytes = &payload[cursor..cursor + val_len];
-                cursor += val_len;
-
-                let expire_at = u32::from_le_bytes([
-                    payload[cursor],
-                    payload[cursor + 1],
-                    payload[cursor + 2],
-                    payload[cursor + 3],
-                ]);
-                cursor += 4;
-
-                if let Some(class) = SlabClassType::for_size(val_len)
-                    && let Ok(block_id) = pool.allocate(class)
-                    && let Some(ptr) = unsafe { resolve_slot_ptr(block_id) }
-                {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(val_bytes.as_ptr(), ptr, val_len);
-                    }
-                    let _ = table.insert_typed(
-                        key_hash,
-                        block_id,
-                        val_len as u32,
-                        expire_at,
-                        VALUE_TYPE_STRING,
-                    );
-                    total_kv += 1;
+                if hash_key(key_bytes) != key_hash {
+                    return Err(SnapshotError::LegacyKeyDigestMismatch);
                 }
             }
-        }
-    }
 
-    let anon_count = table.anonymous_key_count();
-    if anon_count > 0 {
-        log::warn!(
-            "Loaded {} legacy pre-V5 KV entries without key names; these keys remain accessible by GET/HGET/DEL/EXPIRE but are omitted from SCAN until rewritten or recovered from AOF",
-            anon_count
-        );
+            let value_type = payload[cursor];
+            cursor += 1;
+
+            let val_len = u32::from_le_bytes([
+                payload[cursor],
+                payload[cursor + 1],
+                payload[cursor + 2],
+                payload[cursor + 3],
+            ]) as usize;
+            cursor += 4;
+
+            if cursor + val_len + 4 > content_len {
+                return Err(SnapshotError::UnexpectedEof);
+            }
+            let val_bytes = &payload[cursor..cursor + val_len];
+            cursor += val_len;
+
+            let expire_at = u32::from_le_bytes([
+                payload[cursor],
+                payload[cursor + 1],
+                payload[cursor + 2],
+                payload[cursor + 3],
+            ]);
+            cursor += 4;
+
+            if value_type == VALUE_TYPE_HASH {
+                if let Some(pairs) = parse_pairs_from_encoded(val_bytes)
+                    && let Some(target_class) =
+                        hash_slab_class(HashSlotFrame::needed_bytes(None, &pairs))
+                    && let Ok(block_id) = pool.allocate(target_class)
+                {
+                    if let Some(ptr) = unsafe { resolve_slot_ptr(block_id) } {
+                        let slot = unsafe {
+                            std::slice::from_raw_parts_mut(ptr, target_class.slot_bytes())
+                        };
+                        if HashSlotFrame::build_from_pairs(slot, val_bytes).is_ok() {
+                            let _ = table.insert_typed_with_key(
+                                key_hash,
+                                key_bytes,
+                                block_id,
+                                target_class.slot_bytes() as u32,
+                                expire_at,
+                                VALUE_TYPE_HASH,
+                            );
+                            total_kv += 1;
+                        } else {
+                            let _ = pool.deallocate(block_id);
+                        }
+                    } else {
+                        let _ = pool.deallocate(block_id);
+                    }
+                }
+            } else if let Some(class) = SlabClassType::for_size(val_len)
+                && let Ok(block_id) = pool.allocate(class)
+                && let Some(ptr) = unsafe { resolve_slot_ptr(block_id) }
+            {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(val_bytes.as_ptr(), ptr, val_len);
+                }
+                let _ = table.insert_typed_with_key(
+                    key_hash,
+                    key_bytes,
+                    block_id,
+                    val_len as u32,
+                    expire_at,
+                    VALUE_TYPE_STRING,
+                );
+                total_kv += 1;
+            }
+        }
     }
 
     Ok((num_indexes, total_vectors, total_kv))
@@ -1224,7 +1087,7 @@ mod tests {
             std::ptr::copy_nonoverlapping(val.as_ptr(), ptr, val.len());
         }
         let key_hash = 123456789u64;
-        table.insert_with_ttl(key_hash, block_id, val.len() as u32, 0);
+        table.insert_with_key(key_hash, b"snapshot-key", block_id, val.len() as u32);
 
         // Save unencrypted snapshot
         let save_stats = save_snapshot(&path, &table, &vectors, 0, None).expect("save failed");
@@ -1234,9 +1097,9 @@ mod tests {
         assert!(save_stats.bytes_written > 0);
         assert!(path.exists());
 
-        // Verify on-disk file: magic is KDB\x05 and flags have FLAG_ENCRYPTED == 0 (plaintext)
+        // Verify on-disk file: magic is KDB\x06 and flags have FLAG_ENCRYPTED == 0 (plaintext)
         let raw_bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&raw_bytes[0..4], &KDB_SNAPSHOT_MAGIC_V5);
+        assert_eq!(&raw_bytes[0..4], &KDB_SNAPSHOT_MAGIC_V6);
         let flags =
             u32::from_le_bytes([raw_bytes[12], raw_bytes[13], raw_bytes[14], raw_bytes[15]]);
         assert_eq!(flags & FLAG_ENCRYPTED, 0);
@@ -1345,7 +1208,7 @@ mod tests {
             std::ptr::copy_nonoverlapping(val.as_ptr(), ptr, val.len());
         }
         let key_hash = 999888777u64;
-        table.insert_with_ttl(key_hash, block_id, val.len() as u32, 0);
+        table.insert_with_key(key_hash, b"snapshot-key", block_id, val.len() as u32);
 
         // Save with AES-256-GCM
         let save_stats = save_snapshot(&path, &table, &vectors, 0, Some(&enc_config))
@@ -1354,9 +1217,9 @@ mod tests {
         assert_eq!(save_stats.total_vectors, 1);
         assert_eq!(save_stats.total_kv_entries, 1);
 
-        // Verify that raw file on disk is encrypted (magic is KDB\x05, flags indicate encrypted)
+        // Verify that raw file on disk is encrypted (magic is KDB\x06, flags indicate encrypted)
         let raw_bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&raw_bytes[0..4], &KDB_SNAPSHOT_MAGIC_V5);
+        assert_eq!(&raw_bytes[0..4], &KDB_SNAPSHOT_MAGIC_V6);
         let flags =
             u32::from_le_bytes([raw_bytes[12], raw_bytes[13], raw_bytes[14], raw_bytes[15]]);
         assert_ne!(flags & FLAG_ENCRYPTED, 0);
@@ -1683,8 +1546,9 @@ mod tests {
             std::ptr::copy_nonoverlapping(str_val.as_ptr(), str_ptr, str_val.len());
         }
         table
-            .insert_typed(
+            .insert_typed_with_key(
                 str_hash,
+                b"string-key",
                 str_block_id,
                 str_val.len() as u32,
                 0,
@@ -1702,8 +1566,9 @@ mod tests {
         HashSlotFrame::upsert(slot, b"field1", b"val1").unwrap();
         HashSlotFrame::upsert(slot, b"field2", b"longer_val_2").unwrap();
         table
-            .insert_typed(
+            .insert_typed_with_key(
                 hash_key,
+                b"hash-key",
                 hash_block_id,
                 hash_class.slot_bytes() as u32,
                 0,
@@ -1711,7 +1576,7 @@ mod tests {
             )
             .unwrap();
 
-        // 3. Save snapshot (v4)
+        // 3. Save snapshot
         let save_stats = save_snapshot(&path, &table, &vectors, 0, None).expect("save failed");
         assert_eq!(save_stats.total_kv_entries, 2);
 
@@ -1783,7 +1648,7 @@ mod tests {
                 std::ptr::copy_nonoverlapping(val.as_ptr(), ptr, val.len());
             }
             let key_hash = 999888777u64;
-            table_clone.insert_with_ttl(key_hash, block_id, val.len() as u32, 0);
+            table_clone.insert_with_key(key_hash, b"worker-key", block_id, val.len() as u32);
 
             // Simulate event loop stopping on shutdown, then waiting at barrier
             barrier_clone.wait_worker();
@@ -1822,12 +1687,12 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_v5_preserves_short_and_overflow_keys_for_scan_and_v4_compat() {
+    fn test_snapshot_v6_preserves_collisions_and_empty_key_and_rejects_v4_anonymous_key() {
         use std::collections::HashSet;
 
         let dir = std::env::temp_dir();
-        let path_v5 = dir.join(format!(
-            "test_v5_scan_keys_{}.kdb",
+        let path_v6 = dir.join(format!(
+            "test_v6_scan_keys_{}.kdb",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -1838,28 +1703,24 @@ mod tests {
         let vectors = VectorIndexRegistry::new();
         let mut pool = SlabPool::new(0, 4 * 1024 * 1024).unwrap();
 
-        let short_key = b"short:v5:key";
-        let long_key = b"long:v5:overflow:key:exceeding_forty_bytes_inline_sso_limit:0001";
-        assert!(long_key.len() > 40);
-
-        for k in [short_key.as_slice(), long_key.as_slice()] {
-            let val = b"v5_payload";
-            let class = SlabClassType::for_size(val.len()).unwrap();
-            let block_id = pool.allocate(class).unwrap();
-            let ptr = unsafe { resolve_slot_ptr(block_id).unwrap() };
-            unsafe {
-                std::ptr::copy_nonoverlapping(val.as_ptr(), ptr, val.len());
-            }
-            let h = kachedb_hash::hash_key(k);
-            table.insert_with_key(h, k, block_id, val.len() as u32);
+        let collision = 42;
+        let first = [b'a'; 64];
+        let mut second = first;
+        second[63] = b'b';
+        let keys: [&[u8]; 3] = [&first, &second, b""];
+        for (ordinal, key) in keys.into_iter().enumerate() {
+            let block_id = pool.allocate(SlabClassType::AppSmall).unwrap();
+            let ptr = unsafe { resolve_slot_ptr(block_id) }.unwrap();
+            unsafe { ptr.write(ordinal as u8) };
+            table.insert_with_key(collision, key, block_id, 1);
         }
 
-        save_snapshot(&path_v5, &table, &vectors, 0, None).unwrap();
+        save_snapshot(&path_v6, &table, &vectors, 0, None).unwrap();
 
         let new_table = ShardedSwissTable::new();
         let new_vectors = VectorIndexRegistry::new();
         let mut new_pool = SlabPool::new(0, 4 * 1024 * 1024).unwrap();
-        load_snapshot(&path_v5, &new_table, &mut new_pool, &new_vectors, None)
+        load_snapshot(&path_v6, &new_table, &mut new_pool, &new_vectors, None)
             .unwrap()
             .unwrap();
         assert_eq!(new_table.anonymous_key_count(), 0);
@@ -1874,12 +1735,16 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(scanned.len(), 2);
-        assert!(scanned.contains(short_key.as_slice()));
-        assert!(scanned.contains(long_key.as_slice()));
-        let _ = std::fs::remove_file(&path_v5);
+        assert_eq!(scanned.len(), keys.len());
+        for (ordinal, key) in keys.into_iter().enumerate() {
+            assert!(scanned.contains(key));
+            let entry = new_table.lookup_key_checked(collision, key, 0).unwrap();
+            let ptr = unsafe { resolve_slot_ptr(entry.slab_block_id).unwrap() };
+            assert_eq!(unsafe { ptr.read() }, ordinal as u8);
+        }
+        let _ = std::fs::remove_file(&path_v6);
 
-        // V4 backward compatibility with 1 KV entry (no key_len / key_bytes)
+        // V4 persisted KV digests without original key bytes.
         let path_v4 = dir.join(format!(
             "test_v4_compat_{}.kdb",
             SystemTime::now()
@@ -1910,12 +1775,41 @@ mod tests {
         let v4_table = ShardedSwissTable::new();
         let v4_vectors = VectorIndexRegistry::new();
         let mut v4_pool = SlabPool::new(0, 4 * 1024 * 1024).unwrap();
-        let stats = load_snapshot(&path_v4, &v4_table, &mut v4_pool, &v4_vectors, None)
-            .unwrap()
-            .unwrap();
-        assert_eq!(stats.total_kv_entries, 1);
-        assert_eq!(v4_table.anonymous_key_count(), 1);
-        assert!(v4_table.lookup(legacy_hash).is_some());
+        assert!(matches!(
+            load_snapshot(&path_v4, &v4_table, &mut v4_pool, &v4_vectors, None),
+            Err(SnapshotError::MissingKeyBytes)
+        ));
+        assert!(v4_table.is_empty());
         let _ = std::fs::remove_file(&path_v4);
+    }
+    #[test]
+    fn v5_named_keys_load_and_anonymous_keys_require_migration() {
+        let table = ShardedSwissTable::new();
+        let vectors = VectorIndexRegistry::new();
+        let mut pool = SlabPool::new(0, 4 * 1024 * 1024).unwrap();
+
+        let key = b"v5-key";
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u32.to_le_bytes()); // vector indexes
+        payload.extend_from_slice(&1u32.to_le_bytes()); // KV entries
+        payload.extend_from_slice(&hash_key(key).to_le_bytes());
+        payload.extend_from_slice(&(key.len() as u16).to_le_bytes());
+        payload.extend_from_slice(key);
+        payload.push(VALUE_TYPE_STRING);
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.push(b'x');
+        payload.extend_from_slice(&0u32.to_le_bytes()); // deadline
+
+        let (_, _, count) = hydrate_payload(&payload, 5, &table, &mut pool, &vectors).unwrap();
+        assert_eq!(count, 1);
+        assert!(table.lookup_key_checked(hash_key(key), key, 0).is_some());
+
+        let key_offset = 8 + 8 + 2;
+        payload.drain(key_offset..key_offset + key.len());
+        payload[key_offset - 2..key_offset].copy_from_slice(&0u16.to_le_bytes());
+        assert!(matches!(
+            hydrate_payload(&payload, 5, &table, &mut pool, &vectors),
+            Err(SnapshotError::MissingKeyBytes)
+        ));
     }
 }

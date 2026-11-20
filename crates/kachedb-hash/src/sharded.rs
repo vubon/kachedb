@@ -99,6 +99,16 @@ impl ShardedSwissTable {
         shard.lookup_checked(hash, now_sec).map(|e| e.to_snapshot())
     }
 
+    /// Looks up the exact key with TTL validation.
+    #[inline(always)]
+    pub fn lookup_key_checked(&self, hash: u64, key: &[u8], now: u32) -> Option<TableEntry> {
+        self.with_shard(hash, |shard| {
+            shard
+                .lookup_key_checked(hash, key, now)
+                .map(|e| e.to_snapshot())
+        })
+    }
+
     /// Point lookup without TTL validation (for raw metadata inspection).
     #[inline(always)]
     pub fn lookup(&self, hash: u64) -> Option<TableEntry> {
@@ -261,6 +271,38 @@ impl ShardedSwissTable {
         shard.persist(hash, now_sec)
     }
 
+    /// Removes the exact key.
+    pub fn remove_key(&self, hash: u64, key: &[u8]) -> Option<TableEntry> {
+        self.with_shard_mut(hash, |shard| shard.remove_key(hash, key))
+    }
+
+    /// Removes the exact key if it still owns the expected slab allocation.
+    pub fn remove_key_if_matching(
+        &self,
+        hash: u64,
+        key: &[u8],
+        expected_block_id: SlabBlockId,
+    ) -> Option<TableEntry> {
+        self.with_shard_mut(hash, |shard| {
+            shard.remove_key_if_matching(hash, key, expected_block_id)
+        })
+    }
+
+    /// Updates the TTL of the exact key.
+    pub fn update_key_ttl(&self, hash: u64, key: &[u8], expires: u32, now: u32) -> bool {
+        self.with_shard_mut(hash, |shard| shard.update_key_ttl(hash, key, expires, now))
+    }
+
+    /// Retrieves the remaining TTL of the exact key.
+    pub fn get_key_ttl(&self, hash: u64, key: &[u8], now: u32) -> i64 {
+        self.with_shard(hash, |shard| shard.get_key_ttl(hash, key, now))
+    }
+
+    /// Removes TTL from the exact key.
+    pub fn persist_key(&self, hash: u64, key: &[u8], now: u32) -> bool {
+        self.with_shard_mut(hash, |shard| shard.persist_key(hash, key, now))
+    }
+
     /// Returns the total count of live entries across all 256 shards.
     pub fn len(&self) -> usize {
         self.shards.iter().map(|s| s.table.read().len()).sum()
@@ -307,7 +349,7 @@ impl ShardedSwissTable {
         }
     }
 
-    /// Returns the total count of anonymous (`key_len == 0`) live keys across all shards.
+    /// Returns the total count of live entries whose original key bytes are unknown.
     pub fn anonymous_key_count(&self) -> usize {
         self.shards
             .iter()

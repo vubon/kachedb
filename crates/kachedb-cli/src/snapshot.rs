@@ -54,7 +54,11 @@ pub fn parse_snapshot_info(data: &[u8]) -> Result<SnapshotInfo, String> {
             calculated_crc,
             file_size: data.len(),
         })
-    } else if magic == b"KDB\x03" || magic == b"KDB\x04" || magic == b"KDB\x05" {
+    } else if magic == b"KDB\x03"
+        || magic == b"KDB\x04"
+        || magic == b"KDB\x05"
+        || magic == b"KDB\x06"
+    {
         let ts = u64::from_le_bytes([
             data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
         ]);
@@ -80,7 +84,9 @@ pub fn parse_snapshot_info(data: &[u8]) -> Result<SnapshotInfo, String> {
             (None, None, None)
         };
 
-        let format_version = if magic == b"KDB\x05" {
+        let format_version = if magic == b"KDB\x06" {
+            "v6 (Exact Key Identity)".to_string()
+        } else if magic == b"KDB\x05" {
             "v5 (Keyspace SCAN + Typed KV + Redis Hashes)".to_string()
         } else if magic == b"KDB\x04" {
             "v4 (Typed KV + Redis Hashes)".to_string()
@@ -276,24 +282,24 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_snapshot_info_v5_plaintext() {
-        let mut buf = Vec::new();
-        buf.extend_from_slice(b"KDB\x05");
-        buf.extend_from_slice(&1735000000u64.to_le_bytes()); // ts
-        buf.extend_from_slice(&0u32.to_le_bytes()); // flags: unencrypted
-        buf.extend_from_slice(b"v5-payload-with-keys");
-        let mut hasher = crc32fast::Hasher::new();
-        hasher.update(&buf);
-        let crc = hasher.finalize();
-        buf.extend_from_slice(&crc.to_le_bytes());
+    fn test_parse_snapshot_info_named_key_versions() {
+        for (magic, version) in [
+            (b"KDB\x05", "v5 (Keyspace SCAN + Typed KV + Redis Hashes)"),
+            (b"KDB\x06", "v6 (Exact Key Identity)"),
+        ] {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(magic);
+            buf.extend_from_slice(&1735000000u64.to_le_bytes());
+            buf.extend_from_slice(&0u32.to_le_bytes());
+            buf.extend_from_slice(b"payload-with-keys");
+            let crc = crc32fast::hash(&buf);
+            buf.extend_from_slice(&crc.to_le_bytes());
 
-        let info = parse_snapshot_info(&buf).expect("should parse v5 snapshot");
-        assert_eq!(
-            info.format_version,
-            "v5 (Keyspace SCAN + Typed KV + Redis Hashes)"
-        );
-        assert_eq!(info.created_ts, 1735000000);
-        assert!(!info.is_encrypted);
-        assert!(info.crc_valid);
+            let info = parse_snapshot_info(&buf).expect("should parse named-key snapshot");
+            assert_eq!(info.format_version, version);
+            assert_eq!(info.created_ts, 1735000000);
+            assert!(!info.is_encrypted);
+            assert!(info.crc_valid);
+        }
     }
 }
