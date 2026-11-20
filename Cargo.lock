@@ -379,8 +379,10 @@ dependencies = [
  "cfg-if",
  "core_affinity",
  "criterion",
+ "crossbeam-channel",
  "libc",
  "log",
+ "parking_lot",
  "smallvec",
  "thiserror",
 ]

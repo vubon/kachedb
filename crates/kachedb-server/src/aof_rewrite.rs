@@ -10,8 +10,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use kachedb_core::resolve_slot_ptr;
-use kachedb_hash::{HashSlotFrame, ShardedSwissTable, VALUE_TYPE_HASH};
+use kachedb_hash::{ShardedSwissTable, VALUE_TYPE_HASH};
 use kachedb_vector::VectorIndexRegistry;
 
 use crate::aof::{AofError, AofOp, encode_frame};
@@ -73,41 +72,32 @@ impl BgRewriteJob {
 
         // Iterate through all table shards
         for shard_idx in 0..table.shard_count() {
-            let entries = table.snapshot_shard_with_keys(shard_idx);
-            for (_, key_bytes, entry) in entries {
-                let expire_at = entry.expire_at_secs;
-                let block_id = entry.slab_block_id;
-                let val_len = entry.value_len;
-                if expire_at > 0 && now_sec > 0 && now_sec >= expire_at {
-                    continue; // Skip expired keys
-                }
-
-                if !entry.has_key {
+            // Workers keep published slots alive until unlinking under the shard write lock.
+            let entries = unsafe { table.snapshot_shard_with_payloads(shard_idx, now_sec) }?;
+            for item in entries {
+                if !item.has_key {
                     return Err(AofError::MissingKeyBytes);
                 }
-                if let Some(ptr) = unsafe { resolve_slot_ptr(block_id) } {
-                    let val_slice = unsafe { std::slice::from_raw_parts(ptr, val_len as usize) };
-                    if entry.value_type == VALUE_TYPE_HASH {
-                        let mut encoded = Vec::new();
-                        HashSlotFrame::encode_pairs(val_slice, &mut encoded);
-                        let frame_bytes = encode_frame(AofOp::HSet, &key_bytes, &encoded, ts);
-                        buf.extend_from_slice(&frame_bytes);
-                    } else {
-                        let frame_bytes = encode_frame(AofOp::Set, &key_bytes, val_slice, ts);
-                        buf.extend_from_slice(&frame_bytes);
-                    }
-                    if expire_at > 0 {
-                        let expire_str = expire_at.to_string();
-                        let exp_frame =
-                            encode_frame(AofOp::Expire, &key_bytes, expire_str.as_bytes(), ts);
-                        buf.extend_from_slice(&exp_frame);
-                    }
-                    count += 1;
+                if item.value_type == VALUE_TYPE_HASH {
+                    let frame_bytes =
+                        encode_frame(AofOp::HSet, &item.key_bytes, &item.val_bytes, ts);
+                    buf.extend_from_slice(&frame_bytes);
+                } else {
+                    let frame_bytes =
+                        encode_frame(AofOp::Set, &item.key_bytes, &item.val_bytes, ts);
+                    buf.extend_from_slice(&frame_bytes);
+                }
+                if item.expire_at > 0 {
+                    let expire_str = item.expire_at.to_string();
+                    let exp_frame =
+                        encode_frame(AofOp::Expire, &item.key_bytes, expire_str.as_bytes(), ts);
+                    buf.extend_from_slice(&exp_frame);
+                }
+                count += 1;
 
-                    if buf.len() >= 64 * 1024 {
-                        file.write_all(&buf)?;
-                        buf.clear();
-                    }
+                if buf.len() >= 64 * 1024 {
+                    file.write_all(&buf)?;
+                    buf.clear();
                 }
             }
         }
@@ -127,8 +117,8 @@ impl BgRewriteJob {
 mod tests {
     use super::*;
     use crate::aof_recovery::replay;
-    use kachedb_core::{SlabClassType, SlabPool};
-    use kachedb_hash::{VALUE_TYPE_STRING, hash_key};
+    use kachedb_core::{SlabClassType, SlabPool, resolve_slot_ptr};
+    use kachedb_hash::{HashSlotFrame, VALUE_TYPE_STRING, hash_key};
 
     #[test]
     fn test_aof_rewrite_preserves_strings_hashes_and_ttl() {

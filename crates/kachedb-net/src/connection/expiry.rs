@@ -1,4 +1,4 @@
-//! Key expiry and TTL command execution handlers (`EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST`).
+//! Key expiry and TTL command execution handlers.
 
 use kachedb_core::{HashedTimingWheel, SlabPool};
 use kachedb_hash::{ShardedSwissTable, hash_key};
@@ -14,156 +14,80 @@ pub fn handle_expiry(
     table: &ShardedSwissTable,
     pool: &mut SlabPool,
     now_sec: u32,
-    mut timing_wheel: Option<&mut HashedTimingWheel>,
+    timing_wheel: Option<&mut HashedTimingWheel>,
 ) -> Result<bool, NetError> {
-    match cmd {
-        Command::Expire { key, seconds } => {
-            let h = hash_key(key);
-            if seconds <= 0 {
-                if let Some(entry) = table.remove_key(h, key) {
-                    let _ = pool.deallocate(entry.slab_block_id);
-                    emit_aof(AofOp::Del, key, &[], now_sec);
-                    encode_integer(write_buf, 1);
-                } else {
-                    encode_integer(write_buf, 0);
-                }
-            } else {
-                let expire_at_secs = if now_sec > 0 {
-                    now_sec.saturating_add(seconds as u32)
-                } else {
-                    seconds as u32
-                };
-                let ok = table.update_key_ttl(h, key, expire_at_secs, now_sec);
-                if ok {
-                    emit_aof(
-                        AofOp::Expire,
-                        key,
-                        expire_at_secs.to_string().as_bytes(),
-                        now_sec,
-                    );
-                    if let Some(entry) = table.lookup_key_checked(h, key, now_sec) {
-                        if let Some(ref mut wheel) = timing_wheel {
-                            wheel.schedule_key(h, key, entry.slab_block_id, expire_at_secs);
-                        }
-                    }
-                }
-                encode_integer(write_buf, if ok { 1 } else { 0 });
-            }
+    let seconds = |value: i64| u32::try_from(value).unwrap_or(u32::MAX);
+    let (key, deadline) = match cmd {
+        Command::Expire { key, seconds: ttl } => {
+            (key, (ttl > 0).then(|| now_sec.saturating_add(seconds(ttl))))
         }
-        Command::PExpire { key, milliseconds } => {
-            let h = hash_key(key);
-            if milliseconds <= 0 {
-                if let Some(entry) = table.remove_key(h, key) {
-                    let _ = pool.deallocate(entry.slab_block_id);
-                    emit_aof(AofOp::Del, key, &[], now_sec);
-                    encode_integer(write_buf, 1);
-                } else {
-                    encode_integer(write_buf, 0);
-                }
-            } else {
-                let secs = (milliseconds / 1000).max(1) as u32;
-                let expire_at_secs = if now_sec > 0 {
-                    now_sec.saturating_add(secs)
-                } else {
-                    secs
-                };
-                let ok = table.update_key_ttl(h, key, expire_at_secs, now_sec);
-                if ok {
-                    emit_aof(
-                        AofOp::Expire,
-                        key,
-                        expire_at_secs.to_string().as_bytes(),
-                        now_sec,
-                    );
-                    if let Some(entry) = table.lookup_key_checked(h, key, now_sec) {
-                        if let Some(ref mut wheel) = timing_wheel {
-                            wheel.schedule_key(h, key, entry.slab_block_id, expire_at_secs);
-                        }
-                    }
-                }
-                encode_integer(write_buf, if ok { 1 } else { 0 });
-            }
-        }
-        Command::ExpireAt { key, timestamp } => {
-            let h = hash_key(key);
-            if now_sec > 0 && timestamp <= now_sec as i64 {
-                if let Some(entry) = table.remove_key(h, key) {
-                    let _ = pool.deallocate(entry.slab_block_id);
-                    emit_aof(AofOp::Del, key, &[], now_sec);
-                    encode_integer(write_buf, 1);
-                } else {
-                    encode_integer(write_buf, 0);
-                }
-            } else {
-                let expire_at_secs = timestamp.max(0) as u32;
-                let ok = table.update_key_ttl(h, key, expire_at_secs, now_sec);
-                if ok {
-                    emit_aof(
-                        AofOp::Expire,
-                        key,
-                        expire_at_secs.to_string().as_bytes(),
-                        now_sec,
-                    );
-                    if let Some(entry) = table.lookup_key_checked(h, key, now_sec) {
-                        if let Some(ref mut wheel) = timing_wheel {
-                            wheel.schedule_key(h, key, entry.slab_block_id, expire_at_secs);
-                        }
-                    }
-                }
-                encode_integer(write_buf, if ok { 1 } else { 0 });
-            }
-        }
+        Command::PExpire { key, milliseconds } => (
+            key,
+            (milliseconds > 0)
+                .then(|| now_sec.saturating_add(seconds((milliseconds / 1000).max(1)))),
+        ),
+        Command::ExpireAt { key, timestamp } => (
+            key,
+            (timestamp > i64::from(now_sec)).then(|| seconds(timestamp)),
+        ),
         Command::PExpireAt { key, timestamp_ms } => {
-            let h = hash_key(key);
-            let ts_sec = timestamp_ms / 1000;
-            if now_sec > 0 && ts_sec <= now_sec as i64 {
-                if let Some(entry) = table.remove_key(h, key) {
-                    let _ = pool.deallocate(entry.slab_block_id);
-                    emit_aof(AofOp::Del, key, &[], now_sec);
-                    encode_integer(write_buf, 1);
-                } else {
-                    encode_integer(write_buf, 0);
-                }
-            } else {
-                let expire_at_secs = ts_sec.max(0) as u32;
-                let ok = table.update_key_ttl(h, key, expire_at_secs, now_sec);
-                if ok {
-                    emit_aof(
-                        AofOp::Expire,
-                        key,
-                        expire_at_secs.to_string().as_bytes(),
-                        now_sec,
-                    );
-                    if let Some(entry) = table.lookup_key_checked(h, key, now_sec) {
-                        if let Some(ref mut wheel) = timing_wheel {
-                            wheel.schedule_key(h, key, entry.slab_block_id, expire_at_secs);
-                        }
-                    }
-                }
-                encode_integer(write_buf, if ok { 1 } else { 0 });
-            }
+            let timestamp = timestamp_ms / 1000;
+            (
+                key,
+                (timestamp > i64::from(now_sec)).then(|| seconds(timestamp)),
+            )
         }
-        Command::Ttl { key } => {
-            let h = hash_key(key);
-            let ttl = table.get_key_ttl(h, key, now_sec);
+        Command::Ttl { key } | Command::PTtl { key } => {
+            let ttl = table.get_key_ttl(hash_key(key), key, now_sec);
+            let ttl = if ttl > 0 && matches!(cmd, Command::PTtl { .. }) {
+                ttl * 1000
+            } else {
+                ttl
+            };
             encode_integer(write_buf, ttl);
-        }
-        Command::PTtl { key } => {
-            let h = hash_key(key);
-            let ttl = table.get_key_ttl(h, key, now_sec);
-            if ttl > 0 {
-                encode_integer(write_buf, ttl * 1000);
-            } else {
-                encode_integer(write_buf, ttl);
-            }
+            return Ok(true);
         }
         Command::Persist { key } => {
-            let h = hash_key(key);
-            let ok = table.persist_key(h, key, now_sec);
-            encode_integer(write_buf, if ok { 1 } else { 0 });
+            let updated = table.persist_key(hash_key(key), key, now_sec);
+            encode_integer(write_buf, i64::from(updated));
+            return Ok(true);
         }
         _ => unreachable!("handle_expiry called with non-expiry command"),
-    }
+    };
 
+    let hash = hash_key(key);
+    let updated = if let Some(deadline) = deadline {
+        let updated = table.with_shard_mut(hash, |shard| {
+            let Some(block) = shard
+                .lookup_key_checked(hash, key, now_sec)
+                .map(|entry| entry.slab_block_id)
+            else {
+                return false;
+            };
+            if !shard.update_key_ttl(hash, key, deadline, now_sec) {
+                return false;
+            }
+            // Capture the allocation's generation while the shard still protects it.
+            if let Some(wheel) = timing_wheel {
+                wheel.schedule_key(hash, key, block, deadline);
+            }
+            true
+        });
+        if updated {
+            emit_aof(AofOp::Expire, key, deadline.to_string().as_bytes(), now_sec);
+        }
+        updated
+    } else {
+        let removed = table.with_shard_mut(hash, |shard| {
+            shard.lookup_key_checked(hash, key, now_sec)?;
+            shard.remove_key(hash, key)
+        });
+        if let Some(entry) = removed {
+            let _ = pool.deallocate(entry.slab_block_id);
+            emit_aof(AofOp::Del, key, &[], now_sec);
+        }
+        removed.is_some()
+    };
+    encode_integer(write_buf, i64::from(updated));
     Ok(true)
 }

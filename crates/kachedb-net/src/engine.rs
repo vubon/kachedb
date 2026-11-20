@@ -18,7 +18,9 @@ use crossbeam_channel::Receiver;
 use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Token};
 
-use kachedb_core::{HashedTimingWheel, SlabPool, pin_current_thread_to_core};
+use kachedb_core::{
+    HashedTimingWheel, SlabPool, pin_current_thread_to_core, timing_wheel::ExpireEntry,
+};
 use kachedb_hash::ShardedSwissTable;
 use rustls::server::ServerConfig;
 
@@ -30,6 +32,46 @@ use crate::tls::TlsState;
 const SERVER_TOKEN: Token = Token(0);
 const EVENTS_CAPACITY: usize = 1024;
 const DEFAULT_POOL_CAPACITY: usize = 4 * 1024 * 1024; // 4 MB per core
+
+pub(crate) fn epoch_seconds() -> u32 {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    u32::try_from(seconds).unwrap_or(u32::MAX)
+}
+
+/// Advances the wheel and retires only the still-matching table allocations.
+pub(crate) fn maintain_slabs(
+    table: &ShardedSwissTable,
+    pool: &mut SlabPool,
+    wheel: &mut HashedTimingWheel,
+    now: u32,
+    expired: &mut Vec<ExpireEntry>,
+) {
+    pool.drain_inbox();
+    pool.tick_second(now);
+    wheel.advance_expired_entries(now, expired);
+    for event in expired.drain(..) {
+        let (Some(key), Some(generation)) = (event.key.as_deref(), event.generation) else {
+            continue;
+        };
+        if let Some(entry) = table.remove_key_if_expired(
+            event.key_hash,
+            key,
+            event.slab_block_id,
+            event.expire_at_sec,
+            generation,
+            now,
+        ) && let Err(error) = pool.deallocate(entry.slab_block_id)
+        {
+            log::error!("Failed to retire expired slab: {error}");
+        }
+    }
+    if now % 10 == 0 {
+        pool.reclaim_empty_arenas();
+    }
+}
 
 /// Connection source for a `WorkerThread`.
 enum ConnSource {
@@ -140,11 +182,7 @@ impl WorkerThread {
         table: Arc<ShardedSwissTable>,
     ) -> Result<Self, NetError> {
         let pool = SlabPool::new(core_id, pool_bytes)?;
-        let start_sec = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
-        let timing_wheel = HashedTimingWheel::new(start_sec);
+        let timing_wheel = HashedTimingWheel::new(epoch_seconds());
 
         Ok(Self {
             core_id,
@@ -164,11 +202,7 @@ impl WorkerThread {
         receiver: Receiver<TcpStream>,
     ) -> Result<Self, NetError> {
         let pool = SlabPool::new(core_id, pool_bytes)?;
-        let start_sec = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
-        let timing_wheel = HashedTimingWheel::new(start_sec);
+        let timing_wheel = HashedTimingWheel::new(epoch_seconds());
 
         Ok(Self {
             core_id,
@@ -187,11 +221,7 @@ impl WorkerThread {
         table: Arc<ShardedSwissTable>,
         receiver: Receiver<TcpStream>,
     ) -> Self {
-        let start_sec = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
-        let timing_wheel = HashedTimingWheel::new(start_sec);
+        let timing_wheel = HashedTimingWheel::new(epoch_seconds());
 
         Self {
             core_id,
@@ -230,7 +260,7 @@ impl WorkerThread {
                     "Worker [{core}]: pinned to core, accept-dispatch mode",
                     core = self.core_id
                 );
-                self.run_channel_mode(shutdown)
+                self.run_channel_mode(shutdown.clone())
             }
             ConnSource::Listener(addr) => {
                 let addr = *addr;
@@ -238,19 +268,22 @@ impl WorkerThread {
                     "Worker [{core}]: pinned to core, SO_REUSEPORT mode on {addr}",
                     core = self.core_id
                 );
-                self.run_listener_mode(addr, shutdown)
+                self.run_listener_mode(addr, shutdown.clone())
             }
         };
 
-        if let Some(ref b) = barrier {
+        res?;
+        if shutdown.load(Ordering::Relaxed)
+            && let Some(barrier) = barrier
+        {
             log::info!(
                 "Worker [{core}]: event loop stopped, awaiting final persistence flush...",
                 core = self.core_id
             );
-            b.wait_worker();
+            barrier.wait_worker();
         }
-
-        res
+        self.pool.drain_inbox();
+        Ok(())
     }
 
     /// Event loop for **accept-dispatch mode**: receives connections from a crossbeam channel.
@@ -308,38 +341,21 @@ impl WorkerThread {
                 Err(e) => return Err(NetError::Io(e)),
             }
 
-            self.process_events(&mut events, &mut connections, &mut poll)?;
-
-            // Idle tick: advance timing wheel and pool arena timestamps once per second
-            let now_sec = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as u32;
-
+            let now_sec = epoch_seconds();
             if now_sec != last_tick_sec {
                 last_tick_sec = now_sec;
-                self.pool.tick_second(now_sec);
-
-                expired_entries.clear();
-                self.timing_wheel
-                    .advance_expired_entries(now_sec, &mut expired_entries);
-                for entry in &expired_entries {
-                    if let Some(removed) = entry.key.as_deref().and_then(|key| {
-                        self.table
-                            .remove_key_if_matching(entry.key_hash, key, entry.slab_block_id)
-                    }) {
-                        let _ = self.pool.deallocate(removed.slab_block_id);
-                    }
-                }
-
+                maintain_slabs(
+                    &self.table,
+                    &mut self.pool,
+                    &mut self.timing_wheel,
+                    now_sec,
+                    &mut expired_entries,
+                );
                 for (_, conn, _) in connections.values_mut() {
                     conn.set_current_sec(now_sec);
                 }
-
-                if now_sec % 10 == 0 {
-                    self.pool.reclaim_empty_arenas();
-                }
             }
+            self.process_events(&mut events, &mut connections, &mut poll)?;
         }
 
         let remaining = connections.len();
@@ -443,38 +459,21 @@ impl WorkerThread {
                 }
             }
 
-            self.process_events(&mut events, &mut connections, &mut poll)?;
-
-            // Idle tick: advance timing wheel and pool arena timestamps once per second
-            let now_sec = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as u32;
-
+            let now_sec = epoch_seconds();
             if now_sec != last_tick_sec {
                 last_tick_sec = now_sec;
-                self.pool.tick_second(now_sec);
-
-                expired_entries.clear();
-                self.timing_wheel
-                    .advance_expired_entries(now_sec, &mut expired_entries);
-                for entry in &expired_entries {
-                    if let Some(removed) = entry.key.as_deref().and_then(|key| {
-                        self.table
-                            .remove_key_if_matching(entry.key_hash, key, entry.slab_block_id)
-                    }) {
-                        let _ = self.pool.deallocate(removed.slab_block_id);
-                    }
-                }
-
+                maintain_slabs(
+                    &self.table,
+                    &mut self.pool,
+                    &mut self.timing_wheel,
+                    now_sec,
+                    &mut expired_entries,
+                );
                 for (_, conn, _) in connections.values_mut() {
                     conn.set_current_sec(now_sec);
                 }
-
-                if now_sec % 10 == 0 {
-                    self.pool.reclaim_empty_arenas();
-                }
             }
+            self.process_events(&mut events, &mut connections, &mut poll)?;
         }
 
         let remaining = connections.len();
@@ -606,6 +605,25 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpStream as StdTcpStream;
     use std::thread;
+
+    #[test]
+    fn fatal_worker_error_returns_before_shutdown_barrier() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut worker = WorkerThread::new(0, listener.local_addr().unwrap()).unwrap();
+        let barrier = Arc::new(ShutdownBarrier::new());
+        let worker_barrier = barrier.clone();
+        let (send, receive) = std::sync::mpsc::channel();
+        let handle = thread::spawn(move || {
+            let result =
+                worker.run_with_barrier(Arc::new(AtomicBool::new(false)), Some(worker_barrier));
+            send.send(result).unwrap();
+        });
+
+        let result = receive.recv_timeout(Duration::from_secs(3));
+        barrier.release();
+        handle.join().unwrap();
+        assert!(matches!(result, Ok(Err(NetError::Io(_)))));
+    }
 
     #[test]
     fn worker_handles_redis_traffic_over_tcp() {

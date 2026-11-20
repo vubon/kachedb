@@ -11,6 +11,8 @@ log         = { workspace = true }
 thiserror   = { workspace = true }
 libc        = { workspace = true }
 smallvec    = { workspace = true }
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
 
 # Thread pinning: Linux production only
 [target.'cfg(target_os = "linux")'.dependencies]
