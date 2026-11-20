@@ -83,6 +83,8 @@ impl AppendFsync {
 pub enum AofError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("AOF slab error: {0}")]
+    Slab(#[from] kachedb_core::CoreError),
     #[error("Corrupt AOF magic header: expected 'KA'")]
     CorruptMagic,
     #[error("Invalid AOF opcode: {0:#04x}")]

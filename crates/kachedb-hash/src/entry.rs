@@ -45,6 +45,17 @@ pub struct TableEntry {
     pub has_key: bool,
 }
 
+/// Materialized snapshot record carrying owned key and value bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotPayloadEntry {
+    pub key_hash: u64,
+    pub key_bytes: Vec<u8>,
+    pub has_key: bool,
+    pub value_type: u8,
+    pub val_bytes: Vec<u8>,
+    pub expire_at: u32,
+}
+
 const _: () = assert!(
     std::mem::size_of::<TableEntry>() <= 24,
     "TableEntry must remain compact (<= 24 bytes)"

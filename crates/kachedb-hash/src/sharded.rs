@@ -9,7 +9,7 @@
 use parking_lot::RwLock;
 
 use crate::{
-    entry::TableEntry,
+    entry::{HashEntry, SnapshotPayloadEntry, TableEntry},
     glob::CompiledPattern,
     table::{SwissTable, next_bit_reversed_cursor},
 };
@@ -288,6 +288,51 @@ impl ShardedSwissTable {
         })
     }
 
+    /// Removes the exact key if it is expired, validating key, slab allocation, deadline,
+    /// and slot generation atomically under the shard write lock.
+    pub fn remove_key_if_expired(
+        &self,
+        hash: u64,
+        key: &[u8],
+        expected_block_id: SlabBlockId,
+        expected_expire_at_secs: u32,
+        expected_generation: u64,
+        now_sec: u32,
+    ) -> Option<TableEntry> {
+        self.with_shard_mut(hash, |shard| {
+            shard.remove_key_if_expired(
+                hash,
+                key,
+                expected_block_id,
+                expected_expire_at_secs,
+                expected_generation,
+                now_sec,
+            )
+        })
+    }
+
+    /// Executes a closure with a reference to the entry and its value payload slice
+    /// while holding the shard read lock.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure indexed payloads are live, sized correctly and
+    /// only mutated or retired under their owning shard's write lock.
+    pub unsafe fn with_read_lock_entry<R>(
+        &self,
+        hash: u64,
+        key: &[u8],
+        now_sec: u32,
+        f: impl FnOnce(&HashEntry, &[u8]) -> R,
+    ) -> Option<R> {
+        let idx = Self::shard_idx(hash);
+        let shard = self.shards[idx].table.read();
+        let entry = shard.lookup_key_checked(hash, key, now_sec)?;
+        let ptr = unsafe { kachedb_core::resolve_slot_ptr(entry.slab_block_id) }?;
+        let slice = unsafe { std::slice::from_raw_parts(ptr, entry.value_len as usize) };
+        Some(f(entry, slice))
+    }
+
     /// Updates the TTL of the exact key.
     pub fn update_key_ttl(&self, hash: u64, key: &[u8], expires: u32, now: u32) -> bool {
         self.with_shard_mut(hash, |shard| shard.update_key_ttl(hash, key, expires, now))
@@ -346,6 +391,31 @@ impl ShardedSwissTable {
             self.shards[shard_idx].table.read().live_entries_with_keys()
         } else {
             Vec::new()
+        }
+    }
+
+    /// Returns a snapshot of all live payload records in the specified shard,
+    /// copying payloads under the shard read lock.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure indexed payloads are live, sized correctly and
+    /// only mutated or retired under their owning shard's write lock.
+    pub unsafe fn snapshot_shard_with_payloads(
+        &self,
+        shard_idx: usize,
+        now_sec: u32,
+    ) -> Result<Vec<SnapshotPayloadEntry>, kachedb_core::CoreError> {
+        let Some(shard) = self.shards.get(shard_idx) else {
+            return Ok(Vec::new());
+        };
+        unsafe { shard.table.read().live_entries_with_payloads(now_sec) }
+    }
+
+    /// Schedules deadlines from a restored table before workers start accepting commands.
+    pub fn schedule_restored_expirations(&self, wheel: &mut kachedb_core::HashedTimingWheel) {
+        for shard in &self.shards {
+            shard.table.read().schedule_expirations(wheel);
         }
     }
 

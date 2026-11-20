@@ -30,7 +30,7 @@ use std::collections::HashMap;
 
 use kachedb_core::SlabBlockId;
 
-use crate::entry::{HashEntry, INLINE_KEY_CAPACITY, TableEntry};
+use crate::entry::{HashEntry, INLINE_KEY_CAPACITY, SnapshotPayloadEntry, TableEntry};
 use crate::glob::CompiledPattern;
 
 // ─── Control byte sentinels ───────────────────────────────────────────────────
@@ -574,6 +574,40 @@ impl SwissTable {
         self.remove_matching_slot(slot, expected_block_id)
     }
 
+    /// Removes the exact key only if:
+    /// 1. Its key and hash match.
+    /// 2. Its slab block ID matches `expected_block_id`.
+    /// 3. Its expiration deadline matches `expected_expire_at_secs` and `expire_at_secs > 0`.
+    /// 4. Current epoch seconds `now_sec >= expire_at_secs` (is due).
+    /// 5. Its slab block generation matches `expected_generation` (not reused).
+    pub fn remove_key_if_expired(
+        &mut self,
+        hash: u64,
+        key: &[u8],
+        expected_block_id: SlabBlockId,
+        expected_expire_at_secs: u32,
+        expected_generation: u64,
+        now_sec: u32,
+    ) -> Option<TableEntry> {
+        let slot = self.key_slot(hash, key)?;
+        let entry = &self.entries[slot];
+        if entry.slab_block_id != expected_block_id {
+            return None;
+        }
+        if entry.expire_at_secs == 0 || entry.expire_at_secs != expected_expire_at_secs {
+            return None;
+        }
+        if now_sec < entry.expire_at_secs {
+            return None;
+        }
+        if kachedb_core::registry::get_slot_generation(expected_block_id)
+            != Some(expected_generation)
+        {
+            return None;
+        }
+        Some(self.remove_slot(slot))
+    }
+
     fn remove_matching_slot(&mut self, slot: usize, block: SlabBlockId) -> Option<TableEntry> {
         (self.entries[slot].slab_block_id == block).then(|| self.remove_slot(slot))
     }
@@ -642,6 +676,59 @@ impl SwissTable {
             }
         }
         res
+    }
+
+    /// # Safety
+    ///
+    /// Indexed payloads must be live, sized correctly, and immutable for this borrow.
+    pub(crate) unsafe fn live_entries_with_payloads(
+        &self,
+        now_sec: u32,
+    ) -> Result<Vec<SnapshotPayloadEntry>, kachedb_core::CoreError> {
+        let mut res = Vec::with_capacity(self.count);
+        for (idx, entry) in self.entries.iter().enumerate() {
+            if matches!(self.ctrl[idx], CTRL_EMPTY | CTRL_DELETED) || entry.is_expired(now_sec) {
+                continue;
+            }
+            let ptr = unsafe { kachedb_core::resolve_slot_ptr(entry.slab_block_id) }.ok_or(
+                kachedb_core::CoreError::InvalidBlockId {
+                    id: entry.slab_block_id.0,
+                },
+            )?;
+            let value = unsafe { std::slice::from_raw_parts(ptr, entry.value_len as usize) };
+            let val_bytes = if entry.value_type == crate::entry::VALUE_TYPE_HASH {
+                let mut encoded = Vec::new();
+                crate::hash_frame::HashSlotFrame::encode_pairs(value, &mut encoded);
+                encoded
+            } else {
+                value.to_vec()
+            };
+            res.push(SnapshotPayloadEntry {
+                key_hash: entry.key_hash,
+                key_bytes: self.key_bytes_at(idx).to_vec(),
+                has_key: entry.has_key(),
+                value_type: entry.value_type,
+                val_bytes,
+                expire_at: entry.expire_at_secs,
+            });
+        }
+        Ok(res)
+    }
+
+    pub(crate) fn schedule_expirations(&self, wheel: &mut kachedb_core::HashedTimingWheel) {
+        for (idx, entry) in self.entries.iter().enumerate() {
+            if !matches!(self.ctrl[idx], CTRL_EMPTY | CTRL_DELETED)
+                && entry.has_key()
+                && entry.expire_at_secs != 0
+            {
+                wheel.schedule_key(
+                    entry.key_hash,
+                    self.key_bytes_at(idx),
+                    entry.slab_block_id,
+                    entry.expire_at_secs,
+                );
+            }
+        }
     }
 
     /// Returns the number of live entries with no known original key bytes.
@@ -1296,5 +1383,61 @@ mod tests {
                 String::from_utf8_lossy(k)
             );
         }
+    }
+
+    #[test]
+    fn test_remove_key_if_expired_rejects_stale_events() {
+        let mut t = SwissTable::with_capacity(64);
+        let key = b"my_timed_key";
+        let h = hash_key(key);
+        let mut pool = kachedb_core::SlabPool::new(0, 4 * 1024 * 1024).unwrap();
+        let class = kachedb_core::SlabClassType::AppSmall;
+        let block_id = pool.allocate(class).unwrap();
+
+        // Insert with TTL expiring at 100s
+        let _ = t.insert_with_ttl_and_key(h, key, block_id, 32, 100);
+
+        let initial_gen = kachedb_core::registry::get_slot_generation(block_id).unwrap();
+
+        // 1. Not due yet (now_sec = 50 < 100) -> rejected
+        assert!(
+            t.remove_key_if_expired(h, key, block_id, 100, initial_gen, 50)
+                .is_none()
+        );
+        assert!(t.lookup_key_checked(h, key, 50).is_some());
+
+        // 2. Deadline changed / extended to 200s (stale event has expected_expire = 100) -> rejected
+        assert!(t.update_key_ttl(h, key, 200, 50));
+        assert!(
+            t.remove_key_if_expired(h, key, block_id, 100, initial_gen, 150)
+                .is_none()
+        );
+        assert!(t.lookup_key_checked(h, key, 150).is_some());
+
+        // 3. PERSIST called (expire_at_secs = 0, stale event has expected_expire = 200) -> rejected
+        assert!(t.persist_key(h, key, 150));
+        assert!(
+            t.remove_key_if_expired(h, key, block_id, 200, initial_gen, 250)
+                .is_none()
+        );
+        assert!(t.lookup_key_checked(h, key, 250).is_some());
+
+        // Reuse the same handle for the same key and deadline. Only the new event can remove it.
+        t.remove_key(h, key).unwrap();
+        pool.deallocate(block_id).unwrap();
+        assert_eq!(pool.allocate(class).unwrap(), block_id);
+        t.insert_with_ttl_and_key(h, key, block_id, 32, 300)
+            .unwrap();
+        let generation = kachedb_core::registry::get_slot_generation(block_id).unwrap();
+        assert_ne!(generation, initial_gen);
+        assert!(
+            t.remove_key_if_expired(h, key, block_id, 300, initial_gen, 300)
+                .is_none()
+        );
+        let removed = t
+            .remove_key_if_expired(h, key, block_id, 300, generation, 300)
+            .expect("current generation should expire");
+        assert_eq!(removed.slab_block_id, block_id);
+        assert!(t.lookup_key_checked(h, key, 300).is_none());
     }
 }

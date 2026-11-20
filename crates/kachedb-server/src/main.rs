@@ -17,6 +17,16 @@ use kachedb_net::{AcceptDispatcher, create_dispatch_channels};
 use kachedb_shm::ShmChannel;
 
 fn main() {
+    // Process-wide fail-stop: unexpected worker thread panics abort immediately to prevent dangling slab memory
+    let orig_panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        eprintln!(
+            "FATAL: KacheDB thread panic detected: {panic_info}. Aborting process immediately to prevent slab corruption."
+        );
+        orig_panic_hook(panic_info);
+        std::process::abort();
+    }));
+
     // Basic terminal logging initialization
     let _ = simple_logger();
 
@@ -205,6 +215,16 @@ fn main() {
         }
     }
 
+    // Capture restored deadlines before any worker can change the table.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut recovered_wheel =
+        kachedb_core::HashedTimingWheel::new(u32::try_from(now).unwrap_or(u32::MAX));
+    shared_table.schedule_restored_expirations(&mut recovered_wheel);
+    let mut recovered_wheel = Some(recovered_wheel);
+
     // Launch background AOF writer thread
     let aof_writer = if config.aof_enabled {
         match aof::AofWriter::start(&config.aof_path, config.appendfsync) {
@@ -255,6 +275,11 @@ fn main() {
             None
         };
         let worker_tls = tls_config.clone();
+        let worker_wheel = if core_id == 0 {
+            recovered_wheel.take()
+        } else {
+            None
+        };
 
         let handle = thread::Builder::new()
             .name(format!("kachedb-worker-{}", core_id))
@@ -296,12 +321,23 @@ fn main() {
                         Ok(w) => w.with_tls(worker_tls),
                         Err(e) => {
                             log::error!("Worker [{core_id}]: failed to initialize: {e}");
-                            return;
+                            eprintln!("FATAL: Worker [{core_id}] failed to initialize: {e}. Aborting process.");
+                            std::process::abort();
                         }
                     }
                 };
-                if let Err(e) = worker.run_with_barrier(shutdown_worker, Some(barrier)) {
+                if let Some(wheel) = worker_wheel {
+                    worker.timing_wheel = wheel;
+                }
+                if let Err(e) = worker.run_with_barrier(shutdown_worker.clone(), Some(barrier)) {
                     log::error!("Worker [{core_id}]: event loop terminated with error: {e}");
+                    eprintln!("FATAL: Worker [{core_id}] event loop fatal error: {e}. Aborting process.");
+                    std::process::abort();
+                }
+
+                if !shutdown_worker.load(Ordering::Relaxed) {
+                    eprintln!("FATAL: Worker [{core_id}] exited prematurely without shutdown signal. Aborting process.");
+                    std::process::abort();
                 }
             })
             .expect("failed to spawn worker thread");
@@ -314,9 +350,16 @@ fn main() {
     let accept_handle = thread::Builder::new()
         .name("kachedb-accept".to_string())
         .spawn(move || {
-            let dispatcher = AcceptDispatcher::new(config.bind_addr, senders, accept_shutdown);
+            let dispatcher =
+                AcceptDispatcher::new(config.bind_addr, senders, accept_shutdown.clone());
             if let Err(e) = dispatcher.run() {
                 log::error!("AcceptDispatcher: terminated with error: {e}");
+                if !accept_shutdown.load(Ordering::Relaxed) {
+                    eprintln!(
+                        "FATAL: AcceptDispatcher terminated unexpectedly: {e}. Aborting process."
+                    );
+                    std::process::abort();
+                }
             }
         })
         .expect("failed to spawn accept-dispatcher thread");
@@ -335,8 +378,10 @@ fn main() {
 
     // 3. Wait for all worker threads to stop processing client traffic
     // (Workers pause at shutdown_barrier, keeping their SlabPools and arenas fully alive)
-    if !shutdown_barrier.wait_all_stopped(config.num_workers, Duration::from_secs(5)) {
-        log::warn!("Timed out waiting for all workers to pause event loop");
+    let workers_paused =
+        shutdown_barrier.wait_all_stopped(config.num_workers, Duration::from_secs(5));
+    if !workers_paused {
+        log::error!("Skipping the final snapshot because workers did not pause before the timeout");
     } else {
         log::info!(
             "All {} workers paused event loop, memory pools intact",
@@ -345,7 +390,7 @@ fn main() {
     }
 
     // 4. Perform final shutdown snapshot while all memory pools and slab slots are guaranteed intact!
-    if config.snapshot_enabled {
+    if config.snapshot_enabled && workers_paused {
         log::info!("Snapshot worker: performing final shutdown snapshot...");
         let now_sec = SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -36,6 +36,7 @@ use kachedb_core::{HashedTimingWheel, SlabPool, pin_current_thread_to_core};
 use kachedb_hash::ShardedSwissTable;
 
 use crate::connection::Connection;
+use crate::engine::{epoch_seconds, maintain_slabs};
 use crate::error::NetError;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -282,7 +283,13 @@ impl UringWorkerThread {
 
         // Deferred SQE accumulator — populated during CQ processing, pushed after
         let mut pending_sq: Vec<squeue::Entry> = Vec::with_capacity(32);
-        let mut second_ticker: u64 = 0;
+        let mut last_tick = 0;
+        let mut expired_entries = Vec::new();
+        let mut completion_fd = libc::pollfd {
+            fd: ring.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
 
         // ── Main completion loop ─────────────────────────────────────────────
         loop {
@@ -290,10 +297,40 @@ impl UringWorkerThread {
                 break;
             }
 
-            match ring.submit_and_wait(1) {
+            match ring.submit() {
                 Ok(_) => {}
-                Err(ref e) if e.raw_os_error() == Some(libc::EINTR) => continue,
-                Err(e) => return Err(NetError::Io(e)),
+                Err(ref error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(NetError::Io(error)),
+            }
+            // The ring FD becomes readable on completion. Bound the wait so an
+            // idle worker can still service expirations, remote frees and shutdown.
+            let ready = unsafe { libc::poll(&mut completion_fd, 1, 100) };
+            if ready < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(NetError::Io(error));
+            }
+            if completion_fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                return Err(NetError::Io(std::io::Error::other(
+                    "io_uring completion poll failed",
+                )));
+            }
+
+            let now_sec = epoch_seconds();
+            if now_sec != last_tick {
+                last_tick = now_sec;
+                maintain_slabs(
+                    &self.table,
+                    &mut self.pool,
+                    &mut self.timing_wheel,
+                    now_sec,
+                    &mut expired_entries,
+                );
+                for state in connections.values_mut() {
+                    state.conn.set_current_sec(now_sec);
+                }
             }
 
             // — CQ processing: build pending_sq but do NOT touch ring.submission() yet —
@@ -324,7 +361,8 @@ impl UringWorkerThread {
                                         );
                                     }
 
-                                    let state = ConnState::new(client_fd);
+                                    let mut state = ConnState::new(client_fd);
+                                    state.conn.set_current_sec(now_sec);
                                     let recv_ptr = state.recv_buf.as_ptr() as *mut u8;
                                     let recv_len = state.recv_buf.len();
                                     connections.insert(conn_token, state);
@@ -362,7 +400,11 @@ impl UringWorkerThread {
                             if let Some(state) = connections.get_mut(&token) {
                                 state.conn.feed_bytes(&state.recv_buf[..n]);
 
-                                match state.conn.process_pending(&self.table, &mut self.pool) {
+                                match state.conn.process_pending_with_wheel(
+                                    &self.table,
+                                    &mut self.pool,
+                                    Some(&mut self.timing_wheel),
+                                ) {
                                     Ok(keep_alive) => {
                                         let fd = state.fd;
                                         state.closing = !keep_alive;
@@ -430,20 +472,6 @@ impl UringWorkerThread {
                     }
                 }
             }
-
-            // Idle tick: propagate arena activity timestamps and advance timing wheel (once per ~10k iterations)
-            second_ticker += 1;
-            if second_ticker % 10_000 == 0 {
-                let now_sec = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as u32;
-                self.pool.tick_second(now_sec);
-                self.timing_wheel.advance_to(now_sec, &mut self.pool);
-                for state in connections.values_mut() {
-                    state.conn.set_current_sec(now_sec);
-                }
-            }
         }
 
         log::info!("Worker [{}]: io_uring shut down", self.core_id);
@@ -454,6 +482,7 @@ impl UringWorkerThread {
             );
             b.wait_worker();
         }
+        self.pool.drain_inbox();
         Ok(())
     }
 }

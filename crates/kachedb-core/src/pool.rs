@@ -67,8 +67,6 @@ pub struct SlabPool {
     active_arena: [Option<usize>; 6],
     /// All arena indices grouped by size class.
     class_arenas: [Vec<usize>; 6],
-    /// Round-robin cursor for recycling across arenas of each class when full.
-    recycle_arena_cursor: [usize; 6],
     /// Fast O(1) slab_id to arena index mapping.
     slab_id_to_arena: HashMap<u16, usize>,
     /// Maximum total megaslabs allowed across all workloads.
@@ -79,6 +77,9 @@ pub struct SlabPool {
     tensor_quota: WorkloadQuota,
     /// Monotonic second timestamp of last activity per arena (for S3-FIFO cold detection).
     arena_last_active_sec: Vec<u32>,
+    /// Retired slots returned to this pool by other workers.
+    inbox_rx: crossbeam_channel::Receiver<crate::registry::RetiredSlot>,
+    inbox_tx: crossbeam_channel::Sender<crate::registry::RetiredSlot>,
 }
 
 impl SlabPool {
@@ -95,17 +96,21 @@ impl SlabPool {
             TENSOR_CACHE_DEFAULT_RATIO,
             TENSOR_CACHE_MAX_RATIO,
         );
+
+        let (inbox_tx, inbox_rx) = crossbeam_channel::unbounded();
+
         let pool = Self {
             core_id,
             arenas: Vec::new(),
             active_arena: [None; 6],
             class_arenas: Default::default(),
-            recycle_arena_cursor: [0; 6],
             slab_id_to_arena: HashMap::new(),
             max_megaslabs,
             app_quota,
             tensor_quota,
             arena_last_active_sec: Vec::new(),
+            inbox_rx,
+            inbox_tx,
         };
 
         // Arenas are grown lazily on first allocation request per class.
@@ -114,13 +119,24 @@ impl SlabPool {
         Ok(pool)
     }
 
-    /// Allocates one slot of the given `class`, growing into a new `MegaslabArena`
-    /// if all existing arenas for that class are full.
+    /// Drains any freed slab slots returned by foreign worker threads to this pool's inbox.
+    pub fn drain_inbox(&mut self) -> usize {
+        let mut count = 0;
+        while let Ok(retired) = self.inbox_rx.try_recv() {
+            if crate::registry::get_slot_generation(retired.id) == Some(retired.generation)
+                && self.deallocate(retired.id).is_ok()
+            {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Allocates one slot of the given `class` using strictly non-evicting semantics.
     ///
-    /// # Performance
-    ///
-    /// True **O(1) in ~1–2 nanoseconds** on the fast path.
-    pub fn allocate(&mut self, class: SlabClassType) -> Result<SlabBlockId, CoreError> {
+    /// Under ADR 6 production hardening, blind recycling of occupied slots is eliminated:
+    /// if memory is exhausted, returns [`CoreError::PoolExhausted`].
+    pub fn reserve_non_evicting(&mut self, class: SlabClassType) -> Result<SlabBlockId, CoreError> {
         let c_idx = class_index(class);
 
         // 1. Fast path: active arena has free slots
@@ -129,14 +145,22 @@ impl SlabPool {
             return self.arenas[arena_idx].allocate();
         }
 
-        // 2. Growth path: try to grow into a new arena if pool ceiling allows
+        // 2. Drain inbox for slots returned from other worker cores
+        if self.drain_inbox() > 0
+            && let Some(arena_idx) =
+                self.active_arena[c_idx].filter(|&idx| !self.arenas[idx].is_full())
+        {
+            return self.arenas[arena_idx].allocate();
+        }
+
+        // 3. Growth path: try to grow into a new arena if pool ceiling allows
         if self.arenas.len() < self.max_megaslabs && self.grow(class).is_ok() {
             let new_idx = self.arenas.len() - 1;
             self.active_arena[c_idx] = Some(new_idx);
             return self.arenas[new_idx].allocate();
         }
 
-        // 3. Scan existing arenas of this class for any free slots (e.g. from deallocations)
+        // 4. Scan existing arenas of this class for any free slots (e.g. from deallocations)
         if let Some(&arena_idx) = self.class_arenas[c_idx]
             .iter()
             .find(|&&idx| !self.arenas[idx].is_full())
@@ -145,19 +169,24 @@ impl SlabPool {
             return self.arenas[arena_idx].allocate();
         }
 
-        // 4. Memory pool is full: round-robin recycle across all arenas of this class
-        let arenas_for_class = &self.class_arenas[c_idx];
-        if !arenas_for_class.is_empty() {
-            let cursor = self.recycle_arena_cursor[c_idx] % arenas_for_class.len();
-            let target_arena_idx = arenas_for_class[cursor];
-            self.recycle_arena_cursor[c_idx] = (cursor + 1) % arenas_for_class.len();
-            return Ok(self.arenas[target_arena_idx].recycle_slot());
-        }
-
         Err(CoreError::PoolExhausted { class })
     }
 
+    /// Allocates one slot of the given `class`, growing into a new `MegaslabArena`
+    /// if all existing arenas for that class are full.
+    ///
+    /// # Performance
+    ///
+    /// True **O(1) in ~1–2 nanoseconds** on the fast path.
+    #[inline(always)]
+    pub fn allocate(&mut self, class: SlabClassType) -> Result<SlabBlockId, CoreError> {
+        self.reserve_non_evicting(class)
+    }
+
     /// Returns a previously allocated slot back to its owning arena in O(1).
+    ///
+    /// If the slot was allocated by another worker core, routes it to the owner's
+    /// deallocation inbox via crossbeam channel.
     ///
     /// # Errors
     ///
@@ -178,6 +207,11 @@ impl SlabPool {
             }
             return res;
         }
+
+        if crate::registry::send_to_dealloc_inbox(id).is_some() {
+            return Ok(());
+        }
+
         Err(CoreError::InvalidBlockId { id: id.0 })
     }
 
@@ -255,6 +289,7 @@ impl SlabPool {
 
         let slab_id = crate::registry::allocate_global_slab_id();
         let arena = MegaslabArena::new(class, slab_id, self.core_id)?;
+        crate::registry::register_dealloc_sender(slab_id, self.inbox_tx.clone());
         let arena_idx = self.arenas.len();
         self.slab_id_to_arena.insert(slab_id, arena_idx);
         let c_idx = class_index(class);
@@ -504,21 +539,52 @@ mod tests {
     }
 
     #[test]
-    fn pool_round_robin_recycle_when_at_ceiling() {
+    fn pool_returns_exhausted_when_at_ceiling_without_blind_recycling() {
         // Pool of 6MB = 3 megaslabs max (app cache ceiling = 2)
         let mut pool = SlabPool::new(0, 6 * 1024 * 1024).unwrap();
-        let cap = SlabClassType::AppSmall.slots_per_megaslab();
+        let cap = SlabClassType::AppSmall.slots_per_megaslab() as usize;
+        let mut allocated = Vec::with_capacity(cap * 2);
         // Fill 2 arenas up to ceiling
         for _ in 0..(cap * 2) {
-            pool.allocate(SlabClassType::AppSmall).unwrap();
+            allocated.push(pool.allocate(SlabClassType::AppSmall).unwrap());
         }
         assert_eq!(pool.arena_count(), 2);
 
-        // Allocating further must succeed via recycling across the 2 arenas
-        let id1 = pool.allocate(SlabClassType::AppSmall).unwrap();
-        let id2 = pool.allocate(SlabClassType::AppSmall).unwrap();
-        assert_eq!(pool.arena_count(), 2);
-        // id1 and id2 should alternate across the 2 arenas
-        assert_ne!(id1.slab_id(), id2.slab_id());
+        // Allocating further must return PoolExhausted instead of blindly overwriting occupied slots
+        let err = pool.allocate(SlabClassType::AppSmall).unwrap_err();
+        assert!(matches!(err, CoreError::PoolExhausted { .. }));
+
+        // Freeing a retired slot allows the next allocation to succeed
+        let freed_slot = allocated.pop().unwrap();
+        pool.deallocate(freed_slot).unwrap();
+        let new_slot = pool.allocate(SlabClassType::AppSmall).unwrap();
+        assert_eq!(new_slot, freed_slot);
+    }
+
+    #[test]
+    fn cross_worker_deallocation_inbox_reclaims_foreign_slots() {
+        let mut pool0 = SlabPool::new(10, 4 * 1024 * 1024).unwrap();
+        // Core IDs are affinity hints. Two pool instances can share one.
+        let mut pool1 = SlabPool::new(10, 4 * 1024 * 1024).unwrap();
+
+        // Worker 0 (core 10) allocates a slot
+        let id = pool0.allocate(SlabClassType::AppSmall).unwrap();
+        assert_eq!(crate::registry::resolve_owning_core(id), Some(10));
+
+        let generation = crate::registry::get_slot_generation(id).unwrap();
+        pool1.deallocate(id).unwrap();
+        pool1.deallocate(id).unwrap();
+
+        // Duplicate retirements refer to the same generation and reclaim it once.
+        let drained = pool0.drain_inbox();
+        assert_eq!(drained, 1);
+
+        // Next allocation on Worker 0 reuses the reclaimed slot
+        let reused_id = pool0.allocate(SlabClassType::AppSmall).unwrap();
+        assert_eq!(reused_id, id);
+        assert_ne!(crate::registry::get_slot_generation(id), Some(generation));
+        let out_of_bounds = SlabBlockId::new(id.slab_id(), u16::MAX);
+        assert!(pool0.deallocate(out_of_bounds).is_err());
+        assert!(crate::registry::get_slot_generation(out_of_bounds).is_none());
     }
 }

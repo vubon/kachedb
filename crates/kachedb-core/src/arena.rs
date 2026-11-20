@@ -135,15 +135,21 @@ pub struct MegaslabArena {
     capacity: u32,
     /// Reclaimed slot indices available for immediate reuse.
     free_slots: Vec<u32>,
-    /// Ring-buffer recycling cursor when full.
-    recycle_cursor: u32,
+    /// Even generations are vacant and odd generations are allocated.
+    slot_generations: std::sync::Arc<[std::sync::atomic::AtomicU64]>,
 }
 
 // SAFETY: The memory region is exclusively owned by one thread/core.
 unsafe impl Send for MegaslabArena {}
 
 impl MegaslabArena {
-    /// Allocates a 2 MB OS page and initializes the `MegaslabHeader`.
+    fn layout(class: SlabClassType) -> Layout {
+        let payload = class.slots_per_megaslab() as usize * class.slot_bytes();
+        let size = MEGASLAB_BYTES.max(MEGASLAB_HEADER_BYTES + payload);
+        Layout::from_size_align(size, MEGASLAB_BYTES).expect("valid megaslab layout")
+    }
+
+    /// Allocates a megaslab and initializes its header.
     ///
     /// Uses `alloc::alloc` with a `MEGASLAB_BYTES`-aligned `Layout`, which
     /// on Linux production systems maps to `mmap` with `MAP_POPULATE` set
@@ -154,8 +160,7 @@ impl MegaslabArena {
     /// Returns [`CoreError::OsAllocFailed`] if the OS allocation fails.
     pub fn new(class: SlabClassType, slab_id: u16, owning_core: u16) -> Result<Self, CoreError> {
         // SAFETY: MEGASLAB_BYTES is non-zero and a power of two — valid Layout.
-        let layout = Layout::from_size_align(MEGASLAB_BYTES, MEGASLAB_BYTES)
-            .expect("MEGASLAB_BYTES is a valid alignment");
+        let layout = Self::layout(class);
 
         let base = unsafe {
             let ptr = alloc::alloc_zeroed(layout);
@@ -165,6 +170,10 @@ impl MegaslabArena {
         };
 
         let capacity = class.slots_per_megaslab();
+
+        let slot_generations: std::sync::Arc<[_]> = (0..capacity)
+            .map(|_| std::sync::atomic::AtomicU64::new(0))
+            .collect();
 
         // Write the header into the first 64 bytes of the allocation.
         // SAFETY: `base` is valid, aligned, and exclusively owned.
@@ -178,7 +187,13 @@ impl MegaslabArena {
             // `allocated_slots` is zero-initialized by `alloc_zeroed`.
         }
 
-        crate::registry::register_arena(slab_id, base.as_ptr(), class.slot_bytes());
+        crate::registry::register_arena(
+            slab_id,
+            base.as_ptr(),
+            class.slot_bytes(),
+            owning_core,
+            slot_generations.clone(),
+        );
 
         log::debug!(
             "MegaslabArena: allocated slab_id={slab_id} class={class:?} \
@@ -192,7 +207,7 @@ impl MegaslabArena {
             next_free_slot: 0,
             capacity,
             free_slots: Vec::new(),
-            recycle_cursor: 0,
+            slot_generations,
         })
     }
 
@@ -223,28 +238,10 @@ impl MegaslabArena {
             .allocated_slots
             .fetch_add(1, Ordering::Relaxed);
 
+        // Advance the generation counter for this slot.
+        self.slot_generations[slot_index as usize].fetch_add(1, Ordering::Relaxed);
+
         Ok(SlabBlockId::new(self.slab_id, slot_index as u16))
-    }
-
-    /// Directly recycles the next slot in FIFO ring order without checking for free capacity.
-    #[inline(always)]
-    pub fn recycle_slot(&mut self) -> SlabBlockId {
-        let slot_index = self.recycle_cursor;
-        self.recycle_cursor = if self.recycle_cursor + 1 >= self.capacity {
-            0
-        } else {
-            self.recycle_cursor + 1
-        };
-        SlabBlockId::new(self.slab_id, slot_index as u16)
-    }
-
-    /// Allocates a new slot or recycles the oldest slot in FIFO ring order when full.
-    #[inline]
-    pub fn allocate_or_recycle(&mut self) -> SlabBlockId {
-        if let Ok(id) = self.allocate() {
-            return id;
-        }
-        self.recycle_slot()
     }
 
     /// Returns a slot back to this arena for immediate reuse.
@@ -258,6 +255,13 @@ impl MegaslabArena {
         if id.slab_id() != self.slab_id {
             return Err(CoreError::InvalidBlockId { id: id.0 });
         }
+        let Some(generation) = self.slot_generations.get(id.slot_index() as usize) else {
+            return Err(CoreError::InvalidBlockId { id: id.0 });
+        };
+        if generation.load(Ordering::Relaxed) & 1 == 0 {
+            return Err(CoreError::InvalidBlockId { id: id.0 });
+        }
+        generation.fetch_add(1, Ordering::Relaxed);
         self.free_slots.push(id.slot_index() as u32);
         self.header_mut()
             .allocated_slots
@@ -367,8 +371,7 @@ impl Drop for MegaslabArena {
     fn drop(&mut self) {
         crate::registry::unregister_arena(self.slab_id);
         // SAFETY: `base` was allocated with the same layout; exclusive ownership.
-        let layout =
-            Layout::from_size_align(MEGASLAB_BYTES, MEGASLAB_BYTES).expect("valid layout at drop");
+        let layout = Self::layout(self.class);
         unsafe { alloc::dealloc(self.base.as_ptr(), layout) };
         log::debug!("MegaslabArena: freed slab_id={}", self.slab_id);
     }
@@ -381,7 +384,8 @@ mod tests {
     use super::*;
 
     fn make_arena(class: SlabClassType) -> MegaslabArena {
-        MegaslabArena::new(class, 1, 0).expect("allocation should succeed")
+        MegaslabArena::new(class, crate::registry::allocate_global_slab_id(), 0)
+            .expect("allocation should succeed")
     }
 
     #[test]
@@ -435,10 +439,23 @@ mod tests {
     }
 
     #[test]
+    fn largest_slot_fits_including_the_header() {
+        let class = SlabClassType::Tensor2MB;
+        let mut arena = make_arena(class);
+        let id = arena.allocate().unwrap();
+        let ptr = unsafe { arena.slot_ptr(id) };
+        assert_eq!(
+            ptr.addr() + class.slot_bytes(),
+            arena.base.as_ptr().addr() + MegaslabArena::layout(class).size()
+        );
+        // SAFETY: the complete payload is inside the allocation.
+        unsafe { ptr.add(class.slot_bytes() - 1).write(1) };
+    }
+
+    #[test]
     fn invalid_block_id_rejected() {
         let mut arena = make_arena(SlabClassType::AppSmall);
-        // slab_id=2 doesn't match slab_id=1
-        let foreign_id = SlabBlockId::new(2, 0);
+        let foreign_id = SlabBlockId::new(0, 0);
         let result = arena.deallocate(foreign_id);
         assert!(matches!(result, Err(CoreError::InvalidBlockId { .. })));
     }

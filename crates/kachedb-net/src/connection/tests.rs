@@ -1958,3 +1958,117 @@ fn process_incoming_command_errors_keep_socket_alive() {
     );
     assert_eq!(std::str::from_utf8(&conn.write_buf).unwrap(), expected);
 }
+
+#[test]
+fn concurrent_increments_and_appends_preserve_all_updates() {
+    let table = ShardedSwissTable::with_total_capacity(64);
+    let pools = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..2)
+            .map(|core| {
+                let table = &table;
+                scope.spawn(move || {
+                    let mut pool = SlabPool::new(core, 16 * 1024 * 1024).unwrap();
+                    let mut output = Vec::new();
+                    for _ in 0..200 {
+                        for command in [
+                            Command::Incr { key: b"counter" },
+                            Command::Append {
+                                key: b"bytes",
+                                value: b"x",
+                            },
+                            Command::MGet {
+                                keys: smallvec::smallvec![
+                                    b"counter".as_slice(),
+                                    b"bytes".as_slice()
+                                ],
+                            },
+                        ] {
+                            output.clear();
+                            Connection::execute_command(command, &mut output, table, &mut pool)
+                                .unwrap();
+                            assert!(!output.starts_with(b"-"));
+                        }
+                    }
+                    // Keep pools alive for the final reads.
+                    pool
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+
+    let mut reader = SlabPool::new(2, 4 * 1024 * 1024).unwrap();
+    let mut output = Vec::new();
+    Connection::execute_command(
+        Command::Get { key: b"counter" },
+        &mut output,
+        &table,
+        &mut reader,
+    )
+    .unwrap();
+    assert_eq!(output, b"$3\r\n400\r\n");
+    output.clear();
+    Connection::execute_command(
+        Command::Get { key: b"bytes" },
+        &mut output,
+        &table,
+        &mut reader,
+    )
+    .unwrap();
+    assert_eq!(
+        output,
+        [b"$400\r\n".as_slice(), &[b'x'; 400], b"\r\n"].concat()
+    );
+    drop(pools);
+}
+
+#[test]
+fn restored_and_replaced_ttls_reclaim_the_current_slots() {
+    let table = ShardedSwissTable::with_total_capacity(64);
+    let mut pool = SlabPool::new(0, 4 * 1024 * 1024).unwrap();
+    let mut wheel = HashedTimingWheel::new(100);
+    let mut output = Vec::new();
+    for key in [b"restored".as_slice(), b"counter", b"bytes"] {
+        Connection::execute_command_with_time(
+            Command::Set {
+                key,
+                value: b"1",
+                ttl_ms: Some(10_000),
+            },
+            &mut output,
+            &table,
+            &mut pool,
+            100,
+        )
+        .unwrap();
+    }
+    table.schedule_restored_expirations(&mut wheel);
+    for command in [
+        Command::Incr { key: b"counter" },
+        Command::Append {
+            key: b"bytes",
+            value: b"x",
+        },
+    ] {
+        Connection::execute_command_full(
+            command,
+            &mut output,
+            &table,
+            &mut pool,
+            101,
+            &DEFAULT_VECTORS,
+            Some(&mut wheel),
+            None,
+        )
+        .unwrap();
+    }
+    assert_eq!(table.len(), 3);
+    crate::engine::maintain_slabs(&table, &mut pool, &mut wheel, 109, &mut Vec::new());
+    assert_eq!(table.len(), 3);
+    crate::engine::maintain_slabs(&table, &mut pool, &mut wheel, 110, &mut Vec::new());
+    assert!(table.is_empty());
+    assert_eq!(pool.total_allocated_bytes(), 0);
+}

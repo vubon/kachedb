@@ -416,7 +416,7 @@ impl<'a> Command<'a> {
                         .parse::<u64>()
                         .unwrap_or(0);
                     if sec > 0 {
-                        ttl_ms = Some(sec * 1000);
+                        ttl_ms = Some(sec.saturating_mul(1000));
                     }
                     i += 2;
                     continue;
@@ -1123,7 +1123,7 @@ impl<'a> Command<'a> {
                                         .parse::<u64>()
                                         .unwrap_or(0);
                                     if sec > 0 {
-                                        ttl_ms = Some(sec * 1000);
+                                        ttl_ms = Some(sec.saturating_mul(1000));
                                     }
                                 }
                                 i += 2;

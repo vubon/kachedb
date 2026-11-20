@@ -122,6 +122,8 @@ pub const FLAG_ENCRYPTED: u32 = 0x01;
 pub enum SnapshotError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Snapshot slab error: {0}")]
+    Slab(#[from] kachedb_core::CoreError),
     #[error("Corrupt snapshot magic header")]
     CorruptMagic,
     #[error(
@@ -418,27 +420,19 @@ pub fn save_snapshot(
     let mut total_kv = 0;
     let mut kv_items: Vec<KvSnapshotItem> = Vec::new();
     for shard_idx in 0..table.shard_count() {
-        let entries = table.snapshot_shard_with_keys(shard_idx);
-        for (key_hash, key_bytes, entry) in entries {
-            let expire_at = entry.expire_at_secs;
-            if expire_at > 0 && now_sec > 0 && now_sec >= expire_at {
-                continue;
-            }
-            if !entry.has_key {
+        // Workers keep published slots alive until unlinking under the shard write lock.
+        let entries = unsafe { table.snapshot_shard_with_payloads(shard_idx, now_sec) }?;
+        for item in entries {
+            if !item.has_key {
                 return Err(SnapshotError::MissingKeyBytes);
             }
-            if let Some(ptr) = unsafe { resolve_slot_ptr(entry.slab_block_id) } {
-                let val_slice =
-                    unsafe { std::slice::from_raw_parts(ptr, entry.value_len as usize) };
-                let val_bytes = if entry.value_type == VALUE_TYPE_HASH {
-                    let mut encoded = Vec::new();
-                    HashSlotFrame::encode_pairs(val_slice, &mut encoded);
-                    encoded
-                } else {
-                    val_slice.to_vec()
-                };
-                kv_items.push((key_hash, key_bytes, entry.value_type, val_bytes, expire_at));
-            }
+            kv_items.push((
+                item.key_hash,
+                item.key_bytes,
+                item.value_type,
+                item.val_bytes,
+                item.expire_at,
+            ));
         }
     }
 

@@ -510,6 +510,17 @@ impl Connection {
         self.process_incoming(table, pool)
     }
 
+    /// Parses and processes pending frames with the timing wheel for io_uring.
+    #[cfg(target_os = "linux")]
+    pub fn process_pending_with_wheel(
+        &mut self,
+        table: &ShardedSwissTable,
+        pool: &mut SlabPool,
+        timing_wheel: Option<&mut HashedTimingWheel>,
+    ) -> Result<bool, NetError> {
+        self.process_incoming_with_wheel(table, pool, &DEFAULT_VECTORS, timing_wheel)
+    }
+
     /// Drains the write buffer into `dest` without allocating a new Vec.
     #[cfg(target_os = "linux")]
     pub fn drain_write_buf_into(&mut self, dest: &mut Vec<u8>) {

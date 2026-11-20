@@ -40,44 +40,28 @@ pub fn handle_hashes(
             let h = hash_key(key);
             let pair_refs: smallvec::SmallVec<[(&[u8], &[u8]); 8]> =
                 pairs.iter().map(|(f, v)| (*f, *v)).collect();
-            let needed_bytes = table.with_shard(h, |shard| {
-                let old_slot = shard.lookup_key_checked(h, key, now_sec).and_then(|e| {
-                    if e.value_type == VALUE_TYPE_HASH {
-                        unsafe {
-                            resolve_slot_ptr(e.slab_block_id)
-                                .map(|ptr| std::slice::from_raw_parts(ptr, e.value_len as usize))
-                        }
-                    } else {
-                        None
-                    }
-                });
-                HashSlotFrame::needed_bytes(old_slot, &pair_refs)
-            });
-
-            if needed_bytes > 4096 {
-                encode_error(write_buf, "ERR hash exceeds the 4096-byte limit");
-                return Ok(true);
-            }
-
-            let target_class = match hash_slab_class(needed_bytes) {
-                Some(c) => c,
-                None => {
-                    encode_error(write_buf, "ERR hash exceeds the 4096-byte limit");
-                    return Ok(true);
-                }
-            };
-
             let mut new_fields_count = 0i64;
             let mut aof_pairs_payload = Vec::new();
 
             let res: Result<(), &str> = table.with_shard_mut(h, |shard| {
-                if let Some(entry) = shard.lookup_key_checked(h, key, now_sec) {
-                    if entry.value_type != VALUE_TYPE_HASH {
+                let old_slot = match shard.lookup_key_checked(h, key, now_sec) {
+                    Some(entry) if entry.value_type != VALUE_TYPE_HASH => {
                         return Err(
                             "WRONGTYPE Operation against a key holding the wrong kind of value",
                         );
                     }
+                    Some(entry) => {
+                        let ptr = unsafe { resolve_slot_ptr(entry.slab_block_id) }
+                            .ok_or("ERR internal slab slot error")?;
+                        Some(unsafe { std::slice::from_raw_parts(ptr, entry.value_len as usize) })
+                    }
+                    None => None,
+                };
+                let needed_bytes = HashSlotFrame::needed_bytes(old_slot, &pair_refs);
+                let target_class =
+                    hash_slab_class(needed_bytes).ok_or("ERR hash exceeds the 4096-byte limit")?;
 
+                if let Some(entry) = shard.lookup_key_checked(h, key, now_sec) {
                     let cur_class = SlabClassType::for_size(entry.value_len as usize);
                     let mut in_place_success = false;
 

@@ -1,20 +1,11 @@
 //! `kachedb-core` — Per-core hashed timing wheel for O(1) TTL memory expiration.
 //!
-//! # Architecture (RFC: Time-To-Live & Memory Expiration)
-//!
-//! Implements a thread-local circular timing wheel with 3,600 one-second buckets
-//! (1-hour high-resolution window).
-//!
-//! - **O(1) Scheduling**: Slot handles are placed into buckets via a simple modulo index:
-//!   `bucket_idx = (expire_at_secs) % 3600`.
-//! - **O(1) Advancing**: On each second tick from the event loop, the active bucket's
-//!   expired slab slots are reclaimed directly to the local `SlabPool` via free-list recycling.
-//! - **Zero Lock Contention**: Each CPU worker core owns its isolated `HashedTimingWheel`.
+//! Buckets produce expiration events. The table validates and unlinks the
+//! matching allocation before its owning pool may reclaim it.
 
 use smallvec::SmallVec;
 
 use crate::arena::SlabBlockId;
-use crate::pool::SlabPool;
 
 /// Number of 1-second resolution buckets in the timing wheel (1 hour).
 pub const WHEEL_BUCKETS: usize = 3600;
@@ -30,6 +21,8 @@ pub struct ExpireEntry {
     pub slab_block_id: SlabBlockId,
     /// Absolute expiration timestamp in epoch seconds.
     pub expire_at_sec: u32,
+    /// Generation counter of the slab block when scheduled.
+    pub generation: Option<u64>,
 }
 
 /// A thread-local hashed timing wheel for deterministic O(1) slab memory reclamation.
@@ -37,7 +30,7 @@ pub struct HashedTimingWheel {
     /// Circular ring of buckets containing expiration entries.
     buckets: Vec<SmallVec<[ExpireEntry; 16]>>,
     /// Monotonic second timestamp corresponding to the current ring head.
-    current_tick_sec: u32,
+    current_tick_sec: u64,
 }
 
 impl HashedTimingWheel {
@@ -45,24 +38,26 @@ impl HashedTimingWheel {
     pub fn new(start_sec: u32) -> Self {
         Self {
             buckets: vec![SmallVec::new(); WHEEL_BUCKETS],
-            current_tick_sec: start_sec,
+            current_tick_sec: u64::from(start_sec),
         }
     }
 
     /// Returns the current tick timestamp in seconds.
     #[inline(always)]
-    pub fn current_tick_sec(&self) -> u32 {
+    pub fn current_tick_sec(&self) -> u64 {
         self.current_tick_sec
     }
 
     /// Schedules a key hash and slab slot handle for expiration in O(1) time.
     #[inline(always)]
     pub fn schedule(&mut self, key_hash: u64, slot_id: SlabBlockId, expire_at_sec: u32) {
+        let generation = crate::registry::get_slot_generation(slot_id);
         self.schedule_entry(ExpireEntry {
             key_hash,
             key: None,
             slab_block_id: slot_id,
             expire_at_sec,
+            generation,
         });
     }
 
@@ -74,109 +69,60 @@ impl HashedTimingWheel {
         slot_id: SlabBlockId,
         expire_at_sec: u32,
     ) {
+        let generation = crate::registry::get_slot_generation(slot_id);
         self.schedule_entry(ExpireEntry {
             key_hash,
             key: Some(key.into()),
             slab_block_id: slot_id,
             expire_at_sec,
+            generation,
         });
     }
 
     fn schedule_entry(&mut self, entry: ExpireEntry) {
-        let expire_at_sec = entry.expire_at_sec;
+        let deadline = u64::from(entry.expire_at_sec);
+        let bucket_tick = deadline.clamp(
+            self.current_tick_sec,
+            self.current_tick_sec + WHEEL_BUCKETS as u64 - 1,
+        );
+        let idx = (bucket_tick % WHEEL_BUCKETS as u64) as usize;
+        self.buckets[idx].push(entry);
+    }
 
-        if expire_at_sec <= self.current_tick_sec {
-            // Already expired; target current head for immediate reclamation on next tick
-            let idx = (self.current_tick_sec as usize) % WHEEL_BUCKETS;
-            self.buckets[idx].push(entry);
+    /// Yields only due events. A clock jump visits each bucket at most once.
+    pub fn advance_expired_entries(&mut self, now_sec: u32, out: &mut Vec<ExpireEntry>) {
+        let now_tick = u64::from(now_sec);
+        if now_tick < self.current_tick_sec {
             return;
         }
 
-        let delta = expire_at_sec - self.current_tick_sec;
-        let target_idx = if (delta as usize) < WHEEL_BUCKETS {
-            (expire_at_sec as usize) % WHEEL_BUCKETS
-        } else {
-            // Overflow bucket handling for long-lived TTLs (> 1 hour):
-            // Place in the furthest bucket; will be re-evaluated on rollover
-            (self.current_tick_sec as usize + WHEEL_BUCKETS - 1) % WHEEL_BUCKETS
-        };
-
-        self.buckets[target_idx].push(entry);
-    }
-
-    /// Advances the timing wheel to `now_sec` and drains all expired entries into `out`.
-    pub fn advance_expired_entries(&mut self, now_sec: u32, out: &mut Vec<ExpireEntry>) {
-        while self.current_tick_sec <= now_sec {
-            let bucket_idx = (self.current_tick_sec as usize) % WHEEL_BUCKETS;
-            let expired_slots = &mut self.buckets[bucket_idx];
-
-            out.extend(expired_slots.drain(..));
-            self.current_tick_sec += 1;
-        }
-    }
-
-    /// Advances the timing wheel to `now_sec` and batch-reclaims expired memory slabs in O(1) time.
-    ///
-    /// Returns the number of slab slots successfully deallocated.
-    pub fn advance_to(&mut self, now_sec: u32, slab_pool: &mut SlabPool) -> usize {
-        let mut reclaimed_count = 0;
-
-        while self.current_tick_sec <= now_sec {
-            let bucket_idx = (self.current_tick_sec as usize) % WHEEL_BUCKETS;
-            let expired_slots = &mut self.buckets[bucket_idx];
-
-            for entry in expired_slots.iter() {
-                // Free slot directly to the local thread slab pool
-                if slab_pool.deallocate(entry.slab_block_id).is_ok() {
-                    reclaimed_count += 1;
+        let end = (now_tick + 1).min(self.current_tick_sec + WHEEL_BUCKETS as u64);
+        let mut future = SmallVec::<[ExpireEntry; 8]>::new();
+        for tick in self.current_tick_sec..end {
+            let idx = (tick % WHEEL_BUCKETS as u64) as usize;
+            for entry in self.buckets[idx].drain(..) {
+                if entry.expire_at_sec <= now_sec {
+                    out.push(entry);
+                } else {
+                    future.push(entry);
                 }
             }
-
-            expired_slots.clear();
-            self.current_tick_sec += 1;
         }
-
-        reclaimed_count
+        self.current_tick_sec = now_tick + 1;
+        for entry in future {
+            self.schedule_entry(entry);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::slab::SlabClassType;
 
     #[test]
     fn timing_wheel_starts_at_given_timestamp() {
         let wheel = HashedTimingWheel::new(1000);
         assert_eq!(wheel.current_tick_sec(), 1000);
-    }
-
-    #[test]
-    fn schedule_and_advance_reclaims_expired_slots() {
-        let mut pool = SlabPool::new(0, 16 * 1024 * 1024).unwrap();
-        let slot1 = pool.allocate(SlabClassType::AppSmall).unwrap();
-        let slot2 = pool.allocate(SlabClassType::AppSmall).unwrap();
-
-        let mut wheel = HashedTimingWheel::new(100);
-
-        // Schedule slot1 to expire at 105s, slot2 at 110s
-        wheel.schedule(1, slot1, 105);
-        wheel.schedule(2, slot2, 110);
-
-        // Advance to 104s: neither should expire
-        let reclaimed = wheel.advance_to(104, &mut pool);
-        assert_eq!(reclaimed, 0);
-        assert_eq!(wheel.current_tick_sec(), 105);
-
-        // Advance to 105s: slot1 should be reclaimed
-        let reclaimed = wheel.advance_to(105, &mut pool);
-        assert_eq!(reclaimed, 1);
-        assert_eq!(wheel.current_tick_sec(), 106);
-
-        // Advance to 110s: slot2 should be reclaimed
-        let reclaimed = wheel.advance_to(110, &mut pool);
-        assert_eq!(reclaimed, 1);
-        assert_eq!(wheel.current_tick_sec(), 111);
     }
 
     #[test]
@@ -205,15 +151,67 @@ mod tests {
 
     #[test]
     fn past_expiry_schedules_at_head() {
-        let mut pool = SlabPool::new(0, 16 * 1024 * 1024).unwrap();
-        let slot = pool.allocate(SlabClassType::AppSmall).unwrap();
-
         let mut wheel = HashedTimingWheel::new(100);
-        // Expiry is in the past (90s <= 100s)
+        let slot = SlabBlockId::new(0, 1);
         wheel.schedule(99, slot, 90);
 
-        // Advancing to 101s should reclaim it immediately
-        let reclaimed = wheel.advance_to(101, &mut pool);
-        assert_eq!(reclaimed, 1);
+        let mut expired = Vec::new();
+        wheel.advance_expired_entries(101, &mut expired);
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].slab_block_id, slot);
+    }
+
+    #[test]
+    fn timing_wheel_preserves_future_ttl_across_rollovers() {
+        let mut wheel = HashedTimingWheel::new(0);
+        let slot = SlabBlockId::new(1, 10);
+
+        // Schedule an entry with 7,200s (2 hours) TTL
+        wheel.schedule_key(42, b"long-lived", slot, 7200);
+
+        // Advance to 3,599s (the first cycle overflow bucket)
+        let mut expired = Vec::new();
+        wheel.advance_expired_entries(3599, &mut expired);
+        // Must NOT expire at 3,599s!
+        assert!(
+            expired.is_empty(),
+            "entry must not expire on first rollover"
+        );
+
+        // Advance to 7,199s
+        wheel.advance_expired_entries(7199, &mut expired);
+        assert!(expired.is_empty(), "entry must not expire before 7,200s");
+
+        // Advance to 7,200s: now due!
+        wheel.advance_expired_entries(7200, &mut expired);
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].key.as_deref(), Some(b"long-lived".as_slice()));
+        assert_eq!(expired[0].expire_at_sec, 7200);
+    }
+
+    #[test]
+    fn timing_wheel_handles_large_forward_clock_jump_with_bounded_buckets() {
+        let mut wheel = HashedTimingWheel::new(100);
+        let slot_due = SlabBlockId::new(1, 1);
+        let slot_future = SlabBlockId::new(1, 2);
+
+        // Schedule one entry due at 200s and one future entry at 200,000s
+        wheel.schedule_key(1, b"due", slot_due, 200);
+        wheel.schedule_key(2, b"future", slot_future, 200_000);
+
+        // Clock jumps from 100 to 100,000s (> 3,600s jump)
+        let mut expired = Vec::new();
+        wheel.advance_expired_entries(100_000, &mut expired);
+
+        // Only the due entry should be returned
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].key.as_deref(), Some(b"due".as_slice()));
+        assert_eq!(wheel.current_tick_sec(), 100_001);
+
+        // Advance to 200,000s: future entry now expires
+        expired.clear();
+        wheel.advance_expired_entries(200_000, &mut expired);
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].key.as_deref(), Some(b"future".as_slice()));
     }
 }

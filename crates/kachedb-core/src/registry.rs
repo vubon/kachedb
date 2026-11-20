@@ -1,24 +1,45 @@
-//! `kachedb-core` — Lock-free Global Slab Registry for cross-core zero-copy reads.
-//!
-//! Maps each globally unique `slab_id` (u16) to its 2 MB memory base pointer and
-//! slot size. This allows any worker thread to resolve a [`SlabBlockId`] into a
-//! valid raw memory pointer in a single CPU dereference (~1.2 ns) with zero locks.
+//! Global slab registry for cross-worker payload access and slot retirement.
 
 use std::{
     ptr::null_mut,
-    sync::atomic::{AtomicPtr, AtomicU16, AtomicU32, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering},
+    },
 };
+
+use crossbeam_channel::Sender;
+use parking_lot::RwLock;
 
 use crate::{arena::SlabBlockId, slab::MEGASLAB_HEADER_BYTES};
 
-/// Maximum supported 2 MB megaslabs in the process (16,384 * 2 MB = 32 GB RAM).
+/// Maximum supported slab identifiers in the process.
 pub const MAX_GLOBAL_SLABS: usize = 16_384;
 
-static NEXT_GLOBAL_SLAB_ID: AtomicU16 = AtomicU16::new(1);
+static NEXT_GLOBAL_SLAB_ID: AtomicU32 = AtomicU32::new(1);
+
+pub(crate) struct RetiredSlot {
+    pub id: SlabBlockId,
+    pub generation: u64,
+}
+
+struct ArenaOwner {
+    core: u16,
+    generations: Arc<[AtomicU64]>,
+    inbox: Option<Sender<RetiredSlot>>,
+}
+
+impl ArenaOwner {
+    fn live_generation(&self, index: usize) -> Option<u64> {
+        let generation = self.generations.get(index)?.load(Ordering::Relaxed);
+        (generation & 1 != 0).then_some(generation)
+    }
+}
 
 struct ArenaEntry {
     base_ptr: AtomicPtr<u8>,
     slot_bytes: AtomicU32,
+    owner: RwLock<Option<ArenaOwner>>,
 }
 
 impl ArenaEntry {
@@ -26,69 +47,96 @@ impl ArenaEntry {
         Self {
             base_ptr: AtomicPtr::new(null_mut()),
             slot_bytes: AtomicU32::new(0),
+            owner: RwLock::new(None),
         }
     }
 }
 
-// Fixed-size global registry array initialized at compile-time
-#[allow(clippy::declare_interior_mutable_const)]
-static GLOBAL_ARENAS: [ArenaEntry; MAX_GLOBAL_SLABS] = {
-    const INIT: ArenaEntry = ArenaEntry::new();
-    [INIT; MAX_GLOBAL_SLABS]
-};
+static GLOBAL_ARENAS: [ArenaEntry; MAX_GLOBAL_SLABS] =
+    [const { ArenaEntry::new() }; MAX_GLOBAL_SLABS];
 
-/// Atomically allocates a new globally unique `slab_id`.
-#[inline]
+/// Atomically allocates a globally unique slab identifier.
 pub fn allocate_global_slab_id() -> u16 {
     let id = NEXT_GLOBAL_SLAB_ID.fetch_add(1, Ordering::Relaxed);
-    if id as usize >= MAX_GLOBAL_SLABS {
-        panic!("Exceeded maximum global slab arenas ({MAX_GLOBAL_SLABS})");
-    }
-    id
+    assert!(
+        (id as usize) < MAX_GLOBAL_SLABS,
+        "Exceeded maximum global slab arenas ({MAX_GLOBAL_SLABS})"
+    );
+    id as u16
 }
 
-/// Registers an active `MegaslabArena` in the global lock-free table.
-#[inline]
-pub fn register_arena(slab_id: u16, base_ptr: *mut u8, slot_bytes: usize) {
-    let idx = slab_id as usize;
-    if idx < MAX_GLOBAL_SLABS {
-        GLOBAL_ARENAS[idx]
-            .base_ptr
-            .store(base_ptr, Ordering::Release);
-        GLOBAL_ARENAS[idx]
-            .slot_bytes
-            .store(slot_bytes as u32, Ordering::Release);
-    }
-}
-
-/// Unregisters an arena from the global table upon deallocation.
-#[inline]
-pub fn unregister_arena(slab_id: u16) {
-    let idx = slab_id as usize;
-    if idx < MAX_GLOBAL_SLABS {
-        GLOBAL_ARENAS[idx]
-            .base_ptr
-            .store(null_mut(), Ordering::Release);
-        GLOBAL_ARENAS[idx].slot_bytes.store(0, Ordering::Release);
+pub(crate) fn register_arena(
+    slab_id: u16,
+    base_ptr: *mut u8,
+    slot_bytes: usize,
+    core: u16,
+    generations: Arc<[AtomicU64]>,
+) {
+    if let Some(arena) = GLOBAL_ARENAS.get(slab_id as usize) {
+        let mut owner = arena.owner.write();
+        assert!(owner.is_none(), "slab {slab_id} already registered");
+        *owner = Some(ArenaOwner {
+            core,
+            generations,
+            inbox: None,
+        });
+        arena.slot_bytes.store(slot_bytes as u32, Ordering::Relaxed);
+        arena.base_ptr.store(base_ptr, Ordering::Release);
     }
 }
 
-/// Resolves a [`SlabBlockId`] into a raw pointer to its payload bytes.
+pub(crate) fn register_dealloc_sender(slab_id: u16, sender: Sender<RetiredSlot>) {
+    let mut owner = GLOBAL_ARENAS[slab_id as usize].owner.write();
+    owner.as_mut().expect("registered arena").inbox = Some(sender);
+}
+
+pub(crate) fn unregister_arena(slab_id: u16) {
+    if let Some(arena) = GLOBAL_ARENAS.get(slab_id as usize) {
+        let mut owner = arena.owner.write();
+        arena.base_ptr.store(null_mut(), Ordering::Release);
+        *owner = None;
+    }
+}
+
+pub(crate) fn send_to_dealloc_inbox(id: SlabBlockId) -> Option<()> {
+    let owner = GLOBAL_ARENAS.get(id.slab_id() as usize)?.owner.read();
+    let owner = owner.as_ref()?;
+    let generation = owner.live_generation(id.slot_index() as usize)?;
+    owner
+        .inbox
+        .as_ref()?
+        .send(RetiredSlot { id, generation })
+        .ok()
+}
+
+/// Returns the registered arena's owning core.
+pub fn resolve_owning_core(id: SlabBlockId) -> Option<u16> {
+    let owner = GLOBAL_ARENAS.get(id.slab_id() as usize)?.owner.read();
+    let owner = owner.as_ref()?;
+    owner.generations.get(id.slot_index() as usize)?;
+    Some(owner.core)
+}
+
+/// Returns the current generation of a live, in-bounds slot.
+pub fn get_slot_generation(id: SlabBlockId) -> Option<u64> {
+    let owner = GLOBAL_ARENAS.get(id.slab_id() as usize)?.owner.read();
+    owner.as_ref()?.live_generation(id.slot_index() as usize)
+}
+
+/// Resolves a live slot to its payload pointer.
 ///
 /// # Safety
 ///
-/// Extremely fast (~1.2 ns): performs a single array indexing and pointer offset.
-/// Caller must ensure `id` is a live allocation.
+/// The caller must keep the allocation alive and prevent concurrent conflicting
+/// access for the duration of any access through the returned pointer.
 #[inline(always)]
 pub unsafe fn resolve_slot_ptr(id: SlabBlockId) -> Option<*mut u8> {
-    let slab_id = id.slab_id() as usize;
-    if slab_id < MAX_GLOBAL_SLABS {
-        let base = GLOBAL_ARENAS[slab_id].base_ptr.load(Ordering::Acquire);
-        if !base.is_null() {
-            let slot_size = GLOBAL_ARENAS[slab_id].slot_bytes.load(Ordering::Relaxed) as usize;
-            let offset = MEGASLAB_HEADER_BYTES + (id.slot_index() as usize) * slot_size;
-            return Some(unsafe { base.add(offset) });
-        }
+    let arena = GLOBAL_ARENAS.get(id.slab_id() as usize)?;
+    let base = arena.base_ptr.load(Ordering::Acquire);
+    if base.is_null() {
+        return None;
     }
-    None
+    let slot_size = arena.slot_bytes.load(Ordering::Relaxed) as usize;
+    let offset = MEGASLAB_HEADER_BYTES + (id.slot_index() as usize) * slot_size;
+    Some(unsafe { base.add(offset) })
 }
