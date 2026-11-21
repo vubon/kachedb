@@ -21,6 +21,10 @@ pub enum RespError {
     #[error("frame size exceeds protocol limits: {size} bytes")]
     FrameTooLarge { size: usize },
 
+    /// A request declared or contained too many arguments.
+    #[error("command exceeds the argument limit of {limit}")]
+    TooManyArguments { limit: usize },
+
     /// Command is empty (array of 0 elements).
     #[error("empty command array")]
     EmptyCommand,

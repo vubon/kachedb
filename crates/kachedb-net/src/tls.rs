@@ -115,33 +115,31 @@ impl TlsState {
         Ok(Self { session })
     }
 
-    /// Reads encrypted TLS records from the underlying socket, decrypts them,
-    /// and feeds the decrypted plaintext into the `Connection` buffer.
+    /// Moves decrypted plaintext into the bounded connection buffer or reads
+    /// another TLS chunk. Zero indicates that neither source made progress.
     pub fn read_and_decrypt<R: std::io::Read>(
         &mut self,
         stream: &mut R,
         conn: &mut Connection,
     ) -> Result<usize, NetError> {
-        match self.session.read_tls(stream) {
-            Ok(0) => return Err(NetError::ConnectionClosed),
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(e) => return Err(NetError::Io(e)),
+        // Consume plaintext already held by rustls before taking more ciphertext.
+        let plaintext = conn.read_from(&mut self.session.reader())?;
+        if plaintext != 0 {
+            return Ok(plaintext);
         }
-
-        let _ = self
-            .session
-            .process_new_packets()
-            .map_err(|e| NetError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
-
-        let mut reader = self.session.reader();
-        let bytes_read = match conn.read_from(&mut reader) {
-            Ok(n) => n,
-            Err(NetError::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
-            Err(e) => return Err(e),
+        let wire = loop {
+            match self.session.read_tls(stream) {
+                Ok(0) => return Err(NetError::ConnectionClosed),
+                Ok(wire) => break wire,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(0),
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            }
         };
-
-        Ok(bytes_read)
+        self.session
+            .process_new_packets()
+            .map_err(|e| IoError::new(ErrorKind::InvalidData, e))?;
+        Ok(wire)
     }
 
     /// Takes staged plaintext responses from the `Connection` buffer, encrypts them into
@@ -157,8 +155,9 @@ impl TlsState {
         let mut written = 0;
         while self.session.wants_write() {
             match self.session.write_tls(stream) {
+                Ok(0) => break,
                 Ok(n) => written += n,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Err(e) => return Err(NetError::Io(e)),
             }
         }

@@ -13,12 +13,14 @@ pub mod vectors;
 #[cfg(test)]
 mod tests;
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::sync::{Arc, LazyLock, RwLock};
 
 use kachedb_core::{HashedTimingWheel, SlabPool};
 use kachedb_hash::{MAX_KEY_LEN, ShardedSwissTable};
-use kachedb_proto_resp::{Command, encode_error, encode_simple_string, parse_command_frame};
+use kachedb_proto_resp::{
+    Command, CommandFrameDecoder, MAX_COMMAND_BYTES, RespError, encode_error, encode_simple_string,
+};
 use kachedb_vector::VectorIndexRegistry;
 
 use crate::error::NetError;
@@ -88,6 +90,7 @@ pub struct Connection {
     read_pos: usize,
     /// Number of valid bytes currently in `read_buf`.
     read_len: usize,
+    decoder: CommandFrameDecoder,
     /// Outbound response buffer.
     pub write_buf: Vec<u8>,
     /// Write cursor offset in `write_buf`.
@@ -112,6 +115,7 @@ impl Connection {
             read_buf: vec![0u8; READ_BUF_SIZE],
             read_pos: 0,
             read_len: 0,
+            decoder: CommandFrameDecoder::new(),
             write_buf: Vec::with_capacity(WRITE_BUF_SIZE),
             write_pos: 0,
             current_sec: now_sec,
@@ -124,38 +128,42 @@ impl Connection {
         self.current_sec = now_sec;
     }
 
-    /// Reads incoming bytes from `stream` into the internal ring buffer.
-    /// Returns number of bytes read, or 0 on EOF.
+    /// Reads one chunk into the bounded input buffer. A zero result means the
+    /// transport would block. The caller processes the chunk before reading again.
     pub fn read_from<R: Read>(&mut self, stream: &mut R) -> Result<usize, NetError> {
-        if self.read_pos > 0 {
-            if self.read_pos == self.read_len {
-                self.read_pos = 0;
-                self.read_len = 0;
-            } else {
-                self.read_buf.copy_within(self.read_pos..self.read_len, 0);
-                self.read_len -= self.read_pos;
-                self.read_pos = 0;
+        self.prepare_input(1)?;
+        let end = self.read_buf.len().min(self.read_len + READ_BUF_SIZE);
+        let n = loop {
+            match stream.read(&mut self.read_buf[self.read_len..end]) {
+                Ok(0) => return Err(NetError::ConnectionClosed),
+                Ok(n) => break n,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(0),
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
             }
-        }
-
-        // Grow buffer if full
-        if self.read_len == self.read_buf.len() {
-            self.read_buf.resize(self.read_buf.len() * 2, 0);
-        }
-
-        let n = match stream.read(&mut self.read_buf[self.read_len..]) {
-            Ok(0) => return Err(NetError::ConnectionClosed), // True EOF from client
-            Ok(n) => n,
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
-            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => 0,
-            Err(e) => return Err(NetError::Io(e)),
         };
-
         self.read_len += n;
         Ok(n)
     }
 
-    /// Parses and processes all complete frames in the read buffer with zero heap allocations.
+    fn prepare_input(&mut self, incoming: usize) -> Result<(), NetError> {
+        let unread = self.read_len - self.read_pos;
+        let needed = unread
+            .checked_add(incoming)
+            .filter(|&needed| needed <= MAX_COMMAND_BYTES)
+            .ok_or(NetError::BufferOverflow)?;
+        if incoming > self.read_buf.len() - self.read_len {
+            self.read_buf.copy_within(self.read_pos..self.read_len, 0);
+            self.read_pos = 0;
+            self.read_len = unread;
+            if needed > self.read_buf.len() {
+                self.read_buf.resize(needed.next_power_of_two(), 0);
+            }
+        }
+        Ok(())
+    }
+
+    /// Parses and processes all complete frames in the read buffer.
     ///
     /// Executes decoded commands directly against `table` and `pool`.
     /// Returns `Ok(true)` if connection should stay open, or `Ok(false)` on `QUIT`.
@@ -182,7 +190,13 @@ impl Connection {
                 break;
             }
 
-            match parse_command_frame(slice)? {
+            let frame = match self.decoder.parse(slice) {
+                Err(RespError::FrameTooLarge { size }) if size > MAX_COMMAND_BYTES => {
+                    return Err(NetError::BufferOverflow);
+                }
+                result => result?,
+            };
+            match frame {
                 Some((Ok(cmd), consumed)) => {
                     self.read_pos += consumed;
                     let keep_alive = journal::execute(
@@ -469,33 +483,20 @@ impl Connection {
 
     // ── io_uring-compatible API (Improvement 2) ───────────────────────────────
 
-    /// Feeds raw bytes directly into the read buffer.
-    ///
-    /// Used by the io_uring engine (`engine_uring.rs`) where the kernel
-    /// copies data directly into a pre-registered buffer; the engine then
-    /// calls this to hand the received slice to the connection state machine.
-    #[cfg(target_os = "linux")]
-    pub fn feed_bytes(&mut self, data: &[u8]) {
-        // Compact buffer only when empty or past halfway mark
-        if self.read_pos > 0 {
-            if self.read_pos == self.read_len {
-                self.read_pos = 0;
-                self.read_len = 0;
-            } else if self.read_pos >= self.read_buf.len() / 2 {
-                self.read_buf.copy_within(self.read_pos..self.read_len, 0);
-                self.read_len -= self.read_pos;
-                self.read_pos = 0;
-            }
+    /// Copies as much of the received chunk as can fit. The caller processes
+    /// complete frames before passing any unconsumed suffix back to this method.
+    #[cfg(any(test, target_os = "linux"))]
+    pub fn feed_bytes(&mut self, data: &[u8]) -> Result<usize, NetError> {
+        let available = MAX_COMMAND_BYTES - (self.read_len - self.read_pos);
+        let count = data.len().min(available);
+        if count == 0 && !data.is_empty() {
+            return Err(NetError::BufferOverflow);
         }
-
-        // Grow buffer if needed
-        let needed = self.read_len + data.len();
-        if needed > self.read_buf.len() {
-            self.read_buf.resize(needed.next_power_of_two(), 0);
-        }
-
-        self.read_buf[self.read_len..self.read_len + data.len()].copy_from_slice(data);
-        self.read_len += data.len();
+        self.prepare_input(count)?;
+        let end = self.read_len + count;
+        self.read_buf[self.read_len..end].copy_from_slice(&data[..count]);
+        self.read_len = end;
+        Ok(count)
     }
 
     /// Processes all complete RESP frames currently buffered.

@@ -15,7 +15,7 @@ use kachedb_net::aof_encode::{
     AOF_HEADER_OVERHEAD, AOF_MAGIC, CHECKED_FRAME_MAGIC, CHECKED_HEADER_SIZE, MAX_AOF_RECORD_SIZE,
 };
 use kachedb_net::connection::{replay_mset, replayable_command};
-use kachedb_proto_resp::{Command, parse_command_frame};
+use kachedb_proto_resp::{Command, parse_command_frame_for_replay};
 use kachedb_vector::VectorIndexRegistry;
 
 use crate::aof::{AofError, AofFrame, AofOp, decode_frame};
@@ -528,7 +528,7 @@ fn apply_frame(
                 .checked_mul(4)
                 .ok_or(AofError::InvalidRecord("invalid vector expiry count"))?;
             let mut expirations = take(&mut wire, expiry_bytes)?;
-            let (command, consumed) = parse_command_frame(wire)
+            let (command, consumed) = parse_command_frame_for_replay(wire)
                 .ok()
                 .flatten()
                 .ok_or(AofError::InvalidRecord("invalid recorded command"))?;
