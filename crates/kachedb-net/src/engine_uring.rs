@@ -398,13 +398,23 @@ impl UringWorkerThread {
                             let n = result as usize;
 
                             if let Some(state) = connections.get_mut(&token) {
-                                state.conn.feed_bytes(&state.recv_buf[..n]);
-
-                                match state.conn.process_pending_with_wheel(
-                                    &self.table,
-                                    &mut self.pool,
-                                    Some(&mut self.timing_wheel),
-                                ) {
+                                let mut input = &state.recv_buf[..n];
+                                let processed = loop {
+                                    let count = match state.conn.feed_bytes(input) {
+                                        Ok(count) => count,
+                                        Err(error) => break Err(error),
+                                    };
+                                    input = &input[count..];
+                                    match state.conn.process_pending_with_wheel(
+                                        &self.table,
+                                        &mut self.pool,
+                                        Some(&mut self.timing_wheel),
+                                    ) {
+                                        Ok(true) if !input.is_empty() => continue,
+                                        result => break result,
+                                    }
+                                };
+                                match processed {
                                     Ok(keep_alive) => {
                                         let fd = state.fd;
                                         state.closing = !keep_alive;

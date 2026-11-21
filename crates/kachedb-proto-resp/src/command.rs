@@ -13,7 +13,7 @@ pub struct BatchVectorItem<'a> {
     pub ttl_sec: Option<u32>,
 }
 
-/// Strongly typed Redis commands parsed without heap allocation.
+/// Strongly typed Redis commands that borrow their argument bytes.
 #[derive(Debug, PartialEq, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum Command<'a> {
@@ -201,171 +201,86 @@ pub enum ClientSubcommand<'a> {
 pub type ParsedCommandFrame<'a> =
     Result<Option<(Result<Command<'a>, RespError>, usize)>, RespError>;
 
-/// Fast zero-allocation parser for Redis wire commands that preserves consumed frame offsets
-/// on command-level validation errors.
-pub fn parse_command_frame<'a>(src: &'a [u8]) -> ParsedCommandFrame<'a> {
-    if src.is_empty() {
-        return Ok(None);
-    }
+/// Parses one wire command and preserves the offsets of command-level errors.
+pub fn parse_command_frame(src: &[u8]) -> ParsedCommandFrame<'_> {
+    super::command_frame::CommandFrameDecoder::new().parse(src)
+}
 
-    if src[0] == b'*' {
-        // Multi-bulk array command: *<count>\r\n$<len>\r\n<arg1>\r\n...
-        let crlf_pos = match find_crlf(&src[1..]) {
-            Some(pos) => pos + 1,
-            None => return Ok(None),
-        };
-
-        let count_str =
-            std::str::from_utf8(&src[1..crlf_pos]).map_err(|_| RespError::InvalidInteger)?;
-        let count = count_str
-            .parse::<i64>()
-            .map_err(|_| RespError::InvalidInteger)?;
-        if count <= 0 {
-            return Err(RespError::EmptyCommand);
-        }
-
-        let count = count as usize;
-        let mut args: SmallVec<[&'a [u8]; 8]> = SmallVec::with_capacity(count.min(8));
-        let mut offset = crlf_pos + 2;
-
-        for _ in 0..count {
-            if offset >= src.len() {
-                return Ok(None);
-            }
-
-            match src[offset] {
-                b'$' => {
-                    let len_crlf = match find_crlf(&src[offset + 1..]) {
-                        Some(pos) => offset + 1 + pos,
-                        None => return Ok(None),
-                    };
-
-                    let len_str = std::str::from_utf8(&src[offset + 1..len_crlf])
-                        .map_err(|_| RespError::InvalidInteger)?;
-                    let len = len_str
-                        .parse::<i64>()
-                        .map_err(|_| RespError::InvalidInteger)?;
-
-                    if len < 0 {
-                        // Null bulk string in command argument is invalid
-                        return Err(RespError::InvalidInteger);
-                    }
-
-                    let len = len as usize;
-                    let data_start = len_crlf + 2;
-                    let total_needed = data_start + len + 2;
-
-                    if src.len() < total_needed {
-                        return Ok(None); // Need more TCP data
-                    }
-
-                    if src[data_start + len] != b'\r' || src[data_start + len + 1] != b'\n' {
-                        return Err(RespError::MissingCrlf);
-                    }
-
-                    args.push(&src[data_start..data_start + len]);
-                    offset = total_needed;
-                }
-                b'+' => {
-                    let str_crlf = match find_crlf(&src[offset + 1..]) {
-                        Some(pos) => offset + 1 + pos,
-                        None => return Ok(None),
-                    };
-                    args.push(&src[offset + 1..str_crlf]);
-                    offset = str_crlf + 2;
-                }
-                marker => return Err(RespError::InvalidTypeMarker { marker }),
-            }
-        }
-
-        Ok(Some((Command::from_raw_args(args), offset)))
+pub(super) fn decode_inline(line: &[u8], consumed: usize) -> ParsedCommandFrame<'_> {
+    if line.eq_ignore_ascii_case(b"PING") {
+        Ok(Some((Ok(Command::Ping { message: None }), consumed)))
+    } else if line.eq_ignore_ascii_case(b"QUIT") {
+        Ok(Some((Ok(Command::Quit), consumed)))
+    } else if line.eq_ignore_ascii_case(b"DBSIZE") {
+        Ok(Some((Ok(Command::DBSize), consumed)))
+    } else if line.eq_ignore_ascii_case(b"FLUSHDB") {
+        Ok(Some((Ok(Command::FlushDb), consumed)))
+    } else if line.eq_ignore_ascii_case(b"FLUSHALL") {
+        Ok(Some((Ok(Command::FlushAll), consumed)))
     } else {
-        // Inline command fallback (e.g. PING\r\n or QUIT\r\n)
-        let crlf_pos = match find_crlf(src) {
-            Some(pos) => pos,
-            None => return Ok(None),
-        };
-        let consumed = crlf_pos + 2;
-
-        let line = &src[..crlf_pos];
-        if line.eq_ignore_ascii_case(b"PING") {
-            Ok(Some((Ok(Command::Ping { message: None }), consumed)))
-        } else if line.eq_ignore_ascii_case(b"QUIT") {
-            Ok(Some((Ok(Command::Quit), consumed)))
-        } else if line.eq_ignore_ascii_case(b"DBSIZE") {
-            Ok(Some((Ok(Command::DBSize), consumed)))
-        } else if line.eq_ignore_ascii_case(b"FLUSHDB") {
-            Ok(Some((Ok(Command::FlushDb), consumed)))
-        } else if line.eq_ignore_ascii_case(b"FLUSHALL") {
-            Ok(Some((Ok(Command::FlushAll), consumed)))
-        } else {
-            let mut parts = line
-                .split(|&b| b == b' ' || b == b'\t')
-                .filter(|p| !p.is_empty());
-            if let Some(cmd_name) = parts.next() {
-                if cmd_name.eq_ignore_ascii_case(b"PING") {
-                    let msg = parts.next();
-                    Ok(Some((Ok(Command::Ping { message: msg }), consumed)))
-                } else if cmd_name.eq_ignore_ascii_case(b"GET") {
-                    if let Some(key) = parts.next() {
-                        Ok(Some((Ok(Command::Get { key }), consumed)))
-                    } else {
-                        Ok(Some((
-                            Err(RespError::WrongArgumentCount {
-                                command: "GET".into(),
-                            }),
-                            consumed,
-                        )))
-                    }
-                } else if cmd_name.eq_ignore_ascii_case(b"SET") {
-                    if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
-                        Ok(Some((
-                            Ok(Command::Set {
-                                key,
-                                value,
-                                ttl_ms: None,
-                            }),
-                            consumed,
-                        )))
-                    } else {
-                        Ok(Some((
-                            Err(RespError::WrongArgumentCount {
-                                command: "SET".into(),
-                            }),
-                            consumed,
-                        )))
-                    }
-                } else if cmd_name.eq_ignore_ascii_case(b"DBSIZE") {
-                    Ok(Some((Ok(Command::DBSize), consumed)))
-                } else if cmd_name.eq_ignore_ascii_case(b"TYPE") {
-                    if let Some(key) = parts.next() {
-                        Ok(Some((Ok(Command::Type { key }), consumed)))
-                    } else {
-                        Ok(Some((
-                            Err(RespError::WrongArgumentCount {
-                                command: "TYPE".into(),
-                            }),
-                            consumed,
-                        )))
-                    }
-                } else if cmd_name.eq_ignore_ascii_case(b"FLUSHDB") {
-                    Ok(Some((Ok(Command::FlushDb), consumed)))
-                } else if cmd_name.eq_ignore_ascii_case(b"FLUSHALL") {
-                    Ok(Some((Ok(Command::FlushAll), consumed)))
+        let mut parts = line
+            .split(|&b| b == b' ' || b == b'\t')
+            .filter(|p| !p.is_empty());
+        if let Some(cmd_name) = parts.next() {
+            if cmd_name.eq_ignore_ascii_case(b"PING") {
+                let msg = parts.next();
+                Ok(Some((Ok(Command::Ping { message: msg }), consumed)))
+            } else if cmd_name.eq_ignore_ascii_case(b"GET") {
+                if let Some(key) = parts.next() {
+                    Ok(Some((Ok(Command::Get { key }), consumed)))
                 } else {
-                    Ok(Some((Ok(Command::Unknown { name: cmd_name }), consumed)))
+                    Ok(Some((
+                        Err(RespError::WrongArgumentCount {
+                            command: "GET".into(),
+                        }),
+                        consumed,
+                    )))
                 }
+            } else if cmd_name.eq_ignore_ascii_case(b"SET") {
+                if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                    Ok(Some((
+                        Ok(Command::Set {
+                            key,
+                            value,
+                            ttl_ms: None,
+                        }),
+                        consumed,
+                    )))
+                } else {
+                    Ok(Some((
+                        Err(RespError::WrongArgumentCount {
+                            command: "SET".into(),
+                        }),
+                        consumed,
+                    )))
+                }
+            } else if cmd_name.eq_ignore_ascii_case(b"DBSIZE") {
+                Ok(Some((Ok(Command::DBSize), consumed)))
+            } else if cmd_name.eq_ignore_ascii_case(b"TYPE") {
+                if let Some(key) = parts.next() {
+                    Ok(Some((Ok(Command::Type { key }), consumed)))
+                } else {
+                    Ok(Some((
+                        Err(RespError::WrongArgumentCount {
+                            command: "TYPE".into(),
+                        }),
+                        consumed,
+                    )))
+                }
+            } else if cmd_name.eq_ignore_ascii_case(b"FLUSHDB") {
+                Ok(Some((Ok(Command::FlushDb), consumed)))
+            } else if cmd_name.eq_ignore_ascii_case(b"FLUSHALL") {
+                Ok(Some((Ok(Command::FlushAll), consumed)))
             } else {
-                Err(RespError::EmptyCommand)
+                Ok(Some((Ok(Command::Unknown { name: cmd_name }), consumed)))
             }
+        } else {
+            Err(RespError::EmptyCommand)
         }
     }
 }
 
-/// Fast zero-allocation parser for Redis wire commands directly from raw TCP stream slices.
-///
-/// Parses array of bulk strings directly into a stack-allocated [`SmallVec`] without
-/// allocating any [`Box`] or heap memory for incoming frames.
+/// Parses one Redis wire command, borrowing argument data from the input slice.
 pub fn parse_command<'a>(src: &'a [u8]) -> Result<Option<(Command<'a>, usize)>, RespError> {
     match parse_command_frame(src)? {
         Some((Ok(cmd), consumed)) => Ok(Some((cmd, consumed))),
@@ -374,15 +289,10 @@ pub fn parse_command<'a>(src: &'a [u8]) -> Result<Option<(Command<'a>, usize)>, 
     }
 }
 
-#[inline(always)]
-fn find_crlf(src: &[u8]) -> Option<usize> {
-    (0..src.len().saturating_sub(1)).find(|&i| src[i] == b'\r' && src[i + 1] == b'\n')
-}
-
 impl<'a> Command<'a> {
     /// Decodes a flat list of borrowed argument byte slices into a structured [`Command`].
     ///
-    /// 100% Zero heap allocation.
+    /// Small argument lists use inline storage.
     pub fn from_raw_args(args: SmallVec<[&'a [u8]; 8]>) -> Result<Self, RespError> {
         if args.is_empty() {
             return Err(RespError::EmptyCommand);

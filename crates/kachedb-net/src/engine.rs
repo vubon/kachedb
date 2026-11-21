@@ -505,102 +505,94 @@ impl WorkerThread {
                 continue; // Handled by listener mode above
             }
 
-            let mut should_remove = false;
-
-            if let Some((stream, conn, tls)) = connections.get_mut(&token) {
-                if event.is_readable() {
-                    let read_res = if let Some(tls_session) = tls {
-                        let res = tls_session.read_and_decrypt(stream, conn);
-                        let _ = tls_session.flush_handshake(stream);
-                        res
-                    } else {
-                        conn.read_from(stream)
-                    };
-                    match read_res {
-                        Ok(_) => {
-                            if conn.has_unprocessed_input() {
-                                match conn.process_incoming_with_wheel(
-                                    &self.table,
-                                    &mut self.pool,
-                                    &DEFAULT_VECTORS,
-                                    Some(&mut self.timing_wheel),
-                                ) {
-                                    Ok(keep_alive) => {
-                                        if !keep_alive {
-                                            should_remove = true;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        log::warn!(
-                                            "Worker [{core}]: protocol error on {token:?}: {e}",
-                                            core = self.core_id
-                                        );
-                                        should_remove = true;
-                                    }
-                                }
-                            }
-                        }
-                        Err(NetError::ConnectionClosed) => {
-                            should_remove = true;
-                        }
-                        Err(NetError::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            if conn.has_unprocessed_input() {
-                                let _ = conn.process_incoming_with_wheel(
-                                    &self.table,
-                                    &mut self.pool,
-                                    &DEFAULT_VECTORS,
-                                    Some(&mut self.timing_wheel),
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "Worker [{core}]: read error on {token:?}: {e}",
-                                core = self.core_id
-                            );
-                            should_remove = true;
-                        }
-                    }
-                }
-
-                if conn.has_pending_writes() || event.is_writable() {
-                    while conn.has_pending_writes() {
-                        let write_res = if let Some(tls_session) = tls {
-                            tls_session.encrypt_and_write(stream, conn)
-                        } else {
-                            conn.flush_to_stream(stream)
-                        };
-                        match write_res {
-                            Ok(0) => break,
-                            Ok(_) => {}
-                            Err(NetError::Io(ref e))
-                                if e.kind() == std::io::ErrorKind::WouldBlock =>
-                            {
-                                break;
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "Worker [{core}]: write error on {token:?}: {e}",
-                                    core = self.core_id
-                                );
-                                should_remove = true;
-                                break;
-                            }
-                        }
-                    }
-                }
+            let Some((stream, conn, tls)) = connections.get_mut(&token) else {
+                continue;
+            };
+            let keep_alive = self.process_connection(stream, conn, tls, event.is_readable());
+            match keep_alive {
+                Ok(true) => continue,
+                Ok(false) | Err(NetError::ConnectionClosed) => {}
+                Err(error) => log::warn!(
+                    "Worker [{core}]: closing {token:?}: {error}",
+                    core = self.core_id,
+                ),
             }
-
-            if should_remove {
-                if let Some((mut stream, _, _)) = connections.remove(&token) {
-                    let _ = poll.registry().deregister(&mut stream);
-                    crate::accept::dec_active_clients();
-                }
+            if let Some((mut stream, _, _)) = connections.remove(&token) {
+                let _ = poll.registry().deregister(&mut stream);
+                crate::accept::dec_active_clients();
             }
         }
 
         Ok(())
     }
+
+    fn process_connection(
+        &mut self,
+        stream: &mut TcpStream,
+        conn: &mut Connection,
+        tls: &mut Option<TlsState>,
+        readable: bool,
+    ) -> Result<bool, NetError> {
+        let mut write_blocked = false;
+        loop {
+            if !write_blocked {
+                write_blocked = !flush_connection(stream, conn, tls)?;
+            }
+            if !readable {
+                return Ok(true);
+            }
+            let received = match tls {
+                Some(session) => session.read_and_decrypt(stream, conn)?,
+                None => conn.read_from(stream)?,
+            };
+            if received == 0 {
+                return Ok(true);
+            }
+            match conn.process_incoming_with_wheel(
+                &self.table,
+                &mut self.pool,
+                &DEFAULT_VECTORS,
+                Some(&mut self.timing_wheel),
+            ) {
+                Ok(true) => {}
+                result => {
+                    // Preserve replies for commands completed before the connection closed.
+                    let _ = flush_connection(stream, conn, tls);
+                    return result;
+                }
+            }
+        }
+    }
+}
+
+fn has_pending_output(conn: &Connection, tls: &Option<TlsState>) -> bool {
+    conn.has_pending_writes()
+        || tls
+            .as_ref()
+            .is_some_and(|session| session.session.wants_write())
+}
+
+fn flush_connection(
+    stream: &mut TcpStream,
+    conn: &mut Connection,
+    tls: &mut Option<TlsState>,
+) -> Result<bool, NetError> {
+    while has_pending_output(conn, tls) {
+        let result = match tls {
+            Some(session) => session.encrypt_and_write(stream, conn),
+            None => conn.flush_to_stream(stream),
+        };
+        match result {
+            Ok(0) => return Ok(false),
+            Ok(_) => {}
+            Err(NetError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                return Ok(false);
+            }
+            Err(NetError::Io(error)) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(test)]

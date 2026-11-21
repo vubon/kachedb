@@ -2310,3 +2310,71 @@ fn mget_sees_a_complete_batch_with_overlapping_mset_writers() {
     });
     drop(pools);
 }
+
+#[test]
+fn input_limit_accepts_an_exact_size_frame_and_retains_the_next_command() {
+    let table = ShardedSwissTable::new();
+    let mut pool = SlabPool::new(0, 4 * 1024 * 1024).unwrap();
+    let mut conn = Connection::new();
+
+    let prefix = b"*33\r\n+COMMAND\r\n";
+    let full_bulk_header = b"$2097152\r\n";
+    let value_bytes = kachedb_proto_resp::MAX_ARGUMENT_BYTES;
+    let tail_length =
+        MAX_COMMAND_BYTES - prefix.len() - 31 * (full_bulk_header.len() + value_bytes + 2) - 12;
+    let tail_header = format!("${tail_length}\r\n");
+    let block = &[b'x'; READ_BUF_SIZE];
+    let segments = std::iter::once(prefix.as_slice()).chain((0..32).flat_map(|i| {
+        let (header, size) = if i == 31 {
+            (tail_header.as_bytes(), tail_length)
+        } else {
+            (full_bulk_header.as_slice(), value_bytes)
+        };
+        let value = (0..size.div_ceil(block.len()))
+            .map(move |chunk| &block[..(size - chunk * block.len()).min(block.len())]);
+        std::iter::once(header)
+            .chain(value)
+            .chain(std::iter::once(if i == 31 {
+                b"\r\nPING\r\n".as_slice()
+            } else {
+                b"\r\n"
+            }))
+    }));
+    for mut bytes in segments {
+        while !bytes.is_empty() {
+            let n = conn.feed_bytes(bytes).unwrap();
+            bytes = &bytes[n..];
+            assert!(conn.process_incoming(&table, &mut pool).unwrap());
+            assert!(conn.read_buf.len() <= MAX_COMMAND_BYTES);
+        }
+    }
+    assert_eq!(conn.write_buf, b"+OK\r\n+PONG\r\n");
+    assert!(!conn.has_unprocessed_input());
+}
+
+#[test]
+fn read_and_feed_close_an_unterminated_frame_at_the_input_limit() {
+    let table = ShardedSwissTable::new();
+    let mut pool = SlabPool::new(0, 4 * 1024 * 1024).unwrap();
+    let mut conn = Connection::new();
+    let mut input = std::io::repeat(b' ');
+    for _ in 0..(MAX_COMMAND_BYTES / READ_BUF_SIZE) {
+        assert_eq!(conn.read_from(&mut input).unwrap(), READ_BUF_SIZE);
+        if conn.read_len < MAX_COMMAND_BYTES {
+            assert!(conn.process_incoming(&table, &mut pool).unwrap());
+        }
+    }
+    assert_eq!(conn.read_buf.len(), MAX_COMMAND_BYTES);
+    assert!(matches!(
+        conn.read_from(&mut input),
+        Err(NetError::BufferOverflow)
+    ));
+    assert!(matches!(
+        conn.feed_bytes(b" "),
+        Err(NetError::BufferOverflow)
+    ));
+    assert!(matches!(
+        conn.process_incoming(&table, &mut pool),
+        Err(NetError::BufferOverflow)
+    ));
+}

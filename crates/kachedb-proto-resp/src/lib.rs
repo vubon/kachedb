@@ -4,16 +4,21 @@
 //!
 //! # Highlights
 //!
-//! - **Zero heap allocation**: `Frame<'a>` and `Command<'a>` borrow sub-slices directly from the incoming I/O buffer.
+//! - **Borrowed data**: `Frame<'a>` and `Command<'a>` borrow sub-slices directly from the incoming I/O buffer.
 //! - **Streaming parser**: `parse_frame` cleanly handles fragmented TCP stream buffers.
 //! - **RESP2 & RESP3 support**: Supports standard arrays, bulk strings, nulls, simple strings, and errors.
 
 pub mod command;
+mod command_frame;
 pub mod error;
 pub mod frame;
 
 pub use command::{
     ClientSubcommand, Command, ParsedCommandFrame, parse_command, parse_command_frame,
+};
+pub use command_frame::{
+    CommandFrameDecoder, MAX_ARGUMENT_BYTES, MAX_ARGUMENTS, MAX_COMMAND_BYTES,
+    parse_command_frame_for_replay,
 };
 pub use error::RespError;
 pub use frame::{

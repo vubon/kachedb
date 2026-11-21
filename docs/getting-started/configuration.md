@@ -106,6 +106,12 @@ Memory is managed through uniform **2 MB Megaslabs**:
 
 ---
 
+## RESP request limits
+
+A connection can buffer up to 64 MiB of unread RESP input. Each command can use up to 64 MiB including framing, 2 MiB per argument, and 65,536 arguments including the command name. The limits apply to plaintext and TLS connections. Pipelined commands each get a separate command budget. A request that exceeds a protocol limit closes the connection.
+
+---
+
 ## AOF Durability and Repair
 
 Set `appendfsync` in the configuration file or pass `--appendfsync` when launching the server.

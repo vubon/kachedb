@@ -17,6 +17,10 @@ pub enum NetError {
     #[error("Slab memory error: {0}")]
     Slab(#[from] kachedb_core::CoreError),
 
+    /// An incomplete request consumed the entire unread-input budget.
+    #[error("connection input exceeds the 64 MiB unread buffer limit")]
+    BufferOverflow,
+
     /// The connection was closed by the client.
     #[error("connection closed by client")]
     ConnectionClosed,
