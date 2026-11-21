@@ -1,7 +1,7 @@
 //! Streaming replay and explicit repair of an append-only journal.
 
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, ErrorKind, Read};
+use std::io::{self, BufReader, ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use kachedb_core::{
@@ -19,11 +19,14 @@ use kachedb_proto_resp::{Command, parse_command_frame_for_replay};
 use kachedb_vector::VectorIndexRegistry;
 
 use crate::aof::{AofError, AofFrame, AofOp, decode_frame};
+use crate::aof_rewrite::{BASE_KIND, BaseHeader};
+use crate::snapshot;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LogState {
     pub generation: Option<[u8; 16]>,
     pub requires_snapshot: bool,
+    pub embedded_base: Option<u64>,
     pub sequence: u64,
     pub valid_end: u64,
     pub incomplete_tail: bool,
@@ -31,7 +34,7 @@ pub struct LogState {
 
 pub fn inspect(path: &Path) -> Result<LogState, AofError> {
     let mut state = LogState::default();
-    scan(path, &mut state, |_, _| Ok(()))?;
+    scan(path, &mut state, |_| Ok(()))?;
     Ok(state)
 }
 
@@ -58,7 +61,18 @@ fn replay_with_hash_from(
     table.schedule_restored_expirations(&mut wheel);
     let mut expired = Vec::new();
     let mut scheduled = 0;
-    scan(path, &mut state, |sequence, frame| {
+    scan(path, &mut state, |item| {
+        let (sequence, frame) = match item {
+            ScanItem::Base(header, input) => {
+                if after_sequence <= header.checkpoint.sequence {
+                    snapshot::hydrate_rewrite_base(input, header.size, table, pool, vectors)
+                        .map_err(|error| AofError::InvalidBase(error.to_string()))?;
+                    table.schedule_restored_expirations(&mut wheel);
+                }
+                return Ok(());
+            }
+            ScanItem::Mutation(sequence, frame) => (sequence, frame),
+        };
         if sequence <= after_sequence {
             return Ok(());
         }
@@ -137,7 +151,7 @@ pub fn trim_incomplete_tail(path: &Path, state: LogState) -> Result<(), AofError
 pub fn repair(path: &Path) -> Result<Option<PathBuf>, AofError> {
     let _lock = crate::aof::open_locked(path, false)?;
     let mut state = LogState::default();
-    match scan(path, &mut state, |_, _| Ok(())) {
+    match scan(path, &mut state, |_| Ok(())) {
         Ok(()) if !state.incomplete_tail => return Ok(None),
         Ok(()) => {}
         Err(AofError::AtOffset { .. }) => {}
@@ -170,7 +184,7 @@ pub fn repair(path: &Path) -> Result<Option<PathBuf>, AofError> {
 fn scan(
     path: &Path,
     state: &mut LogState,
-    mut apply: impl FnMut(u64, &AofFrame<'_>) -> Result<(), AofError>,
+    mut apply: impl FnMut(ScanItem<'_>) -> Result<(), AofError>,
 ) -> Result<(), AofError> {
     let file = match File::open(path) {
         Ok(file) => file,
@@ -188,6 +202,13 @@ fn scan(
         match outcome {
             Ok(Record::Eof) => return Ok(()),
             Ok(Record::TornPayload) => {
+                // Until a generation is established this could be the header
+                // of a rewritten base, which must never be discarded at startup.
+                if state.generation.is_none() {
+                    return Err(at_offset(AofError::InvalidRecord(
+                        "incomplete generation marker",
+                    )));
+                }
                 state.incomplete_tail = true;
                 return Ok(());
             }
@@ -197,19 +218,33 @@ fn scan(
                 checked,
             }) => {
                 if frame.op == AofOp::Generation {
-                    if !checked
-                        || state.generation.is_some()
-                        || !frame.key.is_empty()
-                        || frame.value.len() != 17
-                        || frame.value[16] > 1
-                        || (frame.value[16] == 1 && state.sequence != 0)
-                    {
+                    if !checked || state.generation.is_some() || !frame.key.is_empty() {
                         return Err(at_offset(AofError::InvalidRecord(
                             "invalid generation marker",
                         )));
                     }
-                    state.generation = Some(frame.value[..16].try_into().unwrap());
-                    state.requires_snapshot = frame.value[16] == 1;
+                    match frame.value.get(16).copied() {
+                        Some(BASE_KIND) if state.valid_end == 0 => {
+                            let header = BaseHeader::decode(frame.value)
+                                .map_err(|error| AofError::InvalidBase(error.to_string()))?;
+                            scan_base(&mut reader, header, &mut apply)?;
+                            state.generation = Some(header.checkpoint.generation);
+                            state.embedded_base = Some(header.checkpoint.sequence);
+                            state.sequence = header.checkpoint.sequence;
+                            state.valid_end += header.size;
+                        }
+                        Some(kind @ (0 | 1))
+                            if frame.value.len() == 17 && (kind == 0 || state.sequence == 0) =>
+                        {
+                            state.generation = Some(frame.value[..16].try_into().unwrap());
+                            state.requires_snapshot = kind == 1;
+                        }
+                        _ => {
+                            return Err(at_offset(AofError::InvalidRecord(
+                                "invalid generation marker",
+                            )));
+                        }
+                    }
                 } else {
                     if checked != state.generation.is_some()
                         || (!checked
@@ -222,13 +257,57 @@ fn scan(
                     state.sequence = state.sequence.checked_add(1).ok_or_else(|| {
                         at_offset(AofError::InvalidRecord("record sequence overflow"))
                     })?;
-                    apply(state.sequence, &frame).map_err(at_offset)?;
+                    apply(ScanItem::Mutation(state.sequence, &frame)).map_err(at_offset)?;
                 }
                 state.valid_end += size as u64;
             }
             Err(error @ AofError::Io(_)) => return Err(error),
             Err(error) => return Err(at_offset(error)),
         }
+    }
+}
+
+enum ScanItem<'a> {
+    Base(BaseHeader, &'a mut dyn Read),
+    Mutation(u64, &'a AofFrame<'a>),
+}
+
+fn scan_base(
+    input: &mut impl Read,
+    header: BaseHeader,
+    apply: &mut impl FnMut(ScanItem<'_>) -> Result<(), AofError>,
+) -> Result<(), AofError> {
+    let mut base = ChecksummedReader {
+        input: input.take(header.size),
+        checksum: crc32fast::Hasher::new(),
+    };
+    apply(ScanItem::Base(header, &mut base))?;
+    io::copy(&mut base, &mut io::sink())?;
+    if base.input.limit() != 0 {
+        return Err(AofError::InvalidBase(
+            "unexpected end of embedded payload".into(),
+        ));
+    }
+    let checksum = base.checksum.finalize();
+    if checksum != header.checksum {
+        return Err(AofError::InvalidBase(format!(
+            "checksum mismatch (expected {:#010x}, calculated {checksum:#010x})",
+            header.checksum,
+        )));
+    }
+    Ok(())
+}
+
+struct ChecksummedReader<R> {
+    input: R,
+    checksum: crc32fast::Hasher,
+}
+
+impl<R: Read> Read for ChecksummedReader<R> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let read = self.input.read(bytes)?;
+        self.checksum.update(&bytes[..read]);
+        Ok(read)
     }
 }
 

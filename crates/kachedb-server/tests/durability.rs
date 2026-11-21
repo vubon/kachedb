@@ -436,3 +436,128 @@ fn invalid_persistence_sources_fail_before_startup() {
     assert!(String::from_utf8_lossy(&failure.stderr).contains("checksum mismatch"));
     assert_eq!(fs::read(&journal).unwrap(), bad_frame);
 }
+
+#[test]
+fn background_rewrite_preserves_live_writes_and_recovers_with_an_old_snapshot() {
+    use std::os::unix::fs::MetadataExt;
+
+    let store = Store::new("background-rewrite");
+    let snapshot = store.0.join("snapshot.kdb");
+    let journal = store.0.join("journal.kaof");
+    let port = free_port();
+    let (mut server, mut client) = Running::start(&mut store.server(port, true), port);
+    let ok = Reply::Simple("OK".into());
+    let vector = [1.0_f32.to_ne_bytes(), 0.0_f32.to_ne_bytes()].concat();
+    assert_eq!(
+        client.request(&[b"SET", b"ttl", b"preserved", b"EX", b"300"]),
+        ok
+    );
+    assert_eq!(
+        client.request(&[b"HSET", b"hash", b"field", b"value"]),
+        Reply::Count(1)
+    );
+    assert_eq!(
+        client.request(&[
+            b"VINDEX",
+            b"CREATE",
+            b"ann",
+            b"DIM",
+            b"2",
+            b"QUANTIZATION",
+            b"SQ8"
+        ]),
+        ok
+    );
+    assert_eq!(
+        client.request(&[b"VADD", b"ann", b"root", b"2", &vector, b"PAYLOAD", b"data"]),
+        Reply::Count(1)
+    );
+    assert_eq!(
+        client.request(&[
+            b"VADD", b"flat", b"root", b"2", &vector, b"TAGS", b"7", b"PARENT", b"doc"
+        ]),
+        Reply::Count(1)
+    );
+    let ann = client.request(&[b"VSEARCH", b"ann", &vector]);
+    let flat = client.request(&[b"VSEARCH", b"flat", &vector, b"FILTER", b"7"]);
+    assert!(matches!(ann, Reply::List(ref rows) if rows.len() == 1));
+    assert!(matches!(flat, Reply::List(ref rows) if rows.len() == 1));
+    drop(client);
+    assert!(server.exit(libc::SIGTERM).success());
+    let old_snapshot = fs::read(&snapshot).unwrap();
+
+    let port = free_port();
+    let (mut server, mut client) = Running::start(&mut store.server(port, true), port);
+    let value = [b'x'; 4096];
+    for _ in 0..64 {
+        assert_eq!(client.request(&[b"SET", b"churn", &value]), ok);
+    }
+    let before = fs::metadata(&journal).unwrap();
+    let mut concurrent_client = Client::connect(port).unwrap();
+    thread::scope(|scope| {
+        let writer = scope.spawn(move || {
+            for n in 1..=64 {
+                assert_eq!(
+                    concurrent_client.request(&[b"INCR", b"counter"]),
+                    Reply::Count(n)
+                );
+            }
+        });
+        assert_eq!(
+            client.request(&[b"BGREWRITEAOF"]),
+            Reply::Simple("Background append only file rewriting started".into())
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let after = fs::metadata(&journal).unwrap();
+            if after.ino() != before.ino() {
+                assert!(after.len() < before.len());
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background rewrite did not install"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        writer.join().unwrap();
+    });
+    assert_eq!(
+        client.request(&[b"MSET", b"later", b"a", b"later2", b"b"]),
+        ok
+    );
+    drop(client);
+    let _ = server.exit(libc::SIGKILL);
+    assert_eq!(fs::read(&snapshot).unwrap(), old_snapshot);
+
+    let port = free_port();
+    let (_server, mut client) = Running::start(&mut store.server(port, true), port);
+    assert_eq!(
+        client.request(&[b"GET", b"counter"]),
+        Reply::Bulk(Some(b"64".to_vec()))
+    );
+    assert_eq!(
+        client.request(&[b"MGET", b"later", b"later2"]),
+        Reply::List(vec![
+            Reply::Bulk(Some(b"a".to_vec())),
+            Reply::Bulk(Some(b"b".to_vec())),
+        ])
+    );
+    assert_eq!(
+        client.request(&[b"GET", b"churn"]),
+        Reply::Bulk(Some(value.to_vec()))
+    );
+    assert!(matches!(
+        client.request(&[b"TTL", b"ttl"]),
+        Reply::Count(1..=300)
+    ));
+    assert_eq!(
+        client.request(&[b"HGET", b"hash", b"field"]),
+        Reply::Bulk(Some(b"value".to_vec()))
+    );
+    assert_eq!(client.request(&[b"VSEARCH", b"ann", &vector]), ann);
+    assert_eq!(
+        client.request(&[b"VSEARCH", b"flat", &vector, b"FILTER", b"7"]),
+        flat
+    );
+}

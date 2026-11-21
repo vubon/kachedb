@@ -271,6 +271,11 @@ pub(super) fn decode_inline(line: &[u8], consumed: usize) -> ParsedCommandFrame<
                 Ok(Some((Ok(Command::FlushDb), consumed)))
             } else if cmd_name.eq_ignore_ascii_case(b"FLUSHALL") {
                 Ok(Some((Ok(Command::FlushAll), consumed)))
+            } else if cmd_name.eq_ignore_ascii_case(b"BGREWRITEAOF") {
+                Ok(Some((
+                    decode_bgrewriteaof(parts.next().is_some()),
+                    consumed,
+                )))
             } else {
                 Ok(Some((Ok(Command::Unknown { name: cmd_name }), consumed)))
             }
@@ -278,6 +283,15 @@ pub(super) fn decode_inline(line: &[u8], consumed: usize) -> ParsedCommandFrame<
             Err(RespError::EmptyCommand)
         }
     }
+}
+
+fn decode_bgrewriteaof<'a>(has_arguments: bool) -> Result<Command<'a>, RespError> {
+    if has_arguments {
+        return Err(RespError::WrongArgumentCount {
+            command: "BGREWRITEAOF".into(),
+        });
+    }
+    Ok(Command::BgRewriteAof)
 }
 
 /// Parses one Redis wire command, borrowing argument data from the input slice.
@@ -659,7 +673,7 @@ impl<'a> Command<'a> {
                 Ok(Command::Unknown { name: cmd_name })
             }
         } else if cmd_name.eq_ignore_ascii_case(b"BGREWRITEAOF") {
-            Ok(Command::BgRewriteAof)
+            decode_bgrewriteaof(args.len() > 1)
         } else if cmd_name.eq_ignore_ascii_case(b"AUTH") {
             if args.len() == 2 {
                 Ok(Command::Auth {
@@ -1444,7 +1458,7 @@ impl<'a> Command<'a> {
                         Ok(Command::Unknown { name: cmd_name })
                     }
                 } else if cmd_name.eq_ignore_ascii_case(b"BGREWRITEAOF") {
-                    Ok(Command::BgRewriteAof)
+                    decode_bgrewriteaof(args.len() > 1)
                 } else if cmd_name.eq_ignore_ascii_case(b"AUTH") {
                     if args.len() == 2 {
                         let password = extract_required_bytes(&args[1], "AUTH")?;

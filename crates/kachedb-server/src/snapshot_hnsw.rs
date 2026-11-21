@@ -1,11 +1,12 @@
 //! Snapshot encoding for HNSW parameters, stored vectors and graph topology.
 
 use std::collections::HashSet;
+use std::io::Read;
 
 use kachedb_vector::hnsw::{HnswGraph, HnswNode};
 use kachedb_vector::{HnswIndex, QuantizationMode, VectorIndexRegistry, VectorMetric};
 
-use super::{PayloadWriter, SnapshotError};
+use super::{PayloadReader, PayloadWriter, SnapshotError};
 
 pub(super) fn write_index(
     writer: &mut PayloadWriter<'_>,
@@ -86,11 +87,10 @@ fn write_key(writer: &mut PayloadWriter<'_>, key: &[u8]) -> Result<(), SnapshotE
     writer.write_bytes(key)
 }
 
-pub(super) fn read_index<'a>(
-    bytes: &'a [u8],
+pub(super) fn read_index(
+    cursor: &mut PayloadReader<impl Read>,
     vectors: &VectorIndexRegistry,
-) -> Result<(&'a [u8], usize), SnapshotError> {
-    let mut cursor = Cursor(bytes);
+) -> Result<usize, SnapshotError> {
     let name = cursor.key()?;
     let dim = cursor.u32()? as usize;
     let m = cursor.param()?;
@@ -124,7 +124,7 @@ pub(super) fn read_index<'a>(
         .map_err(|_| SnapshotError::Invalid("cannot reserve HNSW nodes"))?;
     for id in 0..node_count {
         let node = if cursor.present()? {
-            Some(read_node(&mut cursor, id as u32, dim, quantization)?)
+            Some(read_node(cursor, id as u32, dim, quantization)?)
         } else {
             None
         };
@@ -164,11 +164,11 @@ pub(super) fn read_index<'a>(
         layers.push(layer);
     }
 
-    if vectors.has_hnsw(name) {
+    if vectors.has_hnsw(&name) {
         return Err(SnapshotError::Invalid("duplicate HNSW index name"));
     }
     let index = vectors.create_hnsw(
-        name,
+        &name,
         dim,
         m,
         ef_construction,
@@ -185,11 +185,11 @@ pub(super) fn read_index<'a>(
     }) {
         return Err(SnapshotError::Invalid("duplicate HNSW vector key"));
     }
-    Ok((cursor.0, restored))
+    Ok(restored)
 }
 
 fn read_node(
-    cursor: &mut Cursor<'_>,
+    cursor: &mut PayloadReader<impl Read>,
     id: u32,
     dim: usize,
     quantization: QuantizationMode,
@@ -200,100 +200,23 @@ fn read_node(
     }
     let expire_at_secs = cursor.u32()?;
     let max_layer = usize::from(cursor.byte()?);
-    let payload = if cursor.present()? {
-        let size = cursor.u32()? as usize;
-        Some(cursor.take(size)?.to_vec())
-    } else {
-        None
-    };
+    let payload = cursor.payload()?;
     let (vector_fp32, vector_sq8) = match quantization {
-        QuantizationMode::None => {
-            let len = dim
-                .checked_mul(4)
-                .ok_or(SnapshotError::Invalid("HNSW dimension out of range"))?;
-            let vector = cursor
-                .take(len)?
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .copied()
-                .map(f32::from_le_bytes)
-                .collect();
-            (Some(vector), None)
-        }
+        QuantizationMode::None => (Some(cursor.floats(dim, f32::from_le_bytes)?), None),
         QuantizationMode::SQ8 => {
             let min = f32::from_le_bytes(cursor.array()?);
             let max = f32::from_le_bytes(cursor.array()?);
-            let bytes = cursor.take(dim)?.to_vec();
+            let bytes = cursor.bytes(dim)?;
             (None, Some((bytes, min, max)))
         }
     };
     Ok(HnswNode {
         id,
-        key: key.to_vec(),
+        key,
         vector_fp32,
         vector_sq8,
         payload,
         expire_at_secs,
         max_layer,
     })
-}
-
-struct Cursor<'a>(&'a [u8]);
-
-impl<'a> Cursor<'a> {
-    fn take(&mut self, size: usize) -> Result<&'a [u8], SnapshotError> {
-        let (bytes, remainder) = self
-            .0
-            .split_at_checked(size)
-            .ok_or(SnapshotError::UnexpectedEof)?;
-        self.0 = remainder;
-        Ok(bytes)
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], SnapshotError> {
-        Ok(self.take(N)?.try_into().unwrap())
-    }
-
-    fn byte(&mut self) -> Result<u8, SnapshotError> {
-        Ok(self.take(1)?[0])
-    }
-
-    fn present(&mut self) -> Result<bool, SnapshotError> {
-        match self.byte()? {
-            0 => Ok(false),
-            1 => Ok(true),
-            _ => Err(SnapshotError::Invalid("invalid HNSW presence flag")),
-        }
-    }
-
-    fn u32(&mut self) -> Result<u32, SnapshotError> {
-        Ok(u32::from_le_bytes(self.array()?))
-    }
-
-    fn key(&mut self) -> Result<&'a [u8], SnapshotError> {
-        let len = usize::from(u16::from_le_bytes(self.array()?));
-        self.take(len)
-    }
-
-    fn param(&mut self) -> Result<usize, SnapshotError> {
-        usize::try_from(u64::from_le_bytes(self.array()?))
-            .map_err(|_| SnapshotError::Invalid("HNSW parameter out of range"))
-    }
-
-    fn count(&mut self, min_size: usize) -> Result<usize, SnapshotError> {
-        let count = self.u32()? as usize;
-        if count > self.0.len() / min_size {
-            return Err(SnapshotError::UnexpectedEof);
-        }
-        Ok(count)
-    }
-
-    fn node_id(&mut self, count: usize) -> Result<u32, SnapshotError> {
-        let id = self.u32()?;
-        if id as usize >= count {
-            return Err(SnapshotError::Invalid("invalid HNSW node ID"));
-        }
-        Ok(id)
-    }
 }

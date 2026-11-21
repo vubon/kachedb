@@ -5,6 +5,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -12,10 +13,14 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use kachedb_net::aof_encode::encode_checked_frame;
-pub use kachedb_net::aof_encode::{AOF_HEADER_OVERHEAD, AOF_MAGIC, AofOp, encode_frame};
+#[cfg(test)]
+pub use kachedb_net::aof_encode::encode_frame;
+pub use kachedb_net::aof_encode::{AOF_HEADER_OVERHEAD, AOF_MAGIC, AofOp};
 pub use kachedb_net::durability::AppendFsync;
 use kachedb_net::durability::{AofDispatch, Checkpoint, WriterRequest};
 use thiserror::Error;
+
+use crate::aof_rewrite::{self, Deltas, InstallError};
 
 #[derive(Debug, Error)]
 pub enum AofError {
@@ -34,14 +39,16 @@ pub enum AofError {
     #[error("Unexpected end of AOF file")]
     #[allow(dead_code)]
     UnexpectedEof,
-    #[error("Cannot rewrite AOF for an entry without original key bytes")]
-    MissingKeyBytes,
     #[error("Invalid AOF record: {0}")]
     InvalidRecord(&'static str),
+    #[error("Invalid embedded AOF base: {0}")]
+    InvalidBase(String),
     #[error("AOF replay rejected a mutation: {0}")]
     Apply(String),
     #[error("AOF and snapshot cannot be combined: {0}")]
     Migration(&'static str),
+    #[error("AOF rewrite was renamed but its directory could not be synced: {0}")]
+    RewriteInstallUncertain(std::io::Error),
     #[error("AOF worker terminated unexpectedly")]
     WriterStopped,
     #[error("AOF record at byte {offset} is invalid: {source}")]
@@ -130,17 +137,30 @@ pub fn open_locked(path: &Path, create: bool) -> Result<File, AofError> {
         .append(true)
         .create(create)
         .open(path)?;
-    if !file.metadata()?.is_file() {
+    let opened = file.metadata()?;
+    if !opened.is_file() {
         return Err(AofError::InvalidRecord("AOF must be a regular file"));
     }
     file.try_lock().map_err(std::io::Error::from)?;
+    let current = std::fs::metadata(path)?;
+    if (opened.dev(), opened.ino()) != (current.dev(), current.ino()) {
+        return Err(AofError::InvalidRecord(
+            "journal was replaced while acquiring its lock",
+        ));
+    }
     Ok(file)
+}
+
+pub(super) struct WriterOptions {
+    pub policy: AppendFsync,
+    pub delta_bytes: usize,
 }
 
 /// An opened journal and the worker responsible for its ordered writes.
 pub struct AofWriter {
     dispatch: Arc<AofDispatch>,
     worker_handle: Option<JoinHandle<Result<(), AofError>>>,
+    rewrite_handle: Option<JoinHandle<()>>,
 }
 
 impl AofWriter {
@@ -164,10 +184,22 @@ impl AofWriter {
         }
         let (dispatch, rx) = AofDispatch::new(checkpoint, policy);
         let worker_dispatch = dispatch.clone();
+        let path = path.to_owned();
         let worker_handle = thread::Builder::new()
             .name("kachedb-aof-writer".into())
             .spawn(move || {
-                let result = Self::writer_loop(&mut file, policy, &rx, &worker_dispatch);
+                let result = Self::writer_loop(
+                    &mut file,
+                    &path,
+                    WriterOptions {
+                        policy,
+                        delta_bytes: aof_rewrite::DELTA_BYTES,
+                    },
+                    &rx,
+                    &worker_dispatch,
+                    checkpoint,
+                    File::sync_all,
+                );
                 if let Err(error) = &result {
                     log::error!("AOF writer failed: {error}");
                 }
@@ -177,6 +209,7 @@ impl AofWriter {
         Ok(Self {
             dispatch,
             worker_handle: Some(worker_handle),
+            rewrite_handle: None,
         })
     }
 
@@ -184,12 +217,26 @@ impl AofWriter {
         self.dispatch.clone()
     }
 
-    fn writer_loop(
-        file: &mut std::fs::File,
-        policy: AppendFsync,
+    pub fn enable_rewrite(
+        &mut self,
+        path: std::path::PathBuf,
+        table: Arc<kachedb_hash::ShardedSwissTable>,
+        vectors: &'static kachedb_vector::VectorIndexRegistry,
+    ) -> Result<(), AofError> {
+        self.rewrite_handle = Some(aof_rewrite::start(path, self.dispatch(), table, vectors)?);
+        Ok(())
+    }
+
+    pub(super) fn writer_loop(
+        file: &mut File,
+        path: &Path,
+        options: WriterOptions,
         rx: &Receiver<WriterRequest>,
         dispatch: &AofDispatch,
+        mut checkpoint: Checkpoint,
+        sync_directory: impl Fn(&File) -> std::io::Result<()>,
     ) -> Result<(), AofError> {
+        let mut deltas: Option<Deltas> = None;
         let mut last_sync = Instant::now();
         let mut dirty = false;
         loop {
@@ -210,6 +257,15 @@ impl AofWriter {
                         dispatch.fail();
                         return Err(error.into());
                     }
+                    checkpoint.sequence += 1;
+                    if let Some(buffer) = deltas.as_mut()
+                        && !buffer.push(bytes)
+                    {
+                        deltas = None;
+                        log::warn!(
+                            "BGREWRITEAOF: delta budget exceeded, keeping the active journal"
+                        );
+                    }
                     dirty = done.is_none();
                     if let Some(done) = done {
                         let _ = done.send(());
@@ -218,9 +274,57 @@ impl AofWriter {
                 }
                 Ok(WriterRequest::Sync(done)) => {
                     file.sync_all()?;
-                    let _ = done.send(());
+                    let _ = done.send(checkpoint);
                     last_sync = Instant::now();
                     dirty = false;
+                }
+                Ok(WriterRequest::BeginRewrite {
+                    sequence,
+                    cancelled,
+                }) => {
+                    debug_assert!(deltas.is_none());
+                    if sequence != checkpoint.sequence {
+                        cancelled.store(true, std::sync::atomic::Ordering::Release);
+                        log::error!("BGREWRITEAOF: base sequence differs from the writer sequence");
+                    } else {
+                        deltas = Some(Deltas::new(sequence, cancelled, options.delta_bytes));
+                    }
+                }
+                Ok(WriterRequest::AbortRewrite) => deltas = None,
+                Ok(WriterRequest::InstallRewrite {
+                    replacement,
+                    installed,
+                }) => {
+                    let Some(buffer) = deltas.take() else {
+                        let _ = installed.send(false);
+                        continue;
+                    };
+                    if buffer.sequence != replacement.checkpoint.sequence
+                        || !buffer.reaches(checkpoint.sequence)
+                    {
+                        log::error!(
+                            "BGREWRITEAOF: replacement and deltas cover different sequences"
+                        );
+                        let _ = installed.send(false);
+                        continue;
+                    }
+                    let generation = replacement.checkpoint.generation;
+                    match aof_rewrite::install(path, file, replacement, &buffer, &sync_directory) {
+                        Ok(()) => {
+                            checkpoint.generation = generation;
+                            dirty = false;
+                            last_sync = Instant::now();
+                            let _ = installed.send(true);
+                        }
+                        Err(InstallError::BeforeRename(error)) => {
+                            log::warn!("BGREWRITEAOF: kept the active journal: {error}");
+                            let _ = installed.send(false);
+                        }
+                        Err(InstallError::AfterRename(error)) => {
+                            dispatch.fail();
+                            return Err(AofError::RewriteInstallUncertain(error));
+                        }
+                    }
                 }
                 Ok(WriterRequest::Stop) => {
                     file.sync_all()?;
@@ -230,7 +334,7 @@ impl AofWriter {
                 Err(RecvTimeoutError::Disconnected) => return Err(AofError::WriterStopped),
             }
             if dirty
-                && policy == AppendFsync::EverySec
+                && options.policy == AppendFsync::EverySec
                 && last_sync.elapsed() >= Duration::from_secs(1)
             {
                 file.sync_data()?;
@@ -241,11 +345,18 @@ impl AofWriter {
     }
 
     pub fn stop(&mut self) -> Result<(), AofError> {
-        if let Some(handle) = self.worker_handle.take() {
-            self.dispatch.stop();
-            handle.join().map_err(|_| AofError::WriterStopped)??;
+        let result = self
+            .worker_handle
+            .take()
+            .map(|handle| {
+                self.dispatch.stop();
+                handle.join().map_err(|_| AofError::WriterStopped)?
+            })
+            .transpose();
+        if let Some(handle) = self.rewrite_handle.take() {
+            handle.join().map_err(|_| AofError::WriterStopped)?;
         }
-        Ok(())
+        result.map(|_| ())
     }
 }
 

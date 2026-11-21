@@ -124,13 +124,15 @@ Set `appendfsync` in the configuration file or pass `--appendfsync` when launchi
 
 A rejected admission leaves the data unchanged. An error reporting an uncertain outcome means the change was already published and its record may be on disk. The server rejects further writes once it detects AOF failure. Successful checkpoints and clean shutdowns sync the journal under every policy.
 
+[Background compaction](../commands/server-introspection.md#bgrewriteaof) writes a self-contained base and collects up to 64 MiB or 65,536 later records while the active journal continues receiving writes. If the delta budget is exhausted, the server abandons the rewrite and keeps the active journal. After a successful swap, startup uses the embedded base. Its integrity is checked by CRC32, and it is stored in plaintext like the rest of the AOF.
+
 Startup validates journal framing and requires a compatible snapshot when the journal depends on one. It automatically removes an incomplete final record only when the length header is intact and checksummed. For framing damage or an ambiguous tail, stop the server and use the offline repair command:
 
 ```bash
 kachedb-server --aof-repair --aof-file /var/lib/kachedb/kachedb.aof
 ```
 
-Repair writes a separate copy of the original journal, then truncates at the end of the last valid frame. All records after that point are discarded. If the retained prefix ends before a required snapshot checkpoint, startup reports the mismatch.
+Repair writes a separate copy of the original journal, then truncates at the end of the last valid frame. A damaged embedded base payload requires recovery from another copy. All records after that point are discarded. If the retained prefix ends before a required snapshot checkpoint, startup reports the mismatch.
 
 ---
 

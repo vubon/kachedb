@@ -3,6 +3,7 @@
 use std::error::Error;
 use std::io::ErrorKind;
 use std::os::unix::fs::MetadataExt;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use kachedb_hash::ShardedSwissTable;
@@ -17,8 +18,8 @@ use crate::snapshot::{self, SnapshotEncryptionConfig};
 
 pub fn start(
     config: &ServerConfig,
-    table: &ShardedSwissTable,
-    vectors: &VectorIndexRegistry,
+    table: &Arc<ShardedSwissTable>,
+    vectors: &'static VectorIndexRegistry,
     encryption: &SnapshotEncryptionConfig,
 ) -> Result<(RecoveryPools, Option<AofWriter>), Box<dyn Error>> {
     let bytes = config
@@ -57,7 +58,9 @@ pub fn start(
     }
 
     let log = aof_recovery::inspect(&config.aof_path)?;
-    let snapshot = if config.snapshot_enabled {
+    // A rewritten journal carries its own authoritative base, including when
+    // the external snapshot still belongs to the generation before the rename.
+    let snapshot = if config.snapshot_enabled && log.embedded_base.is_none() {
         snapshot::load_snapshot_for_recovery(
             &config.snapshot_path,
             table,
@@ -74,7 +77,9 @@ pub fn start(
     }
     let base = snapshot.as_ref().and_then(|stats| stats.checkpoint);
     let promote_snapshot = snapshot.is_some() && base.is_none();
-    let after_sequence = base.map_or(0, |checkpoint| checkpoint.sequence);
+    let after_sequence = base.map_or(log.embedded_base.unwrap_or(0), |checkpoint| {
+        checkpoint.sequence
+    });
 
     let replayed =
         aof_recovery::replay_from(&config.aof_path, after_sequence, table, &mut pools, vectors)?;
@@ -108,6 +113,7 @@ pub fn start(
         checkpoint,
         initialize,
     )?;
+    writer.enable_rewrite(config.aof_path.clone(), table.clone(), vectors)?;
     durability::set_dispatch(writer.dispatch());
     // Persist the new pairing before admitting a single mutation against a snapshot base.
     if promote_snapshot
