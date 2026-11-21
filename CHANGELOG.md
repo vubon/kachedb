@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [v0.5.0] — 2026-11-21
 
+### ⚠️ Upgrade & Compatibility Notes
+- **Upgrading from `v0.4.0` (`KDB\x05`):** Snapshots where all KV entries carry full key names load automatically and upgrade to Snapshot Format V7 (`KDB\x07`) on the next save.
+- **Upgrading from `v0.3.x` or older (`KDB\x02`–`KDB\x04`):** Legacy snapshots containing KV entries (`kv_count > 0`) are **intentionally rejected at startup (`SnapshotError::MissingKeyBytes`)** because pre-`v0.4.0` snapshots persisted only one-way 64-bit hash digests without original key bytes. To enforce full key identity and eliminate silent hash-collision aliasing, migrate from a complete source or back up and start fresh *(vector-only V2–V4 snapshots with `0` KV entries still load directly)*.
+- **Legacy Snapshot + Non-Empty AOF:** Pairing an uncheckpointed legacy snapshot with a non-empty AOF whose recovery base cannot be proven now fails fast with a migration error instead of risking silent state divergence.
+- **Strict Protocol Bounds:** Client commands exceeding 64 MiB total frame size, 2 MiB per bulk argument, or 65,536 arguments are now rejected upfront.
+
 ### 🛡️ Production Hardening, Bounded Durability & Crash Recovery (ADR 6)
 
 - **Coordinated AOF Background Rewrite Engine (`BGREWRITEAOF`):**
@@ -16,10 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Writer thread atomic cutover: flushes delta records, fsyncs replacement file, performs atomic rename over active journal, swaps file descriptors retaining write locks, and synchronizes parent directory (`sync_directory`).
   - Standalone log recovery through `scan_base` and streaming `ChecksummedReader` validating IEEE 802.3 CRC32 checksums before hydrating in-memory state.
 
-- **Full Key Byte Identity & Snapshot Format V6 (`KDB\x06`):**
+- **Full Key Byte Identity & Snapshot Formats V6 / V7 (`KDB\x06` / `KDB\x07`):**
   - Enforced full byte-for-byte equality verification (`entry.key() == key`) during SwissTable probing, eliminating false-positive key hits across colliding hash fingerprints.
   - Slot-scoped overflow storage (`slot_overflow_keys`) mapping unique slot indices to heap-allocated key bytes for keys exceeding 40 bytes, preventing hash collisions from overwriting neighboring entries.
-  - Snapshot Format V6 (`KDB\x06`): Serializes explicit key lengths and full key bytes alongside entry values; rejects corrupt anonymous entries and safely upgrades legacy V2–V5 snapshots.
+  - Snapshot Formats V6 (`KDB\x06`) & V7 (`KDB\x07`): Persists explicit key lengths and full key bytes for every KV entry alongside journal checkpoints and HNSW vector graphs (`KDB\x07` is the canonical active format). Automatically upgrades named V5 snapshots while rejecting anonymous V2–V4 KV entries (`MissingKeyBytes`) to prevent silent key aliasing.
 
 - **Bounded Connection Ingress & Frame Parser Caps:**
   - Enforced strict 64 MiB ingress buffer capacity limits across epoll, io_uring, and TLS plaintext byte streams, proactively mitigating memory-exhaustion denial of service.
