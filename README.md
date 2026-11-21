@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/vubon/kachedb/releases/tag/v0.4.0"><img src="https://img.shields.io/badge/release-v0.4.0-blue.svg?style=flat-square" alt="Version"/></a>
+  <a href="https://github.com/vubon/kachedb/releases/tag/v0.5.0"><img src="https://img.shields.io/badge/release-v0.5.0-blue.svg?style=flat-square" alt="Version"/></a>
   <a href="https://vubon.github.io/kachedb/"><img src="https://img.shields.io/badge/docs-vubon.github.io%2Fkachedb-blue.svg?style=flat-square" alt="Documentation"/></a>
   <a href="#-benchmark-performance"><img src="https://img.shields.io/badge/throughput-3.56M%20QPS-brightgreen.svg?style=flat-square" alt="Throughput"/></a>
   <a href="#-benchmark-performance"><img src="https://img.shields.io/badge/alloc-3.84ns%20slab-brightgreen.svg?style=flat-square" alt="Megaslab Allocator"/></a>

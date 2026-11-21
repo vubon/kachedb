@@ -5,6 +5,42 @@ All notable changes to **KacheDB** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.5.0] — 2026-11-21
+
+### 🛡️ Production Hardening, Bounded Durability & Crash Recovery (ADR 6)
+
+- **Coordinated AOF Background Rewrite Engine (`BGREWRITEAOF`):**
+  - Implemented live, concurrent append-only log compaction via `BGREWRITEAOF` without stalling foreground client command processing.
+  - Snapshot base capture under unified commit fence (`durability::with_commit_fence`) freezing KV entries, expiration deadlines, and vector graphs (HNSW and Flat).
+  - Bounded in-memory delta buffer (64 MiB / 65,536 journal records) tracking mutating client operations during snapshot capture; cleanly cancels background rewrite if delta capacity exhausts.
+  - Writer thread atomic cutover: flushes delta records, fsyncs replacement file, performs atomic rename over active journal, swaps file descriptors retaining write locks, and synchronizes parent directory (`sync_directory`).
+  - Standalone log recovery through `scan_base` and streaming `ChecksummedReader` validating IEEE 802.3 CRC32 checksums before hydrating in-memory state.
+
+- **Full Key Byte Identity & Snapshot Format V6 (`KDB\x06`):**
+  - Enforced full byte-for-byte equality verification (`entry.key() == key`) during SwissTable probing, eliminating false-positive key hits across colliding hash fingerprints.
+  - Slot-scoped overflow storage (`slot_overflow_keys`) mapping unique slot indices to heap-allocated key bytes for keys exceeding 40 bytes, preventing hash collisions from overwriting neighboring entries.
+  - Snapshot Format V6 (`KDB\x06`): Serializes explicit key lengths and full key bytes alongside entry values; rejects corrupt anonymous entries and safely upgrades legacy V2–V5 snapshots.
+
+- **Bounded Connection Ingress & Frame Parser Caps:**
+  - Enforced strict 64 MiB ingress buffer capacity limits across epoll, io_uring, and TLS plaintext byte streams, proactively mitigating memory-exhaustion denial of service.
+  - Introduced `CommandFrameDecoder` enforcing upfront protocol constraints: 64 MiB total command frame length, 2 MiB bulk argument cap, and 65,536 maximum argument count.
+  - All parser pointer offsets and size computations use checked integer arithmetic (`checked_add`, `checked_mul`) preventing integer overflow exploits.
+  - Frame boundary parser reset prevents deserialization state leakage across pipelined commands; isolated historical AOF replay via `parse_command_frame_for_replay`.
+
+- **Atomic Two-Phase MSET (`MSET`):**
+  - Implemented strict two-phase commit (2PC) reservation and write execution across SwissTable shards.
+  - Pre-allocates and reserves slots before mutation; rolls back cleanly upon arena exhaustion or validation failure, guaranteeing all-or-nothing atomicity with zero partial writes.
+
+- **Bounded Durability Queue & Safe Checkpoint Recovery:**
+  - Dedicated background AOF writer thread consuming mutations over a bounded, lock-free ring channel.
+  - Graceful server shutdown barrier draining pending write records prior to process exit.
+  - Crash recovery guarantees: replays strictly the log suffix past the proven checkpoint sequence number, validating IEEE 802.3 CRC32 record checksums.
+
+- **Slot Lifetime Synchronization & Cross-Worker Deallocation:**
+  - Expiration re-check in `advance_expired_entries` ensures live keys updated concurrently are never evicted prematurely.
+  - Cross-worker deallocation inboxes prevent memory leaks and slot corruption during cross-thread frees.
+  - Bounded timing wheel bucket sweeps prevent latency spikes during large forward clock jumps.
+
 ## [v0.4.0] — 2026-11-08
 
 ### 🔍 Keyspace Cursor & Pattern Scanning (`SCAN`, `HSCAN`)
