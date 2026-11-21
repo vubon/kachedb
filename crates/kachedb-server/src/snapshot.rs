@@ -32,7 +32,7 @@
 //! - Checksum Trailer: `crc32: u32` (4 bytes, IEEE 802.3 CRC32 over all preceding bytes)
 
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Take, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -41,9 +41,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crc32fast::Hasher;
 use kachedb_core::pool::SlotAllocator;
-use kachedb_hash::{ShardedSwissTable, hash_key};
+use kachedb_hash::{ShardedSwissTable, SnapshotPayloadEntry, hash_key};
 use kachedb_net::durability::{self, Checkpoint};
-use kachedb_vector::{VectorEntry, VectorIndexRegistry, index::FlatVectorSnapshot};
+use kachedb_vector::{
+    HnswIndex, VectorEntry, VectorIndexRegistry, hnsw::HnswGraph, index::FlatVectorSnapshot,
+};
 use thiserror::Error;
 
 use crate::crypto::{
@@ -153,7 +155,7 @@ pub struct SnapshotStats {
 /// Internal streaming payload writer supporting transparent chunked AEAD encryption.
 enum PayloadWriter<'a> {
     Plain {
-        file: &'a mut File,
+        file: &'a mut dyn Write,
         hasher: &'a mut Hasher,
         buf: Vec<u8>,
         total_bytes: &'a mut usize,
@@ -278,6 +280,39 @@ impl Drop for SnapshotTempFile {
     }
 }
 
+pub struct SnapshotView {
+    flat: Vec<FlatVectorSnapshot>,
+    graphs: Vec<(Vec<u8>, Arc<HnswIndex>, HnswGraph)>,
+    keys: Vec<SnapshotPayloadEntry>,
+}
+
+/// Copies owned data while the caller holds the commit fence.
+pub fn capture_view(
+    table: &ShardedSwissTable,
+    vectors: &VectorIndexRegistry,
+    now: u32,
+) -> Result<SnapshotView, SnapshotError> {
+    let flat = vectors.snapshot_flat_slots(now);
+    let graphs = vectors
+        .hnsw_indexes()
+        .into_iter()
+        .map(|(name, index)| {
+            let graph = index.snapshot_graph();
+            (name, index, graph)
+        })
+        .collect();
+    let mut keys = Vec::new();
+    for shard in 0..table.shard_count() {
+        // Workers keep published slots alive until unlinking under the shard write lock.
+        let entries = unsafe { table.snapshot_shard_with_payloads(shard, now) }?;
+        if entries.iter().any(|entry| !entry.has_key) {
+            return Err(SnapshotError::MissingKeyBytes);
+        }
+        keys.extend(entries);
+    }
+    Ok(SnapshotView { flat, graphs, keys })
+}
+
 /// Writes an atomic, point-in-time binary snapshot of all vector indexes and SwissTable keys.
 pub fn save_snapshot(
     target_path: &Path,
@@ -286,42 +321,17 @@ pub fn save_snapshot(
     now_sec: u32,
     encryption: Option<&SnapshotEncryptionConfig>,
 ) -> Result<SnapshotStats, SnapshotError> {
-    let (flat, graphs, kv_items, checkpoint) = durability::with_commit_fence(|| {
-        let capture_at = if durability::dispatch().is_some() {
-            0
-        } else {
-            now_sec
-        };
-        let flat = vectors.snapshot_flat_slots(capture_at);
-        let graphs: Vec<_> = vectors
-            .hnsw_indexes()
-            .into_iter()
-            .map(|(name, index)| {
-                let graph = index.snapshot_graph();
-                (name, index, graph)
-            })
-            .collect();
-
-        let mut items = Vec::new();
-        for shard in 0..table.shard_count() {
-            // Workers keep published slots alive until unlinking under the shard write lock.
-            let entries = unsafe { table.snapshot_shard_with_payloads(shard, capture_at) }?;
-            if entries.iter().any(|entry| !entry.has_key) {
-                return Err(SnapshotError::MissingKeyBytes);
-            }
-            items.extend(entries);
-        }
-        let checkpoint = durability::dispatch()
-            .map(|writer| writer.checkpoint())
-            .transpose()?;
-        Ok::<_, SnapshotError>((flat, graphs, items, checkpoint))
+    let (view, checkpoint) = durability::with_commit_fence(|| {
+        let dispatch = durability::dispatch();
+        let view = capture_view(table, vectors, if dispatch.is_some() { 0 } else { now_sec })?;
+        let checkpoint = dispatch.map(|writer| writer.checkpoint()).transpose()?;
+        Ok::<_, SnapshotError>((view, checkpoint))
     })?;
     let checkpoint = checkpoint
-        .map(|(checkpoint, synced)| {
+        .map(|synced| {
             synced
                 .recv()
-                .map_err(|_| crate::aof::AofError::WriterStopped)?;
-            Ok::<_, SnapshotError>(checkpoint)
+                .map_err(|_| crate::aof::AofError::WriterStopped)
         })
         .transpose()?;
 
@@ -394,6 +404,61 @@ pub fn save_snapshot(
         writer.write_bytes(&checkpoint.sequence.to_le_bytes())?;
     }
 
+    let (vector_indexes, total_vectors, total_kv_entries) = write_view(&mut writer, view)?;
+
+    // 4. Finish payload writer
+    writer.finish()?;
+
+    // 5. Checksum Trailer
+    let checksum = hasher.finalize();
+    file.write_all(&checksum.to_le_bytes())?;
+    total_bytes += 4;
+
+    file.flush()?;
+    file.sync_all()?;
+    drop(file);
+
+    // 6. Atomic Rename Swap
+    std::fs::rename(&temporary.path, target_path)?;
+    let parent = target_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    File::open(parent)?.sync_all()?;
+
+    Ok(SnapshotStats {
+        timestamp_sec: ts,
+        vector_indexes,
+        total_vectors,
+        total_kv_entries,
+        bytes_written: total_bytes,
+        checkpoint,
+    })
+}
+
+/// Writes the V7 snapshot payload without its external checkpoint or file wrapper.
+pub fn write_rewrite_base(
+    output: &mut dyn Write,
+    view: SnapshotView,
+) -> Result<(u64, u32), SnapshotError> {
+    let mut checksum = Hasher::new();
+    let mut size = 0;
+    let mut writer = PayloadWriter::Plain {
+        file: output,
+        hasher: &mut checksum,
+        buf: Vec::with_capacity(128 * 1024),
+        total_bytes: &mut size,
+    };
+    write_view(&mut writer, view)?;
+    writer.finish()?;
+    Ok((size as u64, checksum.finalize()))
+}
+
+fn write_view(
+    writer: &mut PayloadWriter<'_>,
+    view: SnapshotView,
+) -> Result<(usize, usize, usize), SnapshotError> {
+    let SnapshotView { flat, graphs, keys } = view;
     // 2. Vector Indexes Section
     let num_indexes = u32::try_from(flat.len() + graphs.len())
         .map_err(|_| SnapshotError::Invalid("too many indexes"))?;
@@ -402,7 +467,7 @@ pub fn save_snapshot(
     let mut total_vectors = 0;
     for (name, index, graph) in graphs {
         writer.write_bytes(&[1])?;
-        total_vectors += hnsw::write_index(&mut writer, &name, &index, &graph)?;
+        total_vectors += hnsw::write_index(writer, &name, &index, &graph)?;
     }
     for FlatVectorSnapshot {
         name,
@@ -464,10 +529,10 @@ pub fn save_snapshot(
 
     // 3. KV SwissTable Section
     let num_kv_entries =
-        u32::try_from(kv_items.len()).map_err(|_| SnapshotError::Invalid("too many KV entries"))?;
+        u32::try_from(keys.len()).map_err(|_| SnapshotError::Invalid("too many KV entries"))?;
     writer.write_bytes(&num_kv_entries.to_le_bytes())?;
 
-    for item in kv_items {
+    for item in keys {
         writer.write_bytes(&item.key_hash.to_le_bytes())?;
         let key_len = item.key_bytes.len() as u16;
         writer.write_bytes(&key_len.to_le_bytes())?;
@@ -479,34 +544,7 @@ pub fn save_snapshot(
         writer.write_bytes(&item.expire_at.to_le_bytes())?;
     }
 
-    // 4. Finish payload writer
-    writer.finish()?;
-
-    // 5. Checksum Trailer
-    let checksum = hasher.finalize();
-    file.write_all(&checksum.to_le_bytes())?;
-    total_bytes += 4;
-
-    file.flush()?;
-    file.sync_all()?;
-    drop(file);
-
-    // 6. Atomic Rename Swap
-    std::fs::rename(&temporary.path, target_path)?;
-    let parent = target_path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    File::open(parent)?.sync_all()?;
-
-    Ok(SnapshotStats {
-        timestamp_sec: ts,
-        vector_indexes: num_indexes as usize,
-        total_vectors,
-        total_kv_entries: num_kv_entries as usize,
-        bytes_written: total_bytes,
-        checkpoint,
-    })
+    Ok((num_indexes as usize, total_vectors, num_kv_entries as usize))
 }
 
 /// Hydrates in-memory vector indexes and SwissTable keys from `dump.kdb`.
@@ -694,17 +732,131 @@ fn read_checkpoint(payload: &[u8]) -> Result<(Option<Checkpoint>, &[u8]), Snapsh
     }
 }
 
-fn read_presence(payload: &[u8], cursor: &mut usize) -> Result<bool, SnapshotError> {
-    let flag = payload.get(*cursor).ok_or(SnapshotError::UnexpectedEof)?;
-    *cursor += 1;
-    match flag {
-        0 => Ok(false),
-        1 => Ok(true),
-        _ => Err(SnapshotError::Invalid("invalid snapshot presence flag")),
+/// Reads a bounded payload from either a standalone snapshot or an embedded AOF base.
+pub(super) struct PayloadReader<R> {
+    input: Take<R>,
+}
+
+impl<R: Read> PayloadReader<R> {
+    fn new(input: R, size: u64) -> Self {
+        Self {
+            input: input.take(size),
+        }
+    }
+
+    fn remaining(&self) -> u64 {
+        self.input.limit()
+    }
+
+    fn fill(&mut self, bytes: &mut [u8]) -> Result<(), SnapshotError> {
+        self.input.read_exact(bytes).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                SnapshotError::UnexpectedEof
+            } else {
+                error.into()
+            }
+        })
+    }
+
+    fn array<const N: usize>(&mut self) -> Result<[u8; N], SnapshotError> {
+        let mut bytes = [0; N];
+        self.fill(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    fn bytes(&mut self, size: usize) -> Result<Vec<u8>, SnapshotError> {
+        self.check_remaining(size)?;
+        let mut value = Vec::new();
+        value
+            .try_reserve_exact(size)
+            .map_err(|_| SnapshotError::Invalid("cannot reserve snapshot entry"))?;
+        value.resize(size, 0);
+        self.fill(&mut value)?;
+        Ok(value)
+    }
+
+    fn check_remaining(&self, size: usize) -> Result<(), SnapshotError> {
+        if size as u64 > self.remaining() {
+            return Err(SnapshotError::UnexpectedEof);
+        }
+        Ok(())
+    }
+
+    fn byte(&mut self) -> Result<u8, SnapshotError> {
+        Ok(self.array::<1>()?[0])
+    }
+
+    fn present(&mut self) -> Result<bool, SnapshotError> {
+        match self.byte()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(SnapshotError::Invalid("invalid snapshot presence flag")),
+        }
+    }
+
+    fn u32(&mut self) -> Result<u32, SnapshotError> {
+        Ok(u32::from_le_bytes(self.array()?))
+    }
+
+    fn key(&mut self) -> Result<Vec<u8>, SnapshotError> {
+        let len = usize::from(u16::from_le_bytes(self.array()?));
+        self.bytes(len)
+    }
+
+    fn payload(&mut self) -> Result<Option<Vec<u8>>, SnapshotError> {
+        if !self.present()? {
+            return Ok(None);
+        }
+        let size = self.u32()? as usize;
+        self.bytes(size).map(Some)
+    }
+
+    fn param(&mut self) -> Result<usize, SnapshotError> {
+        usize::try_from(u64::from_le_bytes(self.array()?))
+            .map_err(|_| SnapshotError::Invalid("HNSW parameter out of range"))
+    }
+
+    fn count(&mut self, min_size: usize) -> Result<usize, SnapshotError> {
+        let count = self.u32()? as usize;
+        if count as u64 > self.remaining() / min_size as u64 {
+            return Err(SnapshotError::UnexpectedEof);
+        }
+        Ok(count)
+    }
+
+    fn node_id(&mut self, count: usize) -> Result<u32, SnapshotError> {
+        let id = self.u32()?;
+        if id as usize >= count {
+            return Err(SnapshotError::Invalid("invalid HNSW node ID"));
+        }
+        Ok(id)
+    }
+
+    fn floats(
+        &mut self,
+        dim: usize,
+        decode: fn([u8; 4]) -> f32,
+    ) -> Result<Vec<f32>, SnapshotError> {
+        let size = dim
+            .checked_mul(4)
+            .ok_or(SnapshotError::Invalid("vector dimension out of range"))?;
+        self.check_remaining(size)?;
+        let mut vector = Vec::new();
+        vector
+            .try_reserve_exact(dim)
+            .map_err(|_| SnapshotError::Invalid("cannot reserve snapshot vector"))?;
+        let mut chunk = [0; 4096];
+        let mut remaining = size;
+        while remaining != 0 {
+            let size = remaining.min(chunk.len());
+            self.fill(&mut chunk[..size])?;
+            vector.extend(chunk[..size].as_chunks::<4>().0.iter().copied().map(decode));
+            remaining -= size;
+        }
+        Ok(vector)
     }
 }
 
-/// Helper function to hydrate vector indexes and SwissTable keys from an unencrypted payload byte slice.
 fn hydrate_payload(
     payload: &[u8],
     version: u8,
@@ -712,287 +864,134 @@ fn hydrate_payload(
     pool: &mut impl SlotAllocator,
     vectors: &VectorIndexRegistry,
 ) -> Result<(usize, usize, usize), SnapshotError> {
-    let mut cursor = 0;
-    let content_len = payload.len();
+    hydrate_view(
+        PayloadReader::new(payload, payload.len() as u64),
+        version,
+        table,
+        pool,
+        vectors,
+    )
+}
 
-    // 1. Vector Section
-    if cursor + 4 > content_len {
-        return Err(SnapshotError::UnexpectedEof);
-    }
-    let num_indexes = u32::from_le_bytes([
-        payload[cursor],
-        payload[cursor + 1],
-        payload[cursor + 2],
-        payload[cursor + 3],
-    ]) as usize;
-    cursor += 4;
+pub fn hydrate_rewrite_base(
+    input: &mut dyn Read,
+    size: u64,
+    table: &ShardedSwissTable,
+    pool: &mut impl SlotAllocator,
+    vectors: &VectorIndexRegistry,
+) -> Result<(), SnapshotError> {
+    hydrate_view(PayloadReader::new(input, size), 7, table, pool, vectors)?;
+    Ok(())
+}
 
+fn hydrate_view(
+    mut reader: PayloadReader<impl Read>,
+    version: u8,
+    table: &ShardedSwissTable,
+    pool: &mut impl SlotAllocator,
+    vectors: &VectorIndexRegistry,
+) -> Result<(usize, usize, usize), SnapshotError> {
+    let num_indexes = reader.count(if version >= 7 { 11 } else { 10 })?;
     let mut total_vectors = 0;
     for _ in 0..num_indexes {
         if version >= 7 {
-            let kind = payload.get(cursor).ok_or(SnapshotError::UnexpectedEof)?;
-            cursor += 1;
-            match kind {
+            match reader.byte()? {
                 0 => {}
                 1 => {
-                    let (remaining, count) = hnsw::read_index(&payload[cursor..], vectors)?;
-                    cursor = content_len - remaining.len();
-                    total_vectors += count;
+                    total_vectors += hnsw::read_index(&mut reader, vectors)?;
                     continue;
                 }
                 _ => return Err(SnapshotError::Invalid("unknown vector index kind")),
             }
         }
-        if cursor + 10 > content_len {
-            return Err(SnapshotError::UnexpectedEof);
-        }
-        let name_len = u16::from_le_bytes([payload[cursor], payload[cursor + 1]]) as usize;
-        cursor += 2;
-        if cursor + name_len + 8 > content_len {
-            return Err(SnapshotError::UnexpectedEof);
-        }
-        let name = payload[cursor..cursor + name_len].to_vec();
-        cursor += name_len;
-
-        let dim = u32::from_le_bytes([
-            payload[cursor],
-            payload[cursor + 1],
-            payload[cursor + 2],
-            payload[cursor + 3],
-        ]) as usize;
-        cursor += 4;
-
-        let num_entries = u32::from_le_bytes([
-            payload[cursor],
-            payload[cursor + 1],
-            payload[cursor + 2],
-            payload[cursor + 3],
-        ]) as usize;
-        cursor += 4;
-
-        let min_slot_size = if version >= 7 { 1 } else { 20 };
-        if num_entries > (content_len - cursor) / min_slot_size {
-            return Err(SnapshotError::UnexpectedEof);
-        }
+        let name = reader.key()?;
+        let dim = reader.u32()? as usize;
+        let num_entries = reader.count(if version >= 7 { 1 } else { 20 })?;
         let mut slots = Vec::new();
         slots
             .try_reserve_exact(num_entries)
             .map_err(|_| SnapshotError::Invalid("cannot reserve flat vector slots"))?;
         for _ in 0..num_entries {
-            if version >= 7 {
-                let flag = read_presence(payload, &mut cursor)?;
-                if !flag {
-                    slots.push(None);
-                    continue;
-                }
+            if version >= 7 && !reader.present()? {
+                slots.push(None);
+                continue;
             }
-            if cursor + 6 > content_len {
-                return Err(SnapshotError::UnexpectedEof);
+            let key = reader.key()?;
+            if key.is_empty() || dim == 0 {
+                return Err(SnapshotError::Invalid("empty flat vector key or dimension"));
             }
-            let key_len = u16::from_le_bytes([payload[cursor], payload[cursor + 1]]) as usize;
-            cursor += 2;
-            if cursor + key_len + 4 > content_len {
-                return Err(SnapshotError::UnexpectedEof);
-            }
-            let key = payload[cursor..cursor + key_len].to_vec();
-            cursor += key_len;
-
-            let entry_dim = u32::from_le_bytes([
-                payload[cursor],
-                payload[cursor + 1],
-                payload[cursor + 2],
-                payload[cursor + 3],
-            ]) as usize;
-            cursor += 4;
-
-            if entry_dim != dim {
+            if reader.u32()? as usize != dim {
                 return Err(SnapshotError::Invalid("vector has the wrong dimension"));
-            }
-            let vec_bytes_len = entry_dim * 4;
-            if cursor + vec_bytes_len + 1 > content_len {
-                return Err(SnapshotError::UnexpectedEof);
             }
             let decode = if version >= 7 {
                 f32::from_le_bytes
             } else {
                 f32::from_ne_bytes
             };
-            let vector = payload[cursor..cursor + vec_bytes_len]
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .copied()
-                .map(decode)
-                .collect();
-            cursor += vec_bytes_len;
-
-            let p_opt = if read_presence(payload, &mut cursor)? {
-                if cursor + 4 > content_len {
-                    return Err(SnapshotError::UnexpectedEof);
-                }
-                let p_len = u32::from_le_bytes([
-                    payload[cursor],
-                    payload[cursor + 1],
-                    payload[cursor + 2],
-                    payload[cursor + 3],
-                ]) as usize;
-                cursor += 4;
-                if cursor + p_len > content_len {
-                    return Err(SnapshotError::UnexpectedEof);
-                }
-                let p = payload[cursor..cursor + p_len].to_vec();
-                cursor += p_len;
-                Some(p)
+            let vector = reader.floats(dim, decode)?;
+            let payload = reader.payload()?;
+            let expire_at_secs = reader.u32()?;
+            let tag_mask = u64::from_le_bytes(reader.array()?);
+            let parent_key = if reader.present()? {
+                Some(reader.key()?)
             } else {
                 None
             };
-
-            if cursor + 13 > content_len {
-                return Err(SnapshotError::UnexpectedEof);
-            }
-            let expire_at_secs = u32::from_le_bytes([
-                payload[cursor],
-                payload[cursor + 1],
-                payload[cursor + 2],
-                payload[cursor + 3],
-            ]);
-            cursor += 4;
-
-            let tag_mask = u64::from_le_bytes([
-                payload[cursor],
-                payload[cursor + 1],
-                payload[cursor + 2],
-                payload[cursor + 3],
-                payload[cursor + 4],
-                payload[cursor + 5],
-                payload[cursor + 6],
-                payload[cursor + 7],
-            ]);
-            cursor += 8;
-
-            let parent_key = if read_presence(payload, &mut cursor)? {
-                if cursor + 2 > content_len {
-                    return Err(SnapshotError::UnexpectedEof);
-                }
-                let pk_len = u16::from_le_bytes([payload[cursor], payload[cursor + 1]]) as usize;
-                cursor += 2;
-                if cursor + pk_len > content_len {
-                    return Err(SnapshotError::UnexpectedEof);
-                }
-                let pk = payload[cursor..cursor + pk_len].to_vec();
-                cursor += pk_len;
-                Some(pk)
-            } else {
-                None
-            };
-
-            if key.is_empty() || dim == 0 {
-                return Err(SnapshotError::Invalid("empty flat vector key or dimension"));
-            }
             slots.push(Some(VectorEntry {
                 key,
                 vector,
-                payload: p_opt,
+                payload,
                 expire_at_secs,
                 tag_mask,
                 parent_key,
             }));
             total_vectors += 1;
         }
-
-        let dimension = (dim != 0).then_some(dim);
         if !vectors.restore_flat_slots(FlatVectorSnapshot {
             name,
-            dimension,
+            dimension: (dim != 0).then_some(dim),
             slots,
         }) {
             return Err(SnapshotError::Invalid("duplicate flat index or key"));
         }
     }
 
-    // 2. Hydrate SwissTable KV Section
-    let mut total_kv = 0;
-    if cursor + 4 <= content_len {
-        let num_kv = u32::from_le_bytes([
-            payload[cursor],
-            payload[cursor + 1],
-            payload[cursor + 2],
-            payload[cursor + 3],
-        ]) as usize;
-        cursor += 4;
-
-        if version < 5 && num_kv > 0 {
+    let total_kv = if version < 7 && reader.remaining() == 0 {
+        0
+    } else {
+        let count = reader.u32()? as usize;
+        if version < 5 && count > 0 {
             return Err(SnapshotError::MissingKeyBytes);
         }
-        for _ in 0..num_kv {
-            if cursor + 8 + 2 > content_len {
-                return Err(SnapshotError::UnexpectedEof);
-            }
-            let key_hash = u64::from_le_bytes([
-                payload[cursor],
-                payload[cursor + 1],
-                payload[cursor + 2],
-                payload[cursor + 3],
-                payload[cursor + 4],
-                payload[cursor + 5],
-                payload[cursor + 6],
-                payload[cursor + 7],
-            ]);
-            cursor += 8;
-
-            let key_len = u16::from_le_bytes([payload[cursor], payload[cursor + 1]]) as usize;
-            cursor += 2;
-            if cursor + key_len + 1 + 4 > content_len {
-                return Err(SnapshotError::UnexpectedEof);
-            }
-            let key_bytes = &payload[cursor..cursor + key_len];
-            cursor += key_len;
+        for _ in 0..count {
+            let key_hash = u64::from_le_bytes(reader.array()?);
+            let key = reader.key()?;
             if version == 5 {
-                if key_bytes.is_empty() {
+                if key.is_empty() {
                     return Err(SnapshotError::MissingKeyBytes);
                 }
-                if hash_key(key_bytes) != key_hash {
+                if hash_key(&key) != key_hash {
                     return Err(SnapshotError::LegacyKeyDigestMismatch);
                 }
             }
-
-            let value_type = payload[cursor];
-            cursor += 1;
-
-            let val_len = u32::from_le_bytes([
-                payload[cursor],
-                payload[cursor + 1],
-                payload[cursor + 2],
-                payload[cursor + 3],
-            ]) as usize;
-            cursor += 4;
-
-            if cursor + val_len + 4 > content_len {
-                return Err(SnapshotError::UnexpectedEof);
+            let value_type = reader.byte()?;
+            let len = reader.u32()? as usize;
+            if kachedb_core::SlabClassType::for_size(len).is_none() {
+                return Err(SnapshotError::Invalid(
+                    "KV value exceeds the largest slab slot",
+                ));
             }
-            let val_bytes = &payload[cursor..cursor + val_len];
-            cursor += val_len;
-
-            let expire_at = u32::from_le_bytes([
-                payload[cursor],
-                payload[cursor + 1],
-                payload[cursor + 2],
-                payload[cursor + 3],
-            ]);
-            cursor += 4;
-
+            let value = reader.bytes(len)?;
+            let deadline = reader.u32()?;
             crate::aof_recovery::restore_value(
-                table, pool, key_hash, key_bytes, value_type, val_bytes, expire_at,
+                table, pool, key_hash, &key, value_type, &value, deadline,
             )?;
-            total_kv += 1;
         }
-    } else if version >= 7 {
-        return Err(SnapshotError::UnexpectedEof);
-    }
-    if cursor != content_len {
+        count
+    };
+    if reader.remaining() != 0 {
         return Err(SnapshotError::Invalid("trailing snapshot bytes"));
     }
-
     Ok((num_indexes, total_vectors, total_kv))
 }
 

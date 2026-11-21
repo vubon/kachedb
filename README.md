@@ -146,7 +146,7 @@ KacheDB implements the standard **RESP2 / RESP3** binary wire protocol. You can 
 | **`PERSIST`** | `PERSIST key` | Removes TTL expiration, making key persistent. | $\mathcal{O}(1)$ |
 | **`FLUSHDB`** | `FLUSHDB` | Clears all keys and recycles slab pool memory blocks. | $\mathcal{O}(N)$ |
 | **`FLUSHALL`** | `FLUSHALL` | Clears all keys across all database instances. | $\mathcal{O}(N)$ |
-| **`BGREWRITEAOF`** | `BGREWRITEAOF` | Returns an unsupported-command error. | — |
+| **`BGREWRITEAOF`** | `BGREWRITEAOF` | Compacts the append-only file in the background when AOF is enabled. | — |
 | **`INFO`** | `INFO [section]` | Returns real-time telemetry, memory stats, and keyspace diagnostics. | $\mathcal{O}(1)$ |
 | **`QUIT`** | `QUIT` | Closes the client connection gracefully. | $\mathcal{O}(1)$ |
 | **`COMMAND`** | `COMMAND DOCS` | Returns Redis protocol capability metadata. | $\mathcal{O}(1)$ |

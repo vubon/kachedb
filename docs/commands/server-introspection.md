@@ -13,7 +13,7 @@ KacheDB provides self-describing runtime introspection compatible with modern Re
 | **`AUTH`** | `AUTH [username] <password>` | Authenticates the connection when `requirepass` is configured. |
 | **`CLIENT`** | `CLIENT <SETNAME \| GETNAME \| ID \| LIST>` | Inspects and configures client connection state. |
 | **`COMMAND`** | `COMMAND [DOCS]` | Returns server capability descriptors for client auto-discovery. |
-| **`BGREWRITEAOF`** | `BGREWRITEAOF` | Returns an unsupported-command error. |
+| **`BGREWRITEAOF`** | `BGREWRITEAOF` | Starts background AOF compaction when AOF is enabled. |
 | **`QUIT`** | `QUIT` | Gracefully closes the client connection. |
 
 ---
@@ -151,15 +151,11 @@ OK
 
 ### `BGREWRITEAOF`
 
-Background AOF rewrite is currently unavailable. The command returns a RESP error and leaves the connection open.
+Compacts the active AOF in the background. AOF persistence must be enabled, and one rewrite can run at a time. Normal writes continue while the replacement is built. The command acknowledges that the job started. The server log reports when it finishes or aborts.
 
-#### Syntax
 ```text
 BGREWRITEAOF
++Background append only file rewriting started
 ```
 
-#### RESP error reply
-```text
--ERR BGREWRITEAOF is currently unsupported in this version
-```
-
+The writer installs the new file only after it has synced the captured base and subsequent mutations. The installed AOF can recover even when an external snapshot belongs to the previous generation. [AOF durability and repair](../getting-started/configuration.md#aof-durability-and-repair)

@@ -887,7 +887,7 @@ fn test_auth_requirepass_flow() {
 }
 
 #[test]
-fn process_incoming_bgrewriteaof_returns_unsupported() {
+fn process_incoming_bgrewriteaof_requires_persistence() {
     let mut conn = Connection::new();
     let table = ShardedSwissTable::new();
     let mut pool = SlabPool::new(0, 16 * 1024 * 1024).unwrap();
@@ -897,7 +897,7 @@ fn process_incoming_bgrewriteaof_returns_unsupported() {
     assert!(conn.process_incoming(&table, &mut pool).unwrap());
     assert_eq!(
         conn.write_buf,
-        b"-ERR BGREWRITEAOF is currently unsupported in this version\r\n+PONG\r\n"
+        b"-ERR BGREWRITEAOF requires AOF persistence\r\n+PONG\r\n"
     );
 }
 

@@ -160,10 +160,15 @@ pub fn handle_admin(
             encode_simple_string(write_buf, "OK");
         }
         Command::BgRewriteAof => {
-            encode_error(
-                write_buf,
-                "ERR BGREWRITEAOF is currently unsupported in this version",
-            );
+            let result = crate::durability::dispatch()
+                .ok_or(crate::durability::AdmissionError::RewriteDisabled)
+                .and_then(|writer| writer.request_rewrite());
+            match result {
+                Ok(()) => {
+                    encode_simple_string(write_buf, "Background append only file rewriting started")
+                }
+                Err(error) => encode_error(write_buf, &error.to_string()),
+            }
         }
         Command::DBSize => {
             encode_integer(write_buf, table.len() as i64);

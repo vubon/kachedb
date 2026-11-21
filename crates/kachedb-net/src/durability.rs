@@ -1,5 +1,8 @@
 //! Bounded AOF admission and ordered publication shared by server workers.
 
+use std::fs::File;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -49,6 +52,10 @@ pub enum AdmissionError {
     Oversized,
     #[error("ERR persistence failed after publication; mutation outcome is uncertain")]
     Uncertain,
+    #[error("ERR BGREWRITEAOF requires AOF persistence")]
+    RewriteDisabled,
+    #[error("ERR an AOF rewrite is already in progress")]
+    RewriteInProgress,
 }
 
 pub enum WriterRequest {
@@ -57,14 +64,30 @@ pub enum WriterRequest {
         done: Option<Sender<()>>,
         permit: Permit,
     },
-    Sync(Sender<()>),
+    Sync(Sender<Checkpoint>),
+    BeginRewrite {
+        sequence: u64,
+        cancelled: Arc<AtomicBool>,
+    },
+    InstallRewrite {
+        replacement: RewriteFile,
+        installed: Sender<bool>,
+    },
+    AbortRewrite,
     Stop,
+}
+
+pub struct RewriteFile {
+    pub file: File,
+    pub path: PathBuf,
+    pub checkpoint: Checkpoint,
 }
 
 struct QueueState {
     used_bytes: usize,
     used_records: usize,
     failed: bool,
+    rewriting: bool,
     sequence: u64,
 }
 
@@ -72,7 +95,7 @@ pub struct AofDispatch {
     tx: Sender<WriterRequest>,
     state: Mutex<QueueState>,
     available: Condvar,
-    generation: [u8; 16],
+    rewrite_trigger: OnceLock<Sender<()>>,
     policy: AppendFsync,
     byte_limit: usize,
     record_limit: usize,
@@ -125,7 +148,7 @@ impl AofDispatch {
         let dispatch = Arc::new(Self {
             tx,
             available: Condvar::new(),
-            generation: checkpoint.generation,
+            rewrite_trigger: OnceLock::new(),
             policy,
             byte_limit,
             record_limit,
@@ -133,6 +156,7 @@ impl AofDispatch {
                 used_bytes: 0,
                 used_records: 0,
                 failed: false,
+                rewriting: false,
                 sequence: checkpoint.sequence,
             }),
         });
@@ -177,9 +201,9 @@ impl AofDispatch {
         self.available.notify_all();
     }
 
-    /// Call under the commit fence. The receiver confirms the checkpoint's
-    /// log prefix reached disk, including under the asynchronous fsync policies.
-    pub fn checkpoint(&self) -> Result<(Checkpoint, Receiver<()>), AdmissionError> {
+    /// Enqueues a sync at the current commit boundary. The writer replies with the
+    /// checkpoint for the file that actually received the prefix.
+    pub fn checkpoint(&self) -> Result<Receiver<Checkpoint>, AdmissionError> {
         let state = self.state.lock().unwrap();
         if state.failed {
             return Err(AdmissionError::Unavailable);
@@ -188,13 +212,72 @@ impl AofDispatch {
         self.tx
             .send(WriterRequest::Sync(send))
             .map_err(|_| AdmissionError::Unavailable)?;
-        Ok((
-            Checkpoint {
-                generation: self.generation,
+        Ok(receive)
+    }
+
+    pub fn set_rewrite_trigger(&self, trigger: Sender<()>) {
+        assert!(self.rewrite_trigger.set(trigger).is_ok());
+    }
+
+    pub fn request_rewrite(&self) -> Result<(), AdmissionError> {
+        let trigger = self
+            .rewrite_trigger
+            .get()
+            .ok_or(AdmissionError::RewriteDisabled)?;
+        let mut state = self.state.lock().unwrap();
+        if state.failed {
+            return Err(AdmissionError::Unavailable);
+        }
+        if state.rewriting {
+            return Err(AdmissionError::RewriteInProgress);
+        }
+        trigger
+            .try_send(())
+            .map_err(|_| AdmissionError::Unavailable)?;
+        state.rewriting = true;
+        Ok(())
+    }
+
+    /// Call under the commit fence after copying the base.
+    pub fn begin_rewrite(&self, cancelled: Arc<AtomicBool>) -> Result<u64, AdmissionError> {
+        let state = self.state.lock().unwrap();
+        if state.failed {
+            return Err(AdmissionError::Unavailable);
+        }
+        self.tx
+            .send(WriterRequest::BeginRewrite {
                 sequence: state.sequence,
-            },
-            receive,
-        ))
+                cancelled,
+            })
+            .map_err(|_| AdmissionError::Unavailable)?;
+        Ok(state.sequence)
+    }
+
+    /// Uses the same FIFO as mutations and checkpoint requests to define cutover.
+    pub fn install_rewrite(
+        &self,
+        replacement: RewriteFile,
+    ) -> Result<Receiver<bool>, AdmissionError> {
+        let state = self.state.lock().unwrap();
+        if state.failed {
+            return Err(AdmissionError::Unavailable);
+        }
+        let (send, receive) = bounded(1);
+        self.tx
+            .send(WriterRequest::InstallRewrite {
+                replacement,
+                installed: send,
+            })
+            .map_err(|_| AdmissionError::Unavailable)?;
+        Ok(receive)
+    }
+
+    pub fn abort_rewrite(&self) {
+        let _ = self.tx.send(WriterRequest::AbortRewrite);
+    }
+
+    pub fn finish_rewrite(&self) {
+        self.state.lock().unwrap().rewriting = false;
     }
 
     pub fn stop(&self) {
@@ -263,6 +346,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rewrite_request_admits_one_job_at_a_time() {
+        let (dispatch, _) = AofDispatch::new(
+            Checkpoint {
+                generation: [0; 16],
+                sequence: 0,
+            },
+            AppendFsync::Always,
+        );
+        let (trigger, requests) = bounded(1);
+        assert_eq!(
+            dispatch.request_rewrite(),
+            Err(AdmissionError::RewriteDisabled)
+        );
+        dispatch.set_rewrite_trigger(trigger);
+        dispatch.request_rewrite().unwrap();
+        assert_eq!(
+            dispatch.request_rewrite(),
+            Err(AdmissionError::RewriteInProgress)
+        );
+        requests.recv().unwrap();
+        dispatch.finish_rewrite();
+        dispatch.request_rewrite().unwrap();
+        requests.recv().unwrap();
+        dispatch.fail();
+        assert_eq!(dispatch.request_rewrite(), Err(AdmissionError::Unavailable));
+    }
+
+    #[test]
     fn asynchronous_admission_bounds_bytes_and_records() {
         for policy in [AppendFsync::EverySec, AppendFsync::No] {
             let checkpoint = Checkpoint {
@@ -282,7 +393,7 @@ mod tests {
             ));
             drop(second);
             assert!(first.submit(vec![1; 5]).unwrap().is_none());
-            assert_eq!(dispatch.checkpoint().unwrap().0.sequence, 18);
+            let checkpoint_reply = dispatch.checkpoint().unwrap();
             assert!(matches!(
                 dispatch.reserve(4),
                 Err(AdmissionError::Saturated)
@@ -291,6 +402,15 @@ mod tests {
                 panic!("record must precede checkpoint");
             };
             assert_eq!(bytes, [1; 5]);
+            let WriterRequest::Sync(sender) = requests.recv().unwrap() else {
+                panic!("expected checkpoint request");
+            };
+            let checkpoint = Checkpoint {
+                sequence: 18,
+                ..checkpoint
+            };
+            sender.send(checkpoint).unwrap();
+            assert_eq!(checkpoint_reply.recv().unwrap(), checkpoint);
             drop(permit);
             assert!(dispatch.reserve(8).is_ok());
             assert!(matches!(
